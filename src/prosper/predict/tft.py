@@ -1,0 +1,259 @@
+"""Temporal Fusion Transformer predictions using pytorch-forecasting."""
+from __future__ import annotations
+
+import json
+import warnings
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import polars as pl
+import torch
+
+from prosper.config import Settings, get_settings
+from prosper.storage.layout import get_features_parquet_path, get_prediction_report_path
+from prosper.utils.time import parse_date
+
+DIRECTION_CLASSES = ["short", "flat", "long"]
+DEPTH_BIN_LABELS = ["1-2", "2-3", "3-5", "5-8", "8-13", "13-21", "21-34", "34+"]
+N_DEPTH_BINS = len(DEPTH_BIN_LABELS)
+
+
+def _direction_from_return(r: float, thr: float) -> str:
+    if abs(r) <= thr:
+        return "flat"
+    return "long" if r > thr else "short"
+
+
+def _robust_normalize(X: np.ndarray, med: np.ndarray, iqr: np.ndarray) -> np.ndarray:
+    X_safe = np.where(np.isfinite(X), X, 0.0)
+    X_norm = (X_safe - med) / iqr
+    return np.clip(np.nan_to_num(X_norm, nan=0.0, posinf=3.0, neginf=-3.0), -5.0, 5.0)
+
+
+def predict_tft(
+    symbol: str,
+    start: str,
+    end: str,
+    settings: Settings | None = None,
+    seq_len: int = 60,
+    train_window_days: int = 365,
+    max_epochs: int = 10,
+    hidden_size: int = 32,
+    attention_head_size: int = 2,
+    flat_threshold: float = 0.01,
+    forward_days: int = 1,
+    learning_rate: float = 1e-3,
+) -> dict[str, Any]:
+    """
+    Train a Temporal Fusion Transformer every calendar month (rolling window)
+    and produce daily JSONL predictions identical in format to ML/GRU models.
+    """
+    if settings is None:
+        settings = get_settings()
+
+    # Suppress noisy upstream warnings
+    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", category=FutureWarning)
+
+    # ── 1. Load features ──────────────────────────────────────────────────────
+    feat_path = get_features_parquet_path(symbol, "1d", settings=settings)
+    if not feat_path.exists():
+        return {"error": f"No features parquet for {symbol}. Run: features build", "symbol": symbol}
+
+    df_pl = pl.read_parquet(feat_path, hive_partitioning=False).sort("open_time")
+    if df_pl.is_empty():
+        return {"error": "Empty features DataFrame", "symbol": symbol}
+
+    df_pl = df_pl.with_columns(pl.col("open_time").dt.date().alias("_date"))
+    exclude_cols = {"open_time", "close_time", "_date", "symbol"}
+    feature_cols = [c for c in df_pl.columns if c not in exclude_cols and c != "close"]
+
+    dates = df_pl["_date"].to_list()
+    closes = df_pl["close"].to_list()
+    X_raw = df_pl.select(feature_cols).to_numpy().astype(np.float32)
+    n = len(df_pl)
+
+    start_dt = parse_date(start).date()
+    end_dt = parse_date(end).date()
+
+    # ── 2. Pre-compute forward labels ─────────────────────────────────────────
+    dir_map = {"short": 0, "flat": 1, "long": 2}
+    y_dir = np.full(n, -1, dtype=np.int64)
+    for i in range(n - forward_days):
+        j = i + forward_days
+        if closes[i] and closes[j]:
+            r = closes[j] / closes[i] - 1.0
+            y_dir[i] = dir_map[_direction_from_return(r, flat_threshold)]
+
+    # ── 3. Rolling-month train + inference ───────────────────────────────────
+    try:
+        from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
+        from pytorch_forecasting.metrics import CrossEntropy
+        from pytorch_forecasting.data.encoders import NaNLabelEncoder
+        import lightning as L
+    except ImportError:
+        return {"error": "pytorch-forecasting not installed. Run: poetry add pytorch-forecasting lightning", "symbol": symbol}
+
+    predictions: list[dict[str, Any]] = []
+    current_train_month = None
+    tft_model = None
+    norm_params: tuple[np.ndarray, np.ndarray] | None = None  # (med, iqr)
+
+    uniform_depth = {lbl: 1.0 / N_DEPTH_BINS for lbl in DEPTH_BIN_LABELS}
+
+    for i in range(n):
+        row_date = dates[i]
+        if row_date < start_dt or row_date > end_dt:
+            continue
+
+        train_end = i - 1
+        train_start = max(0, i - train_window_days)
+        month_key = (row_date.year, row_date.month)
+
+        # ── Train once per calendar month ─────────────────────────────────
+        if month_key != current_train_month and (train_end - train_start) >= seq_len + 20:
+            current_train_month = month_key
+            tft_model = None
+
+            # Normalise
+            X_tr = X_raw[train_start : train_end + 1]
+            X_safe = np.where(np.isfinite(X_tr), X_tr, 0.0)
+            med = np.median(X_safe, axis=0)
+            iqr_arr = np.percentile(X_safe, 75, axis=0) - np.percentile(X_safe, 25, axis=0)
+            iqr_arr[iqr_arr == 0] = 1.0
+            norm_params = (med, iqr_arr)
+            X_norm_all = _robust_normalize(X_raw, med, iqr_arr)
+
+            # Build pandas dataframe for TimeSeriesDataSet
+            valid_idx = [k for k in range(train_start, train_end + 1) if y_dir[k] >= 0]
+            if len(valid_idx) < seq_len + 10 or len(set(y_dir[valid_idx])) < 2:
+                continue
+
+            dir_map_rev = {0: "short", 1: "flat", 2: "long"}
+            rows = []
+            for k in valid_idx:
+                row = {"time_idx": k, "group": "BTC", "target": dir_map_rev[y_dir[k]]}
+                for fi, fc in enumerate(feature_cols):
+                    row[fc] = float(X_norm_all[k, fi])
+                rows.append(row)
+
+            df_pd = pd.DataFrame(rows)
+
+            max_enc = min(seq_len, len(df_pd) - seq_len)
+            if max_enc < 5:
+                continue
+
+            try:
+                ds = TimeSeriesDataSet(
+                    df_pd,
+                    time_idx="time_idx",
+                    target="target",
+                    group_ids=["group"],
+                    min_encoder_length=max_enc // 2,
+                    max_encoder_length=max_enc,
+                    min_prediction_length=1,
+                    max_prediction_length=1,
+                    time_varying_unknown_reals=feature_cols,
+                    target_normalizer=NaNLabelEncoder(),
+                    add_relative_time_idx=True,
+                    add_target_scales=False,
+                    add_encoder_length=True,
+                )
+
+                loader = ds.to_dataloader(train=True, batch_size=32, num_workers=0)
+
+                tft = TemporalFusionTransformer.from_dataset(
+                    ds,
+                    learning_rate=learning_rate,
+                    hidden_size=hidden_size,
+                    attention_head_size=attention_head_size,
+                    dropout=0.1,
+                    hidden_continuous_size=16,
+                    loss=CrossEntropy(),
+                    log_interval=-1,
+                    reduce_on_plateau_patience=2,
+                )
+
+                trainer = L.Trainer(
+                    max_epochs=max_epochs,
+                    enable_progress_bar=False,
+                    enable_model_summary=False,
+                    logger=False,
+                    accelerator="cpu",
+                )
+                trainer.fit(tft, train_dataloaders=loader)
+                tft_model = tft
+                # Store normalised matrix for inference
+                norm_params = (med, iqr_arr, X_norm_all, ds)
+            except Exception as e:
+                print(f"Training exception for month {current_train_month}: {e}")
+                tft_model = None
+
+        # ── Inference ─────────────────────────────────────────────────────
+        date_str = row_date.isoformat()
+        out: dict[str, Any] = {"date": date_str, "symbol": symbol}
+
+        if tft_model is None or norm_params is None or i < seq_len:
+            for h in ("short", "medium", "long"):
+                out[h] = {"P_long": 0.33, "P_flat": 0.34, "P_short": 0.33,
+                          "depth_long_bins": uniform_depth.copy(), "depth_short_bins": uniform_depth.copy()}
+        else:
+            try:
+                med, iqr_arr, X_norm_all, ds_ref = norm_params
+                enc_len = min(seq_len, i)
+                rows_inf = []
+                dir_map_rev = {0: "short", 1: "flat", 2: "long"}
+                for k in range(i - enc_len, i + 1):
+                    # For inference, the target of the last row doesn't matter for predictors,
+                    # but TimeSeriesDataSet expects valid vocabulary.
+                    fake_target = dir_map_rev[max(y_dir[k], 0)]
+                    row = {"time_idx": k, "group": "BTC", "target": fake_target}
+                    for fi, fc in enumerate(feature_cols):
+                        row[fc] = float(X_norm_all[k, fi])
+                    rows_inf.append(row)
+
+                df_inf = pd.DataFrame(rows_inf)
+                ds_inf = TimeSeriesDataSet.from_dataset(ds_ref, df_inf, predict=True, stop_randomization=True)
+                inf_loader = ds_inf.to_dataloader(train=False, batch_size=1, num_workers=0)
+
+                raw_preds = tft_model.predict(inf_loader, mode="raw", return_x=False)
+                if isinstance(raw_preds, dict):
+                    logits = raw_preds["prediction"][0, 0].cpu().numpy()
+                elif isinstance(raw_preds, tuple):
+                    logits = raw_preds[0]["prediction"][0, 0].cpu().numpy() if isinstance(raw_preds[0], dict) else raw_preds[0].prediction[0, 0].cpu().numpy()
+                elif hasattr(raw_preds, "output"):
+                    logits = raw_preds.output.prediction[0, 0].cpu().numpy()
+                else:
+                    logits = raw_preds.prediction[0, 0].cpu().numpy()
+                probs = np.exp(logits) / np.exp(logits).sum()
+                p_short, p_flat, p_long = float(probs[0]), float(probs[1]), float(probs[2])
+            except Exception as e:
+                print(f"Inference exception at {date_str}: {e}")
+                p_short, p_flat, p_long = 0.33, 0.34, 0.33
+
+            horizon_out = {"P_long": p_long, "P_flat": p_flat, "P_short": p_short,
+                           "depth_long_bins": uniform_depth.copy(), "depth_short_bins": uniform_depth.copy()}
+            for h in ("short", "medium", "long"):
+                out[h] = horizon_out.copy()
+
+        predictions.append(out)
+
+    if not predictions:
+        return {"error": "No predictions generated for the requested date range", "symbol": symbol}
+
+    # ── 4. Write per-month JSONL ───────────────────────────────────────────────
+    by_month: dict[str, list[dict[str, Any]]] = {}
+    for row in predictions:
+        mk = row["date"][:7]
+        by_month.setdefault(mk, []).append(row)
+
+    for mk, rows in by_month.items():
+        y, m = int(mk[:4]), int(mk[5:7])
+        path = get_prediction_report_path(symbol, y, m, settings=settings)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r, sort_keys=True) + "\n")
+
+    return {"symbol": symbol, "start": start, "end": end, "predictions": len(predictions)}
