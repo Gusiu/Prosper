@@ -76,18 +76,34 @@ async function loadInventory() {
             const tr = document.createElement("tr");
             
             // Format checkmarks for aggregations
-            const aggs = ["1m", "1h", "1d", "1w"].map(a => 
-                item.aggregations.includes(a) ? `<span style="color:var(--green-main)">✓ ${a}</span>` : `<span class="text-muted">✗ ${a}</span>`
-            ).join(" | ");
+            const aggs = item.aggregations.length > 0 ? 
+                item.aggregations.map(a => `<span style="color:var(--accent-glow)">${a}</span>`).join(", ") : 
+                '<span class="text-muted">None</span>';
 
             tr.innerHTML = `
                 <td><strong>${item.symbol}</strong></td>
                 <td><span class="text-muted">${item.start_date}</span> → <span class="text-muted">${item.end_date}</span></td>
                 <td>${item.size_mb} MB</td>
                 <td style="font-size:0.75rem;">${aggs}</td>
-                <td>
-                    <button class="action-btn" style="background: rgba(0, 229, 255, 0.1); color: var(--accent-glow); border-color: rgba(0, 229, 255, 0.2);" onclick="editSymbol('${item.symbol}')">Edit / Re-build</button>
+                <td style="position: relative;">
+                    <button class="action-btn" style="background: rgba(0, 229, 255, 0.1); color: var(--accent-glow); border-color: rgba(0, 229, 255, 0.2);" onclick="showAggregatePanel('${item.symbol}')">Aggregate</button>
                     <button class="action-btn" onclick="deleteSymbol('${item.symbol}')">Delete</button>
+                    <!-- Hidden aggregation panel -->
+                    <div id="agg-panel-${item.symbol}" style="display:none; position: absolute; top: 100%; right: 0; background: var(--bg-card); padding: 12px; border: 1px solid rgba(0, 229, 255, 0.3); border-radius: 8px; z-index: 100; box-shadow: 0 4px 15px rgba(0,0,0,0.5); min-width: 200px;">
+                        <div class="checkbox-group mb-2" style="flex-wrap: wrap; font-size: 0.7rem;">
+                            ${["3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w"].map(a => {
+                                const idSuffix = (a === '1h' || a === '1d' || a === '1w') ? `agg-inline-${a}-${item.symbol}` : `agg-${a}-${item.symbol}`;
+                                const exists = item.aggregations.includes(a);
+                                const disabled = exists ? 'disabled' : '';
+                                const style = exists ? 'opacity: 0.4; text-decoration: line-through;' : '';
+                                return `<label style="${style}"><input type="checkbox" id="${idSuffix}" value="${a}" ${disabled}> ${a}</label>`;
+                            }).join('')}
+                        </div>
+                        <div style="display: flex; gap: 8px; justify-content: space-between;">
+                            <button class="outline-btn" style="padding: 4px 12px; font-size: 0.75rem; flex: 1;" onclick="queueInlineAggregation('${item.symbol}', '${item.start_date}', '${item.end_date}')">+ Queue</button>
+                            <button class="glow-btn" style="padding: 4px 12px; font-size: 0.75rem; flex: 1;" onclick="runInlineAggregation('${item.symbol}', '${item.start_date}', '${item.end_date}')">Run Now</button>
+                        </div>
+                    </div>
                 </td>
             `;
             tbody.appendChild(tr);
@@ -102,6 +118,46 @@ async function loadInventory() {
         if (currEval) evalSelect.value = currEval;
 
     } catch(e) { console.error("Failed to load inventory", e); }
+}
+
+function updateQueueUI() {
+    const tbody = document.getElementById("queue-tbody");
+    const count = document.getElementById("queue-count");
+    count.innerText = `(${pipelineQueue.length})`;
+    
+    if (pipelineQueue.length === 0) {
+        tbody.innerHTML = `<tr><td class="text-muted">Queue is empty</td></tr>`;
+        return;
+    }
+    
+    tbody.innerHTML = "";
+    pipelineQueue.forEach((item, idx) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+            <td style="font-size: 0.75rem; word-break: break-all;">${item.name}</td>
+            <td style="width: 80px; text-align: right;">
+                <button class="action-btn" style="padding: 2px 4px; color: #2962ff;" onclick="moveQueue(${idx}, -1)">▲</button>
+                <button class="action-btn" style="padding: 2px 4px; color: #2962ff;" onclick="moveQueue(${idx}, 1)">▼</button>
+                <button class="action-btn" style="padding: 2px 4px; color: var(--red-main);" onclick="removeQueue(${idx})">X</button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function moveQueue(idx, dir) {
+    if (idx + dir < 0 || idx + dir >= pipelineQueue.length) return;
+    const temp = pipelineQueue[idx];
+    pipelineQueue[idx] = pipelineQueue[idx + dir];
+    pipelineQueue[idx + dir] = temp;
+    updateQueueUI();
+}
+
+function removeQueue(idx) {
+    pipelineQueue.splice(idx, 1);
+    updateQueueUI();
+    const taskTxt = document.getElementById("task-status");
+    if(!isPipelineRunning) taskTxt.innerText = `Task: Idle (Queue: ${pipelineQueue.length})`;
 }
 
 function updateTrainDates() {
@@ -131,19 +187,79 @@ async function deleteSymbol(symbol) {
     } catch(e) { alert("Failed to delete"); }
 }
 
-function editSymbol(symbol) {
-    // Fill the Data Manager input with the symbol to quickly re-run aggregations or features
-    let base = symbol;
-    let quote = "USDT";
-    if (symbol.endsWith("USDT")) {
-        base = symbol.replace("USDT", "");
-    }
-    document.getElementById("base-coin").value = base;
-    document.getElementById("quote-coin").value = quote;
-    window.scrollTo({top: 0, behavior: 'smooth'});
+function showAggregatePanel(symbol) {
+    const p = document.getElementById(`agg-panel-${symbol}`);
+    p.style.display = p.style.display === 'none' ? 'block' : 'none';
 }
 
-// --- QUEUE PIPELINE LOGIC ---
+function queueInlineAggregation(symbol, start, end) {
+    const itemInfo = globalInventory.find(i => i.symbol === symbol);
+    if (!itemInfo.aggregations.includes("1m")) {
+        return alert("Error: 1m source data is missing! You must Backfill 1m data first before you can aggregate 'up'.");
+    }
+
+    const aggs = [];
+    const possible = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"];
+    possible.forEach(a => {
+        const cb = document.getElementById(a.includes("1") && a.length <= 2 ? `agg-inline-${a}-${symbol}` : `agg-${a}-${symbol}`);
+        if(cb && cb.checked) aggs.push(a);
+    });
+    
+    if(aggs.length === 0) return alert("Select at least one aggregation");
+    
+    const s = start.substring(0, 7);
+    const e = end.substring(0, 7);
+    
+    // Space-separated for shell compatibility
+    let cmd = `poetry run prosper aggregate --symbol ${symbol} --from 1m --start ${s} --end ${e} --to ${aggs[0]} ${aggs.slice(1).join(' ')}`;
+    cmd += ` && poetry run prosper features build --symbol ${symbol} --start ${start} --end ${end}`;
+    cmd += ` && poetry run prosper labels build --symbol ${symbol}`;
+    
+    const taskName = `Agg & Features [${symbol}] to ${aggs.join(',')}`;
+    if (pipelineQueue.some(i => i.name === taskName)) {
+        if (!confirm(`${taskName} is already in the queue. Add again?`)) return;
+    }
+    
+    pipelineQueue.push({name: taskName, cmd: cmd});
+    document.getElementById(`agg-panel-${symbol}`).style.display = 'none';
+    
+    updateQueueUI();
+    const taskTxt = document.getElementById("task-status");
+    if(!isPipelineRunning) taskTxt.innerText = `Task: Idle (Queue: ${pipelineQueue.length})`;
+    else taskTxt.innerText = `Task: RUNNING (Queue: ${pipelineQueue.length})`;
+}
+
+function runInlineAggregation(symbol, start, end) {
+    const itemInfo = globalInventory.find(i => i.symbol === symbol);
+    if (!itemInfo.aggregations.includes("1m")) {
+        return alert("Error: 1m source data is missing!");
+    }
+
+    const aggs = [];
+    const possible = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"];
+    possible.forEach(a => {
+        const cb = document.getElementById(a.includes("1") && a.length <= 2 ? `agg-inline-${a}-${symbol}` : `agg-${a}-${symbol}`);
+        if(cb && cb.checked) aggs.push(a);
+    });
+    
+    if(aggs.length === 0) return alert("Select at least one aggregation");
+    
+    const s = start.substring(0, 7);
+    const e = end.substring(0, 7);
+    
+    // Space-separated for shell compatibility
+    let cmd = `poetry run prosper aggregate --symbol ${symbol} --from 1m --start ${s} --end ${e} --to ${aggs[0]} ${aggs.slice(1).join(' ')}`;
+    cmd += ` && poetry run prosper features build --symbol ${symbol} --start ${start} --end ${end}`;
+    cmd += ` && poetry run prosper labels build --symbol ${symbol}`;
+    
+    const taskName = `Agg & Features [${symbol}] to ${aggs.join(',')}`;
+    
+    document.getElementById(`agg-panel-${symbol}`).style.display = 'none';
+    
+    pipelineQueue.unshift({name: taskName, cmd: cmd});
+    processQueue();
+}
+
 function fmtMonth(val, isEnd) {
     if (!val) return "";
     let base = val + "-01";
@@ -154,7 +270,7 @@ function fmtMonth(val, isEnd) {
     return base;
 }
 
-function startDataPipeline() {
+function addToQueue() {
     const base = document.getElementById("base-coin").value.trim().toUpperCase();
     const quote = document.getElementById("quote-coin").value.trim().toUpperCase();
     if (!base || !quote) {
@@ -165,47 +281,73 @@ function startDataPipeline() {
     const symbol = base + quote;
     const s = document.getElementById("pipe-start").value;
     const e = document.getElementById("pipe-end").value;
-    
-    const aggs = [];
-    if(document.getElementById("agg-1m").checked) aggs.push("1m");
-    if(document.getElementById("agg-1h").checked) aggs.push("1h");
-    if(document.getElementById("agg-1d").checked) aggs.push("1d");
-    if(document.getElementById("agg-1w").checked) aggs.push("1w");
+    if (!s || !e) {
+        alert("Please select both start and end months.");
+        return;
+    }
     
     const sFull = fmtMonth(s, false);
     const eFull = fmtMonth(e, true);
     
+    const aggs = [];
+    const possible = ["3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"];
+    possible.forEach(a => {
+        if(document.getElementById(`agg-${a}`) && document.getElementById(`agg-${a}`).checked) aggs.push(a);
+    });
+
     let cmd = `poetry run prosper backfill --symbol ${symbol} --start ${s} --end ${e}`;
     
-    // Auto add aggregate if checked anything other than 1m
-    const targetAggs = aggs.filter(a => a !== "1m");
-    if (targetAggs.length > 0) {
-        cmd += ` && poetry run prosper aggregate --symbol ${symbol} --from 1m --to ${targetAggs.join(',')} --start ${sFull} --end ${eFull}`;
+    if (aggs.length > 0) {
+        // Use space separated intervals at the end of the command for better compatibility
+        cmd += ` && poetry run prosper aggregate --symbol ${symbol} --from 1m --start ${s} --end ${e} --to ${aggs[0]} ${aggs.slice(1).join(' ')}`;
     }
     
-    // Auto add features and labels
     cmd += ` && poetry run prosper features build --symbol ${symbol} --start ${sFull} --end ${eFull}`;
     cmd += ` && poetry run prosper labels build --symbol ${symbol}`;
 
-    pipelineQueue.push(cmd);
+    const aggNamePart = aggs.length > 0 ? ` + [${aggs.join(',')}]` : '';
+    const taskName = `Pipeline [${symbol}] ${s} to ${e} (1m)${aggNamePart}`;
+    if (pipelineQueue.some(i => i.name === taskName)) {
+        if (!confirm(`${taskName} is already in the queue. Add again?`)) return;
+    }
+
+    pipelineQueue.push({name: taskName, cmd: cmd});
     
     // Clear input for next
     document.getElementById("base-coin").value = "";
     
+    // Update queue UI
+    updateQueueUI();
+    const taskTxt = document.getElementById("task-status");
+    if(!isPipelineRunning) taskTxt.innerText = `Task: Idle (Queue: ${pipelineQueue.length})`;
+    else taskTxt.innerText = `Task: RUNNING (Queue: ${pipelineQueue.length})`;
+}
+
+function startQueueProcessing() {
+    const base = document.getElementById("base-coin").value.trim();
+    if (base) {
+        addToQueue();
+    }
+    if (pipelineQueue.length === 0) return alert("Queue is empty and no inputs provided.");
     processQueue();
 }
 
 async function processQueue() {
     if (isPipelineRunning || pipelineQueue.length === 0) return;
     
-    const cmd = pipelineQueue.shift();
+    const item = pipelineQueue.shift();
+    updateQueueUI();
     isPipelineRunning = true;
     
+    const term = document.getElementById("terminal-output");
+    term.innerHTML += `<div class="log-line text-muted mt-2" style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">--- STARTING TASK: ${item.name} ---</div>`;
+    term.scrollTop = term.scrollHeight;
+
     try {
         const res = await fetch("/api/task/run", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ command: cmd })
+            body: JSON.stringify({ command: item.cmd })
         });
         
         if (!res.ok) {
@@ -214,7 +356,17 @@ async function processQueue() {
             isPipelineRunning = false;
         } else {
             lastLogIdx = 0;
-            document.getElementById("terminal-output").innerHTML = "";
+            const progText = document.getElementById("progress-text");
+            const symMatch = item.name.match(/\[([A-Z]+)\]/);
+            const symName = symMatch ? symMatch[1] : (item.name.split(' ')[0] || "Task");
+            
+            if (item.name.toLowerCase().includes("pipeline")) {
+                progText.innerText = `Full Pipeline: ${symName}...`;
+            } else if (item.name.toLowerCase().includes("agg")) {
+                progText.innerText = `Aggregating: ${symName}...`;
+            } else {
+                progText.innerText = `Processing: ${symName}...`;
+            }
         }
     } catch (e) {
         alert("Failed to execute command.");
@@ -239,7 +391,8 @@ function runTrain() {
         cmd = `poetry run prosper predict ${model} --symbol ${symbol} --start ${s} --end ${e} --max-epochs ${ep}`;
     }
     
-    pipelineQueue.push(cmd);
+    pipelineQueue.push({name: `Train ${model.toUpperCase()} on ${symbol}`, cmd: cmd});
+    updateQueueUI();
     processQueue();
 }
 
@@ -256,6 +409,11 @@ async function checkTaskLogs() {
         
         const term = document.getElementById("terminal-output");
         let added = false;
+        
+        const progContainer = document.getElementById("global-progress");
+        const progBar = document.getElementById("progress-bar");
+        const progText = document.getElementById("progress-text");
+        const progPct = document.getElementById("progress-pct");
 
         data.logs.forEach(log => {
             const div = document.createElement("div");
@@ -264,6 +422,19 @@ async function checkTaskLogs() {
             term.appendChild(div);
             lastLogIdx++;
             added = true;
+            
+            // Regex to find progress percentage: e.g. [ 25.5%]
+            const match = log.match(/\[\s*(\d+(?:\.\d+)?)%\s*\]/);
+            if (match && data.is_running) {
+                const pct = parseFloat(match[1]);
+                progBar.value = pct;
+                progPct.innerText = `${pct.toFixed(1)}%`;
+                
+                // Show container if hidden
+                if (progContainer.style.display === "none") {
+                    progContainer.style.display = "flex";
+                }
+            }
         });
 
         if (added) {
@@ -280,8 +451,13 @@ async function checkTaskLogs() {
         } else {
             taskDot.className = "status-dot";
             taskDot.style.background = "#8e9bb0";
-            taskTxt.innerText = "Task: Idle";
+            taskTxt.innerText = `Task: Idle (Queue: ${pipelineQueue.length})`;
             taskTxt.style.color = "var(--text-muted)";
+            
+            // Immediately hide progress bar if not running
+            if (progContainer.style.display !== "none") {
+                progContainer.style.display = "none";
+            }
             
             if (isPipelineRunning) {
                 // Task just finished!

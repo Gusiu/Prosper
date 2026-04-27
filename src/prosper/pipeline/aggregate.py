@@ -11,15 +11,16 @@ from prosper.storage.parquet import load_parquet, save_parquet
 from prosper.utils.time import get_year_week, timestamp_to_utc_datetime
 
 
-def aggregate_1m_to_1h(df: pl.DataFrame) -> pl.DataFrame:
+def aggregate_klines(df: pl.DataFrame, interval: str) -> pl.DataFrame:
     """
-    Aggregate 1m klines to 1h.
+    Aggregate klines to a target interval (e.g. '15m', '4h', '1d', '1w').
 
     Args:
-        df: DataFrame with 1m klines
+        df: DataFrame with klines
+        interval: Polars compatible interval string
 
     Returns:
-        DataFrame with 1h klines
+        DataFrame with aggregated klines
     """
     if df.is_empty():
         return df
@@ -32,98 +33,7 @@ def aggregate_1m_to_1h(df: pl.DataFrame) -> pl.DataFrame:
             .alias("open_time")
         )
 
-    # Build agg list - only include optional columns if they exist
-    agg_exprs = [
-        pl.first("open").alias("open"),
-        pl.max("high").alias("high"),
-        pl.min("low").alias("low"),
-        pl.last("close").alias("close"),
-        pl.sum("volume").alias("volume"),
-    ]
-    if "close_time" in df.columns:
-        agg_exprs.append(pl.last("close_time").alias("close_time"))
-    for opt_col in ["quote_asset_volume", "num_trades", "taker_buy_base_volume", "taker_buy_quote_volume"]:
-        if opt_col in df.columns:
-            agg_exprs.append(pl.sum(opt_col).alias(opt_col))
-
-    df_hourly = (
-        df.with_columns(pl.col("open_time").dt.truncate("1h").alias("hour_start"))
-        .group_by("hour_start")
-        .agg(agg_exprs)
-        .rename({"hour_start": "open_time"})
-        .sort("open_time")
-    )
-
-    return df_hourly
-
-
-def aggregate_1m_to_1d(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Aggregate 1m klines to 1d (UTC day boundary).
-
-    Args:
-        df: DataFrame with 1m klines
-
-    Returns:
-        DataFrame with 1d klines
-    """
-    if df.is_empty():
-        return df
-
-    # Ensure open_time is datetime
-    if df["open_time"].dtype != pl.Datetime:
-        df = df.with_columns(
-            pl.from_epoch(pl.col("open_time"), time_unit="ms")
-            .dt.replace_time_zone("UTC")
-            .alias("open_time")
-        )
-
-    agg_exprs = [
-        pl.first("open").alias("open"),
-        pl.max("high").alias("high"),
-        pl.min("low").alias("low"),
-        pl.last("close").alias("close"),
-        pl.sum("volume").alias("volume"),
-    ]
-    if "close_time" in df.columns:
-        agg_exprs.append(pl.last("close_time").alias("close_time"))
-    for opt_col in ["quote_asset_volume", "num_trades", "taker_buy_base_volume", "taker_buy_quote_volume"]:
-        if opt_col in df.columns:
-            agg_exprs.append(pl.sum(opt_col).alias(opt_col))
-
-    df_daily = (
-        df.with_columns(pl.col("open_time").dt.truncate("1d").alias("day_start"))
-        .group_by("day_start")
-        .agg(agg_exprs)
-        .rename({"day_start": "open_time"})
-        .sort("open_time")
-    )
-
-    return df_daily
-
-
-def aggregate_1m_to_1w(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Aggregate 1m klines to 1w (ISO week, Monday start).
-
-    Args:
-        df: DataFrame with 1m klines
-
-    Returns:
-        DataFrame with 1w klines
-    """
-    if df.is_empty():
-        return df
-
-    # Ensure open_time is datetime
-    if df["open_time"].dtype != pl.Datetime:
-        df = df.with_columns(
-            pl.from_epoch(pl.col("open_time"), time_unit="ms")
-            .dt.replace_time_zone("UTC")
-            .alias("open_time")
-        )
-
-    # Convert to Python datetime for week calculation
+    # Convert to Python datetime for safe timezone-naive truncation
     df_python = df.with_columns(
         pl.col("open_time").dt.replace_time_zone(None).alias("open_time_py")
     )
@@ -141,21 +51,20 @@ def aggregate_1m_to_1w(df: pl.DataFrame) -> pl.DataFrame:
         if opt_col in df.columns:
             agg_exprs.append(pl.sum(opt_col).alias(opt_col))
 
-    # truncate("1w") uses Monday as week start by default
-    df_weekly = (
+    df_agg = (
         df_python.with_columns(
-            pl.col("open_time_py").dt.truncate("1w").alias("week_start"),
+            pl.col("open_time_py").dt.truncate(interval).alias("bucket_start"),
         )
-        .group_by("week_start")
+        .group_by("bucket_start")
         .agg(agg_exprs)
-        .rename({"week_start": "open_time"})
+        .rename({"bucket_start": "open_time"})
         .with_columns(
             pl.col("open_time").dt.replace_time_zone("UTC").alias("open_time")
         )
         .sort("open_time")
     )
 
-    return df_weekly
+    return df_agg
 
 
 def aggregate(
@@ -195,12 +104,7 @@ def aggregate(
         "errors": [],
     }
 
-    # Aggregate function mapping
-    agg_functions = {
-        "1h": aggregate_1m_to_1h,
-        "1d": aggregate_1m_to_1d,
-        "1w": aggregate_1m_to_1w,
-    }
+    # Removed static agg_functions dictionary
 
     for year, month in months:
         try:
@@ -217,14 +121,7 @@ def aggregate(
 
             # Aggregate to each target interval
             for to_interval in to_intervals:
-                if to_interval not in agg_functions:
-                    results["errors"].append(
-                        f"{year}-{month:02d}: Unknown target interval {to_interval}"
-                    )
-                    continue
-
-                agg_func = agg_functions[to_interval]
-                df_agg = agg_func(df_source)
+                df_agg = aggregate_klines(df_source, to_interval)
 
                 if df_agg.is_empty():
                     continue

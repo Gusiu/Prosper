@@ -118,6 +118,19 @@ body {
 /* Tabs System */
 .tab-content { display: none; }
 .tab-content.active { display: block; animation: fadeIn 0.3s ease-in-out; }
+.tab-link { transition: all 0.2s ease; }
+.tab-link:hover { background: rgba(255, 255, 255, 0.05); color: var(--accent-glow); }
+
+/* Progress Bar */
+progress {
+    -webkit-appearance: none;
+    appearance: none;
+    border: none;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+}
+progress::-webkit-progress-bar { background: rgba(255, 255, 255, 0.05); border-radius: 4px; }
+progress::-webkit-progress-value { background: var(--accent-glow); border-radius: 4px; transition: width 0.3s ease; }
 
 /* Utilities */
 .mt-2 { margin-top: 16px; }

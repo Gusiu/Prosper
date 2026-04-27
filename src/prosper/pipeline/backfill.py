@@ -4,7 +4,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from rich.console import Console
-from tqdm import tqdm
 
 from prosper.binance.public_data import download_monthly_zip, extract_csv_from_zip
 from prosper.config import Settings, get_settings
@@ -152,18 +151,20 @@ def backfill(
             for year, month in months
         }
 
-        for future in tqdm(
-            as_completed(futures),
-            total=len(futures),
-            desc="Processing months",
-        ):
+        total_tasks = len(futures)
+        completed = 0
+
+        for future in as_completed(futures):
+            completed += 1
             year, month, success, message = future.result()
             results.append((year, month, success, message))
+            
+            pct = (completed / total_tasks) * 100
 
             if success:
-                console.print(f"[green][OK][/green] {year}-{month:02d}: {message}")
+                console.print(f"[{pct:5.1f}%] [green][OK][/green] {year}-{month:02d}: {message}")
             else:
-                console.print(f"[red][FAIL][/red] {year}-{month:02d}: {message}")
+                console.print(f"[{pct:5.1f}%] [red][FAIL][/red] {year}-{month:02d}: {message}")
                 failed.append((year, month))
 
     summary = {

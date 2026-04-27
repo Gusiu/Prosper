@@ -147,11 +147,12 @@ def get_inventory():
             
         aggregations = []
         if processed_dir.exists():
-            for interval in ["1m", "1h", "1d", "1w"]:
-                sym_path = processed_dir / interval / f"symbol={symbol}"
-                if sym_path.exists():
-                    size_bytes += sum(f.stat().st_size for f in sym_path.rglob("*") if f.is_file())
-                    aggregations.append(interval)
+            for interval_dir in processed_dir.iterdir():
+                if interval_dir.is_dir():
+                    sym_path = interval_dir / f"symbol={symbol}"
+                    if sym_path.exists():
+                        size_bytes += sum(f.stat().st_size for f in sym_path.rglob("*") if f.is_file())
+                        aggregations.append(interval_dir.name)
                     
         feat_path = settings.processed_data_dir / "binance" / "spot" / "features" / "1d" / f"symbol={symbol}"
         if feat_path.exists():
@@ -163,20 +164,37 @@ def get_inventory():
             
         start_date = "N/A"
         end_date = "N/A"
+        
         try:
-            if feat_path.exists():
-                fp = feat_path / "features.parquet"
-                if fp.exists():
-                    df = pl.read_parquet(fp, columns=["open_time"])
-                    start_date = df["open_time"].min().strftime("%Y-%m-%d")
-                    end_date = df["open_time"].max().strftime("%Y-%m-%d")
+            klines_1m_path = processed_dir / "1m" / f"symbol={symbol}"
+            if klines_1m_path.exists():
+                years = [d.name for d in klines_1m_path.iterdir() if d.is_dir() and d.name.startswith("year=")]
+                if years:
+                    years.sort()
+                    min_year = years[0].split("=")[1]
+                    max_year = years[-1].split("=")[1]
+                    
+                    min_months = [d.name for d in (klines_1m_path / years[0]).iterdir() if d.is_dir() and d.name.startswith("month=")]
+                    max_months = [d.name for d in (klines_1m_path / years[-1]).iterdir() if d.is_dir() and d.name.startswith("month=")]
+                    
+                    if min_months and max_months:
+                        min_months.sort()
+                        max_months.sort()
+                        min_month = min_months[0].split("=")[1]
+                        max_month = max_months[-1].split("=")[1]
+                        
+                        start_date = f"{min_year}-{min_month}-01"
+                        end_date = f"{max_year}-{max_month}-28"
         except Exception:
             pass
+
+        if size_bytes == 0 and not aggregations:
+            continue
 
         inventory.append({
             "symbol": symbol,
             "size_mb": round(size_bytes / (1024 * 1024), 2),
-            "aggregations": aggregations,
+            "aggregations": sorted(list(aggregations)),
             "start_date": start_date,
             "end_date": end_date
         })
@@ -187,24 +205,39 @@ def get_inventory():
 def delete_symbol_data(symbol: str):
     settings = get_settings()
     
+    # Broad search for anything related to this symbol
+    # 1. Standard locations
     paths = [
         settings.raw_binance_spot_klines_1m_dir / symbol,
-        settings.reports_predictions_dir / symbol
+        settings.reports_predictions_dir / symbol,
+        settings.processed_data_dir / "binance" / "spot" / "features" / f"symbol={symbol}",
+        settings.processed_binance_spot_labels_dir / f"symbol={symbol}"
     ]
-    for interval in ["1m", "1h", "1d", "1w"]:
-        paths.append(settings.processed_binance_spot_klines_dir / interval / f"symbol={symbol}")
-        paths.append(settings.processed_data_dir / "binance" / "spot" / "features" / interval / f"symbol={symbol}")
-        paths.append(settings.processed_binance_spot_labels_dir / interval / f"symbol={symbol}")
+    
+    # 2. All interval folders
+    for parent_dir in [
+        settings.processed_binance_spot_klines_dir,
+    ]:
+        if parent_dir.exists():
+            for interval_dir in parent_dir.iterdir():
+                if interval_dir.is_dir():
+                    paths.append(interval_dir / f"symbol={symbol}")
+                    # Also check for just symbol name if it's not partitioned
+                    paths.append(interval_dir / symbol)
         
-    deleted = False
+    deleted_count = 0
     for p in paths:
-        if p.exists():
-            shutil.rmtree(p)
-            deleted = True
+        try:
+            if p.exists():
+                if p.is_dir():
+                    shutil.rmtree(p)
+                else:
+                    p.unlink()
+                deleted_count += 1
+        except Exception as e:
+            print(f"Error deleting {p}: {e}")
             
-    if not deleted:
-        raise HTTPException(404, "Data not found")
-    return {"status": "deleted"}
+    return {"status": "deleted", "paths_removed": deleted_count}
 
 
 @app.get("/api/backtest/{symbol}")

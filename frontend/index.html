@@ -34,44 +34,83 @@
 
         <!-- Main Content Area -->
         <main class="main-content">
-            <header class="topbar">
+            <header class="topbar" style="display: flex; justify-content: space-between; align-items: center;">
                 <h2 id="topbar-title">Data Manager</h2>
+                
+                <!-- Global Progress Bar -->
+                <div id="global-progress" style="display: none; flex: 1; max-width: 900px; margin-left: 40px; background: rgba(0, 229, 255, 0.1); padding: 10px 20px; border-radius: 10px; border: 1px solid rgba(0, 229, 255, 0.3); box-shadow: 0 0 20px rgba(0, 229, 255, 0.1);">
+                    <div id="progress-text" style="font-size: 0.75rem; color: var(--accent-glow); font-weight: 600; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px;">Ready</div>
+                    <div style="display: flex; align-items: center; gap: 15px;">
+                        <div style="flex: 1; height: 10px; background: rgba(255,255,255,0.05); border-radius: 5px; overflow: hidden; border: 1px solid rgba(0,229,255,0.1);">
+                            <progress id="progress-bar" value="0" max="100" style="width: 100%; height: 100%; border: none; background: transparent;"></progress>
+                        </div>
+                        <span id="progress-pct" class="text-green" style="font-weight: 800; font-size: 0.95rem; min-width: 55px; text-align: right; font-family: monospace;">0%</span>
+                    </div>
+                </div>
             </header>
 
             <!-- TAB 1: DATA MANAGER -->
             <div id="tab-data" class="tab-content active fade-in">
                 <div class="ops-grid-2">
-                    <div class="ops-card glass-panel">
-                        <h3>Download & Process Pipeline</h3>
-                        <p class="metric-desc mb-2">Build the symbol queue and execute full pipeline (Download -> Aggregate -> Features).</p>
-                        
-                        <div class="form-group row">
-                            <input type="text" id="base-coin" class="glass-input" placeholder="Base (e.g. BTC)">
-                            <input type="text" id="quote-coin" class="glass-input" value="USDT">
+                    <!-- COLUMN 1: Pipeline -->
+                    <div class="ops-card glass-panel" style="width: 380px; flex-shrink: 0;">
+                            <h3>Download & Process Pipeline</h3>
+                            <p class="metric-desc mb-2">Build the symbol queue and execute full pipeline (Download -> Aggregate -> Features).</p>
+                            
+                            <div class="form-group row" style="display: flex; gap: 10px;">
+                                <input type="text" id="base-coin" class="glass-input" style="flex: 1; min-width: 0;" placeholder="Base (BTC)">
+                                <input type="text" id="quote-coin" class="glass-input" style="flex: 1; min-width: 0;" value="USDT">
+                            </div>
+                            
+                            <div class="form-group row" style="display: flex; gap: 10px;">
+                                <input type="month" id="pipe-start" class="glass-input" style="flex: 1; min-width: 0;" title="Start Month">
+                                <input type="month" id="pipe-end" class="glass-input" style="flex: 1; min-width: 0;" title="End Month">
+                            </div>
+                            
+                            <div class="form-group row mt-2">
+                                <button class="outline-btn full-width" onclick="addToQueue()">+ Add to Queue</button>
+                                <button class="glow-btn full-width" onclick="startQueueProcessing()">Start Processing</button>
+                            </div>
+                            
+                            <div class="checkbox-group mt-2" style="flex-wrap: wrap; font-size: 0.8rem;">
+                                <span class="text-muted" style="width: 100%; font-size: 0.75rem; margin-bottom: 4px;">Base data is always downloaded in 1m. Select additional intervals to aggregate:</span>
+                                <label><input type="checkbox" id="agg-3m" value="3m"> 3m</label>
+                                <label><input type="checkbox" id="agg-5m" value="5m"> 5m</label>
+                                <label><input type="checkbox" id="agg-15m" value="15m"> 15m</label>
+                                <label><input type="checkbox" id="agg-30m" value="30m"> 30m</label>
+                                <label><input type="checkbox" id="agg-1h" value="1h" checked> 1h</label>
+                                <label><input type="checkbox" id="agg-2h" value="2h"> 2h</label>
+                                <label><input type="checkbox" id="agg-4h" value="4h"> 4h</label>
+                                <label><input type="checkbox" id="agg-6h" value="6h"> 6h</label>
+                                <label><input type="checkbox" id="agg-8h" value="8h"> 8h</label>
+                                <label><input type="checkbox" id="agg-12h" value="12h"> 12h</label>
+                                <label><input type="checkbox" id="agg-1d" value="1d" checked> 1d</label>
+                                <label><input type="checkbox" id="agg-3d" value="3d"> 3d</label>
+                                <label><input type="checkbox" id="agg-1w" value="1w"> 1w</label>
+                            </div>
                         </div>
-                        
-                        <div class="form-group row">
-                            <input type="month" id="pipe-start" class="glass-input" title="Start Month">
-                            <input type="month" id="pipe-end" class="glass-input" title="End Month">
+                    
+                    <!-- COLUMN 2: Queue -->
+                    <div class="ops-card glass-panel" style="width: 300px; flex-shrink: 0;">
+                        <div style="display:flex; justify-content: space-between; align-items:center;">
+                            <h3>Task Queue <span id="queue-count" class="text-muted">(0)</span></h3>
                         </div>
-
-                        <div class="checkbox-group mt-2">
-                            <span class="metric-desc">Target Aggregations:</span>
-                            <label><input type="checkbox" id="agg-1m" value="1m" checked> 1m</label>
-                            <label><input type="checkbox" id="agg-1h" value="1h" checked> 1h</label>
-                            <label><input type="checkbox" id="agg-1d" value="1d" checked> 1d</label>
-                            <label><input type="checkbox" id="agg-1w" value="1w"> 1w</label>
+                        <div class="table-container mt-2" style="max-height: 400px;">
+                            <table class="inventory-table">
+                                <tbody id="queue-tbody">
+                                    <tr><td class="text-muted">Queue is empty</td></tr>
+                                </tbody>
+                            </table>
                         </div>
-                        
-                        <button class="glow-btn mt-2" onclick="startDataPipeline()">Add & Start Pipeline</button>
                     </div>
 
+                    <!-- COLUMN 3: Inventory -->
                     <div class="ops-card glass-panel" style="flex-grow: 1;">
                         <div style="display:flex; justify-content: space-between; align-items:center;">
                             <h3>Data Inventory</h3>
                             <button class="outline-btn" onclick="loadInventory()">⟳ Refresh</button>
                         </div>
-                        <div class="table-container mt-2">
+                        <div class="table-container mt-2" style="min-height: 350px; max-height: 450px; overflow-y: auto;">
                             <table class="inventory-table">
                                 <thead>
                                     <tr>
