@@ -1,14 +1,13 @@
 """Tests for label building."""
 
 import pytest
-
 from prosper.labels.build import assign_depth_bin, parse_depth_bins
 
 
 def test_parse_depth_bins() -> None:
     """Test parsing depth bin string."""
     bins_str = "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34+"
-    bins = parse_depth_bins(bins_str)
+    bins, labels = parse_depth_bins(bins_str)
 
     assert len(bins) == 8
     assert bins[0] == (1.0, 2.0)

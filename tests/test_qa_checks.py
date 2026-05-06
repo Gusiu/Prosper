@@ -1,9 +1,8 @@
 """Tests for QA checks."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import polars as pl
-
 from prosper.qa.checks import (
     check_duplicates,
     check_gaps,
@@ -14,7 +13,7 @@ from prosper.qa.checks import (
 
 def create_sample_data() -> pl.DataFrame:
     """Create sample klines data."""
-    base_time = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    base_time = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
     timestamps = [
         int((base_time + timedelta(minutes=i)).timestamp() * 1000) for i in range(10)
     ]

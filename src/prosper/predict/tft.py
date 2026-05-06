@@ -1,28 +1,23 @@
 """Temporal Fusion Transformer predictions using pytorch-forecasting."""
 from __future__ import annotations
 
-import json
 import warnings
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import polars as pl
-import torch
 
 from prosper.config import Settings, get_settings
-from prosper.storage.layout import get_features_parquet_path, get_prediction_report_path
+from prosper.labels.depth import (
+    DEPTH_BIN_LABELS,
+    DIRECTION_CLASSES,
+    N_DEPTH_BINS,
+    direction_from_return,
+)
+from prosper.storage.layout import get_features_parquet_path
+from prosper.storage.predictions import write_predictions_jsonl
 from prosper.utils.time import parse_date
-
-DIRECTION_CLASSES = ["short", "flat", "long"]
-DEPTH_BIN_LABELS = ["1-2", "2-3", "3-5", "5-8", "8-13", "13-21", "21-34", "34+"]
-N_DEPTH_BINS = len(DEPTH_BIN_LABELS)
-
-
-def _direction_from_return(r: float, thr: float) -> str:
-    if abs(r) <= thr:
-        return "flat"
-    return "long" if r > thr else "short"
 
 
 def _robust_normalize(X: np.ndarray, med: np.ndarray, iqr: np.ndarray) -> np.ndarray:
@@ -84,14 +79,14 @@ def predict_tft(
         j = i + forward_days
         if closes[i] and closes[j]:
             r = closes[j] / closes[i] - 1.0
-            y_dir[i] = dir_map[_direction_from_return(r, flat_threshold)]
+            y_dir[i] = dir_map[direction_from_return(r, flat_threshold)]
 
     # ── 3. Rolling-month train + inference ───────────────────────────────────
     try:
-        from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
-        from pytorch_forecasting.metrics import CrossEntropy
-        from pytorch_forecasting.data.encoders import NaNLabelEncoder
         import lightning as L
+        from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
+        from pytorch_forecasting.data.encoders import NaNLabelEncoder
+        from pytorch_forecasting.metrics import CrossEntropy
     except ImportError:
         return {"error": "pytorch-forecasting not installed. Run: poetry add pytorch-forecasting lightning", "symbol": symbol}
 
@@ -242,18 +237,6 @@ def predict_tft(
     if not predictions:
         return {"error": "No predictions generated for the requested date range", "symbol": symbol}
 
-    # ── 4. Write per-month JSONL ───────────────────────────────────────────────
-    by_month: dict[str, list[dict[str, Any]]] = {}
-    for row in predictions:
-        mk = row["date"][:7]
-        by_month.setdefault(mk, []).append(row)
-
-    for mk, rows in by_month.items():
-        y, m = int(mk[:4]), int(mk[5:7])
-        path = get_prediction_report_path(symbol, y, m, settings=settings)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            for r in rows:
-                f.write(json.dumps(r, sort_keys=True) + "\n")
+    write_predictions_jsonl(predictions, symbol, settings)
 
     return {"symbol": symbol, "start": start, "end": end, "predictions": len(predictions)}

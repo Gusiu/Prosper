@@ -1,8 +1,7 @@
 """QA checks for data quality validation."""
 
 import json
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
 
 import polars as pl
@@ -10,7 +9,6 @@ import polars as pl
 from prosper.config import Settings, get_settings
 from prosper.storage.layout import get_qa_report_path
 from prosper.storage.parquet import load_parquet
-from prosper.utils.time import timestamp_to_utc_datetime
 
 
 def check_sorted(df: pl.DataFrame, time_col: str = "open_time") -> tuple[bool, str]:
@@ -270,7 +268,7 @@ def run_qa_checks(
         "interval": interval,
         "year": year,
         "month": month,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "row_count": len(df),
         "checks": {
             "sorted": {"passed": is_sorted, "message": sort_msg},

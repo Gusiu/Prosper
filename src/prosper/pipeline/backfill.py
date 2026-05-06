@@ -7,41 +7,10 @@ from rich.console import Console
 
 from prosper.binance.public_data import download_monthly_zip, extract_csv_from_zip
 from prosper.config import Settings, get_settings
-from prosper.storage.layout import get_raw_zip_path
 from prosper.storage.parquet import candles_to_dataframe, check_parquet_exists, save_parquet
-from prosper.utils.time import parse_year_month
+from prosper.utils.time import generate_month_range, parse_year_month
 
 console = Console()
-
-
-def generate_month_range(start: str, end: str) -> list[tuple[int, int]]:
-    """
-    Generate list of (year, month) tuples from start to end (inclusive).
-
-    Args:
-        start: Start date in YYYY-MM format
-        end: End date in YYYY-MM format
-
-    Returns:
-        List of (year, month) tuples
-    """
-    start_year, start_month = parse_year_month(start)
-    end_year, end_month = parse_year_month(end)
-
-    months: list[tuple[int, int]] = []
-    current_year = start_year
-    current_month = start_month
-
-    while (current_year, current_month) <= (end_year, end_month):
-        months.append((current_year, current_month))
-
-        # Move to next month
-        current_month += 1
-        if current_month > 12:
-            current_month = 1
-            current_year += 1
-
-    return months
 
 
 def process_month(
@@ -158,7 +127,7 @@ def backfill(
             completed += 1
             year, month, success, message = future.result()
             results.append((year, month, success, message))
-            
+
             pct = (completed / total_tasks) * 100
 
             if success:

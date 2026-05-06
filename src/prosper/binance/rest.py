@@ -9,7 +9,7 @@ import requests
 from rich.console import Console
 
 from prosper.config import get_settings
-from prosper.utils.http import handle_rate_limit, retry_with_backoff
+from prosper.utils.http import handle_rate_limit
 
 console = Console()
 
@@ -30,7 +30,7 @@ class BinanceRESTClient:
         self.timeout = timeout
         self.session = requests.Session()
 
-    def __enter__(self) -> "BinanceRESTClient":
+    def __enter__(self) -> BinanceRESTClient:
         """Context manager entry."""
         return self
 

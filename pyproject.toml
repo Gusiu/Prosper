@@ -2,7 +2,7 @@
 name = "prosper"
 version = "0.1.0"
 description = "Crypto market analysis tool for Binance SPOT data"
-authors = ["Your Name <you@example.com>"]
+authors = ["Adrian Budzich <Gusiu@yahoo.com>"]
 readme = "README.md"
 license = "MIT"
 
@@ -39,11 +39,11 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
-ignore = ["E501"]
+ignore = ["E501", "N803", "N806", "N812"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

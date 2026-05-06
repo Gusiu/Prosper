@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import argparse
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
-
-from prosper.storage.parquet import save_parquet
-from prosper.storage.layout import get_parquet_file_path
 from prosper.config import get_settings
+from prosper.storage.layout import get_parquet_file_path
+from prosper.storage.parquet import save_parquet
 
 
 def generate_1m_klines(
@@ -85,12 +84,12 @@ def main() -> None:
 
     settings = get_settings(data_root=Path(args.root))
 
-    start = datetime(args.year, args.month, 1, tzinfo=timezone.utc)
+    start = datetime(args.year, args.month, 1, tzinfo=UTC)
     # end_exclusive = first day of next month
     if args.month == 12:
-        end_exclusive = datetime(args.year + 1, 1, 1, tzinfo=timezone.utc)
+        end_exclusive = datetime(args.year + 1, 1, 1, tzinfo=UTC)
     else:
-        end_exclusive = datetime(args.year, args.month + 1, 1, tzinfo=timezone.utc)
+        end_exclusive = datetime(args.year, args.month + 1, 1, tzinfo=UTC)
 
     df = generate_1m_klines(start=start, end_exclusive=end_exclusive)
 

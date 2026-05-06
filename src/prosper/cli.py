@@ -8,23 +8,21 @@ import typer
 from rich.console import Console
 from rich.logging import RichHandler
 
-from prosper.baseline.model import predict_baseline as predict_baseline_old
 from prosper.binance.rest import BinanceRESTClient
-from prosper.config import Settings, get_settings
+from prosper.config import get_settings
+from prosper.eval.backtest import run_backtest
+from prosper.eval.walkforward import eval_walkforward
 from prosper.features.build import build_features
 from prosper.labels.build import build_labels
-from prosper.pipeline.aggregate import aggregate
+from prosper.pipeline.aggregate import aggregate, normalize_target_intervals
 from prosper.pipeline.backfill import backfill
 from prosper.planner.windows import plan_windows
-from prosper.qa.checks import run_qa_checks
-from prosper.eval.walkforward import eval_walkforward
-from prosper.storage.layout import get_eval_walkforward_summary_path
 from prosper.predict.baseline import predict_baseline as predict_baseline_3horizons
-from prosper.predict.ml import predict_ml
 from prosper.predict.gru import predict_gru
-from prosper.eval.backtest import run_backtest
+from prosper.predict.ml import predict_ml
+from prosper.qa.checks import run_qa_checks
+from prosper.storage.layout import get_eval_walkforward_summary_path
 
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -35,11 +33,9 @@ logger = logging.getLogger(__name__)
 console = Console()
 app = typer.Typer(help="Prosper - Crypto market analysis tool for Binance SPOT data")
 
-# Sub-apps for spec-compliant commands: symbols list, qa check, labels build, baseline predict, planner windows
 symbols_app = typer.Typer(help="Symbol management")
 qa_app = typer.Typer(help="Quality assurance")
 labels_app = typer.Typer(help="Label building")
-baseline_app = typer.Typer(help="Baseline predictions")
 predict_app = typer.Typer(help="Prediction generation")
 planner_app = typer.Typer(help="Action window planning")
 features_app = typer.Typer(help="Feature engineering")
@@ -48,7 +44,6 @@ eval_app = typer.Typer(help="Walk-forward evaluation")
 app.add_typer(symbols_app, name="symbols")
 app.add_typer(qa_app, name="qa")
 app.add_typer(labels_app, name="labels")
-app.add_typer(baseline_app, name="baseline")
 app.add_typer(predict_app, name="predict")
 app.add_typer(planner_app, name="planner")
 app.add_typer(features_app, name="features")
@@ -187,12 +182,7 @@ def aggregate_cmd(
     Aggregate klines from 1m to 1h, 1d, 1w.
     """
     settings = get_settings(data_root=root)
-    to_list: list[str] = [s.strip() for s in to_intervals.split(",") if s.strip()]
-    extra_list = extra_intervals or []
-    to_list.extend([s.strip() for s in extra_list if s.strip()])
-    # Deduplicate while preserving order
-    seen: set[str] = set()
-    to_list = [x for x in to_list if not (x in seen or seen.add(x))]
+    to_list = normalize_target_intervals([to_intervals, *(extra_intervals or [])])
 
     try:
         results = aggregate(
@@ -204,7 +194,7 @@ def aggregate_cmd(
             settings=settings,
         )
 
-        console.print(f"\n[bold]Aggregation Results[/bold]")
+        console.print("\n[bold]Aggregation Results[/bold]")
         console.print(f"Processed months: {len(results.get('processed_months', []))}")
         console.print(f"Errors: {len(results.get('errors', []))}")
 
@@ -265,7 +255,7 @@ def labels_build(
 
         console.print(f"\n[bold]Label Statistics for {symbol}[/bold]")
         console.print(f"Total labels: {stats['total_labels']}")
-        console.print(f"\nDirection distribution:")
+        console.print("\nDirection distribution:")
         for direction, count in stats["direction_distribution"].items():
             pct = stats["direction_percentages"][direction]
             console.print(f"  {direction}: {count} ({pct:.2f}%)")
@@ -306,43 +296,6 @@ def features_build(
             raise typer.Exit(1)
 
         console.print(f"[green][OK][/green] Feature parquet saved: {results['path']}")
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
-
-
-@baseline_app.command("predict")
-def baseline_predict(
-    symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
-    horizon: str = typer.Option("short", "--horizon", help="Prediction horizon"),
-    start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
-    end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
-    window_days: int = typer.Option(180, "--window-days", help="Rolling window size in days"),
-    root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
-) -> None:
-    """
-    Generate baseline predictions (rolling window frequencies).
-    """
-    settings = get_settings(data_root=root)
-
-    try:
-        results = predict_baseline_old(
-            symbol=symbol,
-            start=start,
-            end=end,
-            horizon=horizon,
-            window_days=window_days,
-            settings=settings,
-        )
-
-        if "error" in results:
-            console.print(f"[red]Error: {results['error']}[/red]")
-            raise typer.Exit(1)
-
-        console.print(f"\n[bold]Baseline Predictions[/bold]")
-        console.print(f"Predictions generated: {results['predictions_count']}")
-        console.print(f"Report saved to: {results['report_path']}")
-
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
@@ -588,13 +541,13 @@ def eval_backtest_cmd(
         console.print(f"\n[bold]Backtest Results for {symbol}[/bold]")
         console.print(f"Initial Capital: ${res['initial_capital']:.2f}")
         console.print(f"Final Value:     ${res['final_value']:.2f}")
-        
+
         color = "green" if res['roi_pct'] >= 0 else "red"
         console.print(f"ROI:             [{color}]{res['roi_pct']:.2f}%[/{color}]")
         console.print(f"Max Drawdown:    [red]-{res['max_drawdown_pct']:.2f}%[/red]")
         console.print(f"Total Trades:    {res['total_trades']}")
         console.print(f"Days Tested:     {res['days_tested']}")
-        
+
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)

@@ -6,25 +6,9 @@ from typing import Any
 import polars as pl
 from rich.console import Console
 
-from prosper.config import Settings, get_settings
-from prosper.utils.time import timestamp_to_utc_datetime
+from prosper.config import Settings
 
 console = Console()
-
-# Schema for 1m klines
-KLINES_SCHEMA = {
-    "open_time": pl.Datetime(time_unit="ms", time_zone="UTC"),
-    "open": pl.Float64,
-    "high": pl.Float64,
-    "low": pl.Float64,
-    "close": pl.Float64,
-    "volume": pl.Float64,
-    "close_time": pl.Datetime(time_unit="ms", time_zone="UTC"),
-    "quote_asset_volume": pl.Float64,
-    "num_trades": pl.Int64,
-    "taker_buy_base_volume": pl.Float64,
-    "taker_buy_quote_volume": pl.Float64,
-}
 
 # Minimal schema (required fields only)
 KLINES_MINIMAL_SCHEMA = {
@@ -85,7 +69,6 @@ def save_parquet(
     df: pl.DataFrame,
     output_path: Path,
     partition_by: list[str] | None = None,
-    settings: Settings | None = None,
 ) -> None:
     """
     Save DataFrame to Parquet file.
@@ -94,11 +77,7 @@ def save_parquet(
         df: Polars DataFrame
         output_path: Path to output Parquet file
         partition_by: Optional list of columns to partition by
-        settings: Settings instance (defaults to global)
     """
-    if settings is None:
-        settings = get_settings()
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if partition_by:
@@ -133,9 +112,9 @@ def load_parquet(
         Polars DataFrame
     """
     if path.is_file():
-        df = pl.read_parquet(path)
+        df = pl.read_parquet(path, hive_partitioning=False)
     elif path.is_dir():
-        df = pl.read_parquet(path)
+        df = pl.read_parquet(path, hive_partitioning=False)
     else:
         raise FileNotFoundError(f"Parquet path not found: {path}")
 
@@ -165,50 +144,6 @@ def load_parquet(
         df = df.sort("open_time")
 
     return df
-
-
-def merge_parquet_files(
-    output_path: Path,
-    input_paths: list[Path],
-    deduplicate: bool = True,
-    sort_by: str = "open_time",
-) -> pl.DataFrame:
-    """
-    Merge multiple Parquet files into one.
-
-    Args:
-        output_path: Path to output Parquet file
-        input_paths: List of input Parquet file paths
-        deduplicate: Whether to remove duplicates
-        sort_by: Column to sort by
-
-    Returns:
-        Merged DataFrame
-    """
-    if not input_paths:
-        raise ValueError("No input paths provided")
-
-    dataframes: list[pl.DataFrame] = []
-    for path in input_paths:
-        if path.exists():
-            df = load_parquet(path)
-            dataframes.append(df)
-
-    if not dataframes:
-        raise ValueError("No valid Parquet files found")
-
-    # Concatenate
-    merged = pl.concat(dataframes)
-
-    # Deduplicate
-    if deduplicate and sort_by in merged.columns:
-        merged = merged.unique(subset=[sort_by], keep="first")
-        merged = merged.sort(sort_by)
-
-    # Save
-    save_parquet(merged, output_path)
-
-    return merged
 
 
 def check_parquet_exists(

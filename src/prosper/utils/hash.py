@@ -68,6 +68,6 @@ def read_checksum_file(checksum_path: Path) -> str | None:
             parts = line.split()
             if parts:
                 return parts[0]
-    except (IOError, ValueError):
+    except (OSError, ValueError):
         pass
     return None

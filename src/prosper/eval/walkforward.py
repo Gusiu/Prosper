@@ -3,18 +3,18 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import polars as pl
 
 from prosper.config import Settings, get_settings
+from prosper.labels.depth import direction_from_return
 from prosper.storage.layout import (
     get_eval_walkforward_summary_path,
     get_parquet_file_path,
 )
-from prosper.utils.time import parse_year_month
-
+from prosper.utils.time import generate_month_range, parse_year_month
 
 ALLOWED_RECOMMENDATIONS = {
     "Strong Buy",
@@ -37,15 +37,6 @@ EXPOSURE_POLICY: dict[str, float] = {
 }
 
 
-def label_from_return(r: float, flat_threshold: float) -> str:
-    """Convert forward return to one of {long, flat, short}."""
-    if abs(r) <= flat_threshold:
-        return "flat"
-    if r > flat_threshold:
-        return "long"
-    return "short"
-
-
 def multiclass_logloss_brier(
     p_long: float,
     p_flat: float,
@@ -64,19 +55,6 @@ def multiclass_logloss_brier(
     y[y_true] = 1.0
     brier = sum((float(probs[c]) - y[c]) ** 2 for c in ("long", "flat", "short"))
     return logloss, brier
-
-
-def iter_months(start_ym: str, end_ym: str) -> list[tuple[int, int]]:
-    y, m = parse_year_month(start_ym)
-    y2, m2 = parse_year_month(end_ym)
-    out: list[tuple[int, int]] = []
-    while (y, m) <= (y2, m2):
-        out.append((y, m))
-        m += 1
-        if m == 13:
-            m = 1
-            y += 1
-    return out
 
 
 def load_daily_closes(symbol: str, start_ym: str, end_ym: str, settings: Settings) -> pl.DataFrame:
@@ -133,7 +111,7 @@ class Window:
     recommendation: str
 
     @staticmethod
-    def from_dict(d: dict[str, Any]) -> "Window":
+    def from_dict(d: dict[str, Any]) -> Window:
         return Window(
             horizon=str(d.get("horizon", "")),
             start_date=str(d.get("start_date", "")),
@@ -207,7 +185,7 @@ def eval_walkforward(
         return 0.0
 
     # Walk-forward months slicing
-    month_list = iter_months(start, end)
+    month_list = generate_month_range(start, end)
     if not month_list:
         raise ValueError("Invalid start/end month range")
 
@@ -246,7 +224,7 @@ def eval_walkforward(
                 r = forward_return_idx(i, forward_days)
                 if r is None:
                     continue
-                y_true = label_from_return(r, float(flat_threshold))
+                y_true = direction_from_return(r, float(flat_threshold))
 
                 probs = pred[h]
                 p_long = float(probs["P_long"])
@@ -310,7 +288,7 @@ def eval_walkforward(
         "step_months": step_months,
         "flat_threshold": float(flat_threshold),
         "trading_cost_rate": cost_rate,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "horizons": horizons_out,
         "walkforward_test_months": month_summaries,
     }
