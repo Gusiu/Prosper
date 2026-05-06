@@ -1,11 +1,9 @@
 """Tests for time utilities."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
-
 from prosper.utils.time import (
-    datetime_to_timestamp_ms,
     normalize_timestamp_ms,
     parse_date,
     parse_year_month,
@@ -33,14 +31,8 @@ def test_timestamp_to_utc_datetime() -> None:
     assert dt.year == 2021
     assert dt.month == 1
     assert dt.day == 1
-    assert dt.tzinfo == timezone.utc
+    assert dt.tzinfo == UTC
 
-
-def test_datetime_to_timestamp_ms() -> None:
-    """Test UTC datetime to timestamp conversion."""
-    dt = datetime(2021, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-    ts_ms = datetime_to_timestamp_ms(dt)
-    assert ts_ms == 1609459200000
 
 
 def test_parse_year_month() -> None:
@@ -65,4 +57,4 @@ def test_parse_date() -> None:
     assert dt.year == 2024
     assert dt.month == 3
     assert dt.day == 15
-    assert dt.tzinfo == timezone.utc
+    assert dt.tzinfo == UTC

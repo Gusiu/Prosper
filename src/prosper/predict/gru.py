@@ -1,8 +1,6 @@
 """GRU-based Deep Learning model for probabilistic directional predictions."""
 from __future__ import annotations
 
-import json
-import math
 from typing import Any
 
 import numpy as np
@@ -12,22 +10,16 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
 from prosper.config import Settings, get_settings
-from prosper.storage.layout import get_features_parquet_path, get_prediction_report_path
+from prosper.labels.depth import (
+    DEPTH_BIN_LABELS,
+    DIRECTION_CLASSES,
+    DIR_TO_IDX,
+    N_DEPTH_BINS,
+    direction_from_return,
+)
+from prosper.storage.layout import get_features_parquet_path
+from prosper.storage.predictions import write_predictions_jsonl
 from prosper.utils.time import parse_date
-
-# ── constants ────────────────────────────────────────────────────────────────
-DIRECTION_CLASSES = ["short", "flat", "long"]
-DIR_TO_IDX = {c: i for i, c in enumerate(DIRECTION_CLASSES)}
-
-DEPTH_BIN_LABELS = ["1-2", "2-3", "3-5", "5-8", "8-13", "13-21", "21-34", "34+"]
-N_DEPTH_BINS = len(DEPTH_BIN_LABELS)
-
-
-# ── tiny helpers ─────────────────────────────────────────────────────────────
-def _direction_from_return(r: float, thr: float) -> str:
-    if abs(r) <= thr:
-        return "flat"
-    return "long" if r > thr else "short"
 
 
 def _depth_bin(abs_pct: float) -> int:
@@ -255,18 +247,6 @@ def predict_gru(
     if not predictions:
         return {"error": "No predictions generated for the requested date range", "symbol": symbol}
 
-    # ── 4. Write per-month JSONL ───────────────────────────────────────────────
-    by_month: dict[str, list[dict[str, Any]]] = {}
-    for row in predictions:
-        mk = row["date"][:7]
-        by_month.setdefault(mk, []).append(row)
-
-    for mk, rows in by_month.items():
-        y, m = int(mk[:4]), int(mk[5:7])
-        path = get_prediction_report_path(symbol, y, m, settings=settings)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            for r in rows:
-                f.write(json.dumps(r, sort_keys=True) + "\n")
+    write_predictions_jsonl(predictions, symbol, settings)
 
     return {"symbol": symbol, "start": start, "end": end, "predictions": len(predictions), "device": str(device)}

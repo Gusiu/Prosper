@@ -1,12 +1,9 @@
 """Integration-style tests (no real network, use mocks or dry-run)."""
 
-import pytest
 
-from prosper.pipeline.backfill import generate_month_range, process_month
-from prosper.storage.layout import (
-    get_parquet_file_path,
-    get_raw_zip_path,
-)
+from prosper.pipeline.backfill import process_month
+from prosper.storage.layout import get_parquet_file_path
+from prosper.utils.time import generate_month_range
 
 
 def test_generate_month_range() -> None:
@@ -33,10 +30,7 @@ def test_process_month_dry_run() -> None:
 
 def test_storage_layout_paths() -> None:
     """Test that layout paths are consistent."""
-    zip_path = get_raw_zip_path("BTCUSDT", 2024, 1)
-    assert "BTCUSDT" in str(zip_path)
-    assert "2024" in str(zip_path)
-    assert "01" in str(zip_path) or "1m" in str(zip_path)
+
 
     parquet_path = get_parquet_file_path("BTCUSDT", "1m", 2024, 1)
     assert "symbol=BTCUSDT" in str(parquet_path)

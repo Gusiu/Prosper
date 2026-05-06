@@ -1,12 +1,11 @@
 """Action window planner based on baseline predictions."""
 
 import json
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import timedelta
 from typing import Any
 
 from prosper.config import Settings, get_settings
-from prosper.storage.layout import get_prediction_report_path, get_recommendation_report_path
+from prosper.storage.layout import get_recommendation_report_path
 from prosper.utils.time import parse_date
 
 
@@ -94,111 +93,6 @@ def map_to_recommendation(edge: float, risk: float) -> str:
             return "Sell"
         else:
             return "Hold"
-
-
-def segment_windows(
-    predictions: list[dict[str, Any]],
-    edge_threshold: float = 0.1,
-    risk_threshold: float = 0.3,
-    min_window_days: int = 7,
-) -> list[dict[str, Any]]:
-    """
-    Segment predictions into action windows based on similar edge and risk.
-
-    Args:
-        predictions: List of prediction dictionaries
-        edge_threshold: Threshold for edge similarity
-        risk_threshold: Threshold for risk similarity
-        min_window_days: Minimum window size in days
-
-    Returns:
-        List of window dictionaries
-    """
-    if not predictions:
-        return []
-
-    windows: list[dict[str, Any]] = []
-    current_window_start = None
-    current_window_end = None
-    current_edge = None
-    current_risk = None
-
-    for pred in predictions:
-        edge = calculate_edge(pred["P_long"], pred["P_short"])
-        risk = calculate_risk_metric(
-            pred["P_long"],
-            pred["P_short"],
-            pred.get("depth_long_bins", {}),
-            pred.get("depth_short_bins", {}),
-        )
-
-        if current_window_start is None:
-            # Start new window
-            current_window_start = pred["date"]
-            current_window_end = pred["date"]
-            current_edge = edge
-            current_risk = risk
-        else:
-            # Check if similar enough to extend window
-            edge_diff = abs(edge - current_edge) if current_edge is not None else float("inf")
-            risk_diff = abs(risk - current_risk) if current_risk is not None else float("inf")
-
-            if edge_diff <= edge_threshold and risk_diff <= risk_threshold:
-                # Extend window
-                current_window_end = pred["date"]
-                # Update running averages
-                if current_edge is not None:
-                    current_edge = (current_edge + edge) / 2.0
-                if current_risk is not None:
-                    current_risk = (current_risk + risk) / 2.0
-            else:
-                # Close current window and start new one
-                if current_window_start and current_window_end:
-                    start_date = parse_date(current_window_start)
-                    end_date = parse_date(current_window_end)
-                    window_days = (end_date - start_date).days + 1
-
-                    if window_days >= min_window_days:
-                        recommendation = map_to_recommendation(
-                            current_edge or 0.0, current_risk or 0.0
-                        )
-                        windows.append(
-                            {
-                                "start_date": current_window_start,
-                                "end_date": current_window_end,
-                                "weeks": window_days / 7.0,
-                                "edge": current_edge,
-                                "risk": current_risk,
-                                "recommendation": recommendation,
-                            }
-                        )
-
-                # Start new window
-                current_window_start = pred["date"]
-                current_window_end = pred["date"]
-                current_edge = edge
-                current_risk = risk
-
-    # Close last window
-    if current_window_start and current_window_end:
-        start_date = parse_date(current_window_start)
-        end_date = parse_date(current_window_end)
-        window_days = (end_date - start_date).days + 1
-
-        if window_days >= min_window_days:
-            recommendation = map_to_recommendation(current_edge or 0.0, current_risk or 0.0)
-            windows.append(
-                {
-                    "start_date": current_window_start,
-                    "end_date": current_window_end,
-                    "weeks": window_days / 7.0,
-                    "edge": current_edge,
-                    "risk": current_risk,
-                    "recommendation": recommendation,
-                }
-            )
-
-    return windows
 
 
 def plan_windows(

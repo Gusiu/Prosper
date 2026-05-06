@@ -1,207 +1,302 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Prosper Engine - Full Control</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prosper Engine - Full Control</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
+
 <body>
-    <div class="app-container">
-        <!-- Sidebar Navigation -->
-        <nav class="sidebar glass-panel">
-            <div class="logo">
-                <div class="logo-icon"></div>
-                <h1>Prosper.ai</h1>
-            </div>
-            <ul class="nav-links">
-                <li class="tab-link active" onclick="switchTab('tab-data', this)">Data Manager</li>
-                <li class="tab-link" onclick="switchTab('tab-models', this)">AI Models</li>
-                <li class="tab-link" onclick="switchTab('tab-eval', this)">Evaluation</li>
-            </ul>
-            <div class="status-indicator" style="margin-top: auto;">
-                <span class="status-dot online"></span>
-                <span id="api-status">Engine Online</span>
-            </div>
-            <div class="status-indicator" style="margin-top: 10px;">
-                <span class="status-dot" id="task-dot" style="background:#8e9bb0; box-shadow:none; animation:none;"></span>
-                <span id="task-status">Task: Idle</span>
-            </div>
-        </nav>
+  <div class="app-container">
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar glass-panel">
+      <div class="logo">
+        <div class="logo-icon"></div>
+        <h1>Prosper.ai</h1>
+      </div>
+      <ul class="nav-links">
+        <li class="tab-link active" onclick="switchTab('tab-data', this)">
+          Data Manager
+        </li>
+        <li class="tab-link" onclick="switchTab('tab-models', this)">
+          AI Models
+        </li>
+        <li class="tab-link" onclick="switchTab('tab-eval', this)">
+          Evaluation
+        </li>
+      </ul>
+      <div class="status-indicator" style="margin-top: auto">
+        <span class="status-dot online"></span>
+        <span id="api-status">Engine Online</span>
+      </div>
+      <div class="status-indicator" style="margin-top: 10px">
+        <span class="status-dot" id="task-dot" style="background: #8e9bb0; box-shadow: none; animation: none"></span>
+        <span id="task-status">Task: Idle</span>
+      </div>
+    </nav>
 
-        <!-- Main Content Area -->
-        <main class="main-content">
-            <header class="topbar" style="display: flex; justify-content: space-between; align-items: center;">
-                <h2 id="topbar-title">Data Manager</h2>
-                
-                <!-- Global Progress Bar -->
-                <div id="global-progress" style="display: none; flex: 1; max-width: 900px; margin-left: 40px; background: rgba(0, 229, 255, 0.1); padding: 10px 20px; border-radius: 10px; border: 1px solid rgba(0, 229, 255, 0.3); box-shadow: 0 0 20px rgba(0, 229, 255, 0.1);">
-                    <div id="progress-text" style="font-size: 0.75rem; color: var(--accent-glow); font-weight: 600; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px;">Ready</div>
-                    <div style="display: flex; align-items: center; gap: 15px;">
-                        <div style="flex: 1; height: 10px; background: rgba(255,255,255,0.05); border-radius: 5px; overflow: hidden; border: 1px solid rgba(0,229,255,0.1);">
-                            <progress id="progress-bar" value="0" max="100" style="width: 100%; height: 100%; border: none; background: transparent;"></progress>
-                        </div>
-                        <span id="progress-pct" class="text-green" style="font-weight: 800; font-size: 0.95rem; min-width: 55px; text-align: right; font-family: monospace;">0%</span>
-                    </div>
-                </div>
-            </header>
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <header class="topbar" style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          ">
+        <h2 id="topbar-title">Data Manager</h2>
 
-            <!-- TAB 1: DATA MANAGER -->
-            <div id="tab-data" class="tab-content active fade-in">
-                <div class="ops-grid-2">
-                    <!-- COLUMN 1: Pipeline -->
-                    <div class="ops-card glass-panel" style="width: 380px; flex-shrink: 0;">
-                            <h3>Download & Process Pipeline</h3>
-                            <p class="metric-desc mb-2">Build the symbol queue and execute full pipeline (Download -> Aggregate -> Features).</p>
-                            
-                            <div class="form-group row" style="display: flex; gap: 10px;">
-                                <input type="text" id="base-coin" class="glass-input" style="flex: 1; min-width: 0;" placeholder="Base (BTC)">
-                                <input type="text" id="quote-coin" class="glass-input" style="flex: 1; min-width: 0;" value="USDT">
-                            </div>
-                            
-                            <div class="form-group row" style="display: flex; gap: 10px;">
-                                <input type="month" id="pipe-start" class="glass-input" style="flex: 1; min-width: 0;" title="Start Month">
-                                <input type="month" id="pipe-end" class="glass-input" style="flex: 1; min-width: 0;" title="End Month">
-                            </div>
-                            
-                            <div class="form-group row mt-2">
-                                <button class="outline-btn full-width" onclick="addToQueue()">+ Add to Queue</button>
-                                <button class="glow-btn full-width" onclick="startQueueProcessing()">Start Processing</button>
-                            </div>
-                            
-                            <div class="checkbox-group mt-2" style="flex-wrap: wrap; font-size: 0.8rem;">
-                                <span class="text-muted" style="width: 100%; font-size: 0.75rem; margin-bottom: 4px;">Base data is always downloaded in 1m. Select additional intervals to aggregate:</span>
-                                <label><input type="checkbox" id="agg-3m" value="3m"> 3m</label>
-                                <label><input type="checkbox" id="agg-5m" value="5m"> 5m</label>
-                                <label><input type="checkbox" id="agg-15m" value="15m"> 15m</label>
-                                <label><input type="checkbox" id="agg-30m" value="30m"> 30m</label>
-                                <label><input type="checkbox" id="agg-1h" value="1h" checked> 1h</label>
-                                <label><input type="checkbox" id="agg-2h" value="2h"> 2h</label>
-                                <label><input type="checkbox" id="agg-4h" value="4h"> 4h</label>
-                                <label><input type="checkbox" id="agg-6h" value="6h"> 6h</label>
-                                <label><input type="checkbox" id="agg-8h" value="8h"> 8h</label>
-                                <label><input type="checkbox" id="agg-12h" value="12h"> 12h</label>
-                                <label><input type="checkbox" id="agg-1d" value="1d" checked> 1d</label>
-                                <label><input type="checkbox" id="agg-3d" value="3d"> 3d</label>
-                                <label><input type="checkbox" id="agg-1w" value="1w"> 1w</label>
-                            </div>
-                        </div>
-                    
-                    <!-- COLUMN 2: Queue -->
-                    <div class="ops-card glass-panel" style="width: 300px; flex-shrink: 0;">
-                        <div style="display:flex; justify-content: space-between; align-items:center;">
-                            <h3>Task Queue <span id="queue-count" class="text-muted">(0)</span></h3>
-                        </div>
-                        <div class="table-container mt-2" style="max-height: 400px;">
-                            <table class="inventory-table">
-                                <tbody id="queue-tbody">
-                                    <tr><td class="text-muted">Queue is empty</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
+        <!-- Global Progress Bar -->
+        <div id="global-progress" style="
+              display: none;
+              flex: 1;
+              max-width: none;
+              width: 100%;
+              margin-left: 40px;
+              background: rgba(0, 229, 255, 0.1);
+              padding: 10px 20px;
+              border-radius: 10px;
+              border: 1px solid rgba(0, 229, 255, 0.3);
+              box-shadow: 0 0 20px rgba(0, 229, 255, 0.1);
+            ">
+          <div id="progress-text" style="
+                font-size: 0.75rem;
+                color: var(--accent-glow);
+                font-weight: 600;
+                margin-bottom: 6px;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+              ">
+            Ready
+          </div>
+          <div style="display: flex; align-items: center; gap: 15px">
+            <div class="progress-container glass-input" style="
+                  flex: 1;
+                  height: 24px;
+                  padding: 0;
+                  overflow: hidden;
+                  position: relative;
+                  border: 1px solid rgba(0, 229, 255, 0.1);
+                ">
+              <div id="progress-bar-fill" style="
+                    width: 0%;
+                    height: 100%;
+                    background: rgba(0, 229, 255, 0.6);
+                    box-shadow: 0 0 10px rgba(0, 229, 255, 0.4);
+                    transition: width 0.2s ease-in-out;
+                  "></div>
+            </div>
+            <span id="progress-pct" class="text-green" style="
+                  font-weight: 800;
+                  font-size: 0.95rem;
+                  min-width: 55px;
+                  text-align: right;
+                  font-family: monospace;
+                ">0%</span>
+          </div>
+        </div>
+      </header>
 
-                    <!-- COLUMN 3: Inventory -->
-                    <div class="ops-card glass-panel" style="flex-grow: 1;">
-                        <div style="display:flex; justify-content: space-between; align-items:center;">
-                            <h3>Data Inventory</h3>
-                            <button class="outline-btn" onclick="loadInventory()">⟳ Refresh</button>
-                        </div>
-                        <div class="table-container mt-2" style="min-height: 350px; max-height: 450px; overflow-y: auto;">
-                            <table class="inventory-table">
-                                <thead>
-                                    <tr>
-                                        <th>Symbol</th>
-                                        <th>Dates Range</th>
-                                        <th>Size (MB)</th>
-                                        <th>Aggr.</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="inventory-tbody">
-                                    <!-- Populated by JS -->
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
+      <!-- TAB 1: DATA MANAGER -->
+      <div id="tab-data" class="tab-content active fade-in">
+        <div class="ops-grid-2">
+          <!-- COLUMN 1: Pipeline -->
+          <div class="ops-card glass-panel" style="width: 380px; flex-shrink: 0">
+            <h3>Download & Process Pipeline</h3>
+            <p class="metric-desc mb-2">
+              Build the symbol queue and execute full pipeline (Download ->
+              Aggregate -> Features).
+            </p>
+
+            <div class="form-group row" style="display: flex; gap: 10px">
+              <input type="text" id="base-coin" class="glass-input" style="flex: 1; min-width: 0"
+                placeholder="Base (BTC)" />
+              <input type="text" id="quote-coin" class="glass-input" style="flex: 1; min-width: 0" value="USDT" />
             </div>
 
-            <!-- TAB 2: AI MODELS -->
-            <div id="tab-models" class="tab-content fade-in">
-                <div class="ops-card glass-panel" style="max-width: 600px;">
-                    <h3>Train AI Model</h3>
-                    <div class="form-group row mt-2">
-                        <select id="train-symbol" class="glass-input" onchange="updateTrainDates()">
-                            <option value="">Select Symbol...</option>
-                        </select>
-                        <select id="model-select" class="glass-input">
-                            <option value="ml">Trad. ML (GradientBoost)</option>
-                            <option value="gru">DL (GRU Recurrent)</option>
-                            <option value="tft">DL (Temporal Fusion Trans.)</option>
-                        </select>
-                    </div>
-                    <div class="form-group row">
-                        <input type="date" id="train-start" class="glass-input" title="Train Start">
-                        <input type="date" id="train-end" class="glass-input" title="Train End">
-                        <input type="number" id="train-epochs" class="glass-input" placeholder="Epochs" value="5" title="Epochs (DL only)">
-                    </div>
-                    <button class="glow-btn full-width mt-2" onclick="runTrain()">Train & Predict</button>
-                </div>
+            <div class="form-group row" style="display: flex; gap: 10px">
+              <input type="month" id="pipe-start" class="glass-input" style="flex: 1; min-width: 0"
+                title="Start Month" />
+              <input type="month" id="pipe-end" class="glass-input" style="flex: 1; min-width: 0" title="End Month" />
             </div>
 
-            <!-- TAB 3: EVALUATION -->
-            <div id="tab-eval" class="tab-content fade-in">
-                <div class="ops-card glass-panel mb-2" style="display:flex; flex-direction:row; gap:16px; align-items:center;">
-                    <select id="eval-symbol" class="glass-input" onchange="updateEvalDates()">
-                        <option value="">Select Symbol...</option>
-                    </select>
-                    <input type="date" id="eval-start" class="glass-input">
-                    <input type="date" id="eval-end" class="glass-input">
-                    <button class="glow-btn accent-green" onclick="runBacktest()">Execute Backtest</button>
-                </div>
-
-                <div class="metrics-grid mb-2">
-                    <div class="metric-card glass-panel">
-                        <h3>Net ROI</h3>
-                        <div class="metric-value fade-in" id="val-roi">--%</div>
-                    </div>
-                    <div class="metric-card glass-panel">
-                        <h3>Final Capital</h3>
-                        <div class="metric-value fade-in" id="val-capital">$0.00</div>
-                    </div>
-                    <div class="metric-card glass-panel">
-                        <h3>Max Drawdown</h3>
-                        <div class="metric-value fade-in text-red" id="val-drawdown">--%</div>
-                    </div>
-                    <div class="metric-card glass-panel">
-                        <h3>Total Trades</h3>
-                        <div class="metric-value fade-in" id="val-trades">0</div>
-                    </div>
-                </div>
-
-                <div class="chart-container glass-panel">
-                    <div class="canvas-wrapper">
-                        <canvas id="equityChart"></canvas>
-                    </div>
-                </div>
+            <div class="form-group row mt-2">
+              <button class="outline-btn full-width" onclick="addToQueue()">
+                + Add to Queue
+              </button>
+              <button class="glow-btn full-width" onclick="startQueueProcessing()">
+                Start Processing
+              </button>
             </div>
 
-            <!-- GLOBAL TERMINAL -->
-            <div class="terminal-container glass-panel mt-auto">
-                <div class="terminal-header">
-                    <div class="dots"><span></span><span></span><span></span></div>
-                    <span class="terminal-title">Runner Terminal (Global Queue)</span>
-                </div>
-                <div id="terminal-output" class="terminal-content">
-                    <div class="log-line text-muted">Prosper CLI Initialized. Ready for commands...</div>
-                </div>
+            <div class="checkbox-group mt-2" style="flex-wrap: wrap; font-size: 0.8rem">
+              <span class="text-muted" style="width: 100%; font-size: 0.75rem; margin-bottom: 4px">Base data is always
+                downloaded in 1m. Select additional
+                intervals to aggregate:</span>
+              <label><input type="checkbox" id="agg-3m" value="3m" /> 3m</label>
+              <label><input type="checkbox" id="agg-5m" value="5m" /> 5m</label>
+              <label><input type="checkbox" id="agg-15m" value="15m" /> 15m</label>
+              <label><input type="checkbox" id="agg-30m" value="30m" /> 30m</label>
+              <label><input type="checkbox" id="agg-1h" value="1h" checked />
+                1h</label>
+              <label><input type="checkbox" id="agg-2h" value="2h" /> 2h</label>
+              <label><input type="checkbox" id="agg-4h" value="4h" /> 4h</label>
+              <label><input type="checkbox" id="agg-6h" value="6h" /> 6h</label>
+              <label><input type="checkbox" id="agg-8h" value="8h" /> 8h</label>
+              <label><input type="checkbox" id="agg-12h" value="12h" /> 12h</label>
+              <label><input type="checkbox" id="agg-1d" value="1d" checked />
+                1d</label>
+              <label><input type="checkbox" id="agg-3d" value="3d" /> 3d</label>
+              <label><input type="checkbox" id="agg-1w" value="1w" /> 1w</label>
             </div>
-        </main>
-    </div>
-    <script src="app.js"></script>
+          </div>
+
+          <!-- COLUMN 2: Queue -->
+          <div class="ops-card glass-panel" style="width: 300px; flex-shrink: 0">
+            <div style="
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                ">
+              <h3>
+                Task Queue
+                <span id="queue-count" class="text-muted">(0)</span>
+              </h3>
+            </div>
+            <div class="table-container mt-2" style="max-height: 400px">
+              <table class="inventory-table">
+                <tbody id="queue-tbody">
+                  <tr>
+                    <td class="text-muted">Queue is empty</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- COLUMN 3: Inventory -->
+          <div class="ops-card glass-panel" style="flex-grow: 1">
+            <div style="
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                ">
+              <h3>Data Inventory</h3>
+              <button class="outline-btn" onclick="loadInventory()">
+                ⟳ Refresh
+              </button>
+            </div>
+            <div class="table-container mt-2" style="min-height: 350px; max-height: 450px; overflow-y: auto">
+              <table class="inventory-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Dates Range</th>
+                    <th>Size (MB)</th>
+                    <th>Aggr.</th>
+                    <th>Quality</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="inventory-tbody">
+                  <!-- Populated by JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 2: AI MODELS -->
+      <div id="tab-models" class="tab-content fade-in">
+        <div class="ops-card glass-panel" style="max-width: 600px">
+          <h3>Train AI Model</h3>
+          <div class="form-group row mt-2">
+            <select id="train-symbol" class="glass-input" onchange="updateTrainDates()">
+              <option value="">Select Symbol...</option>
+            </select>
+            <select id="model-select" class="glass-input">
+              <option value="ml">Trad. ML (GradientBoost)</option>
+              <option value="gru">DL (GRU Recurrent)</option>
+              <option value="tft">DL (Temporal Fusion Trans.)</option>
+            </select>
+          </div>
+          <div class="form-group row">
+            <input type="date" id="train-start" class="glass-input" title="Train Start" />
+            <input type="date" id="train-end" class="glass-input" title="Train End" />
+            <input type="number" id="train-epochs" class="glass-input" placeholder="Epochs" value="5"
+              title="Epochs (DL only)" />
+          </div>
+          <button class="glow-btn full-width mt-2" onclick="runTrain()">
+            Train & Predict
+          </button>
+        </div>
+      </div>
+
+      <!-- TAB 3: EVALUATION -->
+      <div id="tab-eval" class="tab-content fade-in">
+        <div class="ops-card glass-panel mb-2" style="
+              display: flex;
+              flex-direction: row;
+              gap: 16px;
+              align-items: center;
+            ">
+          <select id="eval-symbol" class="glass-input" onchange="updateEvalDates()">
+            <option value="">Select Symbol...</option>
+          </select>
+          <input type="date" id="eval-start" class="glass-input" />
+          <input type="date" id="eval-end" class="glass-input" />
+          <button class="glow-btn accent-green" onclick="runBacktest()">
+            Execute Backtest
+          </button>
+        </div>
+
+        <div class="metrics-grid mb-2">
+          <div class="metric-card glass-panel">
+            <h3>Net ROI</h3>
+            <div class="metric-value fade-in" id="val-roi">--%</div>
+          </div>
+          <div class="metric-card glass-panel">
+            <h3>Final Capital</h3>
+            <div class="metric-value fade-in" id="val-capital">$0.00</div>
+          </div>
+          <div class="metric-card glass-panel">
+            <h3>Max Drawdown</h3>
+            <div class="metric-value fade-in text-red" id="val-drawdown">
+              --%
+            </div>
+          </div>
+          <div class="metric-card glass-panel">
+            <h3>Total Trades</h3>
+            <div class="metric-value fade-in" id="val-trades">0</div>
+          </div>
+        </div>
+
+        <div class="chart-container glass-panel">
+          <div class="canvas-wrapper">
+            <canvas id="equityChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- GLOBAL TERMINAL -->
+      <div class="terminal-container glass-panel mt-auto">
+        <div class="terminal-header">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <span class="terminal-title">Runner Terminal (Global Queue)</span>
+        </div>
+        <div id="terminal-output" class="terminal-content">
+          <div class="log-line text-muted">
+            Prosper CLI Initialized. Ready for commands...
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="app.js"></script>
 </body>
+
 </html>

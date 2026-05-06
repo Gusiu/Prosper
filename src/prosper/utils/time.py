@@ -1,71 +1,29 @@
 """Time utilities for UTC datetime handling and timestamp normalization."""
 
-from datetime import datetime, timezone
-from typing import Any
+from __future__ import annotations
 
-import polars as pl
+import datetime as _dt
+from datetime import UTC, datetime
 
 
 def normalize_timestamp_ms(ts: int | float) -> int:
-    """
-    Normalize timestamp to milliseconds.
+    """Normalize timestamp to milliseconds.
 
-    Detects if timestamp is in microseconds (>= 1e12) and converts to milliseconds.
-    Otherwise assumes milliseconds.
-
-    Args:
-        ts: Timestamp in milliseconds or microseconds
-
-    Returns:
-        Timestamp in milliseconds
+    Detects if timestamp is in microseconds (>= 1e15) and converts to
+    milliseconds.  Otherwise assumes milliseconds.
     """
     if ts >= 1e15:
-        # Likely microseconds (e.g. 2021 = ~1.6e15 us), convert to milliseconds
         return int(ts / 1000)
     return int(ts)
 
 
 def timestamp_to_utc_datetime(ts_ms: int) -> datetime:
-    """
-    Convert milliseconds timestamp to UTC datetime.
-
-    Args:
-        ts_ms: Timestamp in milliseconds
-
-    Returns:
-        UTC datetime object
-    """
-    return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
-
-
-def datetime_to_timestamp_ms(dt: datetime) -> int:
-    """
-    Convert UTC datetime to milliseconds timestamp.
-
-    Args:
-        dt: Datetime object (assumed UTC if timezone-naive)
-
-    Returns:
-        Timestamp in milliseconds
-    """
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
+    """Convert milliseconds timestamp to UTC datetime."""
+    return datetime.fromtimestamp(ts_ms / 1000.0, tz=UTC)
 
 
 def parse_year_month(year_month: str) -> tuple[int, int]:
-    """
-    Parse YYYY-MM string to (year, month).
-
-    Args:
-        year_month: String in format YYYY-MM
-
-    Returns:
-        Tuple of (year, month)
-
-    Raises:
-        ValueError: If format is invalid
-    """
+    """Parse ``YYYY-MM`` string to ``(year, month)``."""
     try:
         parts = year_month.split("-")
         if len(parts) != 2:
@@ -80,65 +38,46 @@ def parse_year_month(year_month: str) -> tuple[int, int]:
 
 
 def parse_date(date_str: str) -> datetime:
-    """
-    Parse YYYY-MM-DD string to UTC datetime.
-
-    Args:
-        date_str: String in format YYYY-MM-DD
-
-    Returns:
-        UTC datetime object
-    """
+    """Parse ``YYYY-MM-DD`` string to UTC datetime."""
     dt = datetime.strptime(date_str, "%Y-%m-%d")
-    return dt.replace(tzinfo=timezone.utc)
-
-
-def get_week_number(dt: datetime) -> int:
-    """
-    Get ISO week number for a datetime.
-
-    Args:
-        dt: Datetime object (assumed UTC if timezone-naive)
-
-    Returns:
-        ISO week number (1-53)
-    """
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.isocalendar()[1]
+    return dt.replace(tzinfo=UTC)
 
 
 def get_year_week(dt: datetime) -> tuple[int, int]:
-    """
-    Get (year, week) tuple using ISO week numbering.
-
-    Args:
-        dt: Datetime object (assumed UTC if timezone-naive)
-
-    Returns:
-        Tuple of (ISO year, ISO week number)
-    """
+    """Get ``(ISO year, ISO week)`` tuple for a datetime."""
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     iso_year, iso_week, _ = dt.isocalendar()
     return (iso_year, iso_week)
 
 
-def ensure_utc_datetime(dt: datetime | Any) -> datetime:
-    """
-    Ensure datetime is UTC-aware.
+# ── Month iteration ─────────────────────────────────────────────────────────
 
-    Args:
-        dt: Datetime object or Polars datetime
+def generate_month_range(
+    start: str | _dt.date,
+    end: str | _dt.date,
+) -> list[tuple[int, int]]:
+    """Generate ``[(year, month), ...]`` from *start* to *end* inclusive.
 
-    Returns:
-        UTC-aware datetime
+    Accepts either ``YYYY-MM`` strings **or** ``date`` / ``datetime`` objects.
     """
-    if isinstance(dt, pl.Datetime):
-        # Convert Polars datetime to Python datetime
-        dt = dt.to_python()
-    if isinstance(dt, datetime):
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    raise TypeError(f"Expected datetime, got {type(dt)}")
+    if isinstance(start, str):
+        sy, sm = parse_year_month(start)
+    else:
+        sy, sm = start.year, start.month
+
+    if isinstance(end, str):
+        ey, em = parse_year_month(end)
+    else:
+        ey, em = end.year, end.month
+
+    months: list[tuple[int, int]] = []
+    y, m = sy, sm
+    while (y, m) <= (ey, em):
+        months.append((y, m))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return months
+

@@ -1,66 +1,13 @@
 """Build direction and depth labels for daily predictions."""
 
-import json
 from typing import Any
 
 import polars as pl
 
 from prosper.config import Settings, get_settings
+from prosper.labels.depth import assign_depth_bin, parse_depth_bins
 from prosper.storage.layout import get_labels_parquet_path
 from prosper.storage.parquet import load_parquet, save_parquet
-
-
-def parse_depth_bins(bins_str: str) -> list[tuple[float, float | None]]:
-    """
-    Parse depth bin string into list of (min, max) tuples.
-
-    Format: "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34+"
-    Returns: [(1.0, 2.0), (2.0, 3.0), ..., (34.0, None)]
-
-    Args:
-        bins_str: Comma-separated bin definitions
-
-    Returns:
-        List of (min, max) tuples, where None means infinity
-    """
-    bins: list[tuple[float, float | None]] = []
-    parts = bins_str.split(",")
-
-    for part in parts:
-        part = part.strip()
-        if part.endswith("+"):
-            # Open-ended bin
-            min_val = float(part[:-1])
-            bins.append((min_val, None))
-        elif "-" in part:
-            # Range bin
-            min_str, max_str = part.split("-", 1)
-            bins.append((float(min_str), float(max_str)))
-        else:
-            raise ValueError(f"Invalid bin format: {part}")
-
-    return bins
-
-
-def assign_depth_bin(value: float, bins: list[tuple[float, float | None]]) -> int | None:
-    """
-    Assign value to depth bin index.
-
-    Args:
-        value: Value to bin (absolute return percentage)
-        bins: List of (min, max) tuples
-
-    Returns:
-        Bin index (0-based) or None if no match
-    """
-    for idx, (min_val, max_val) in enumerate(bins):
-        if max_val is None:
-            if value >= min_val:
-                return idx
-        else:
-            if min_val <= value < max_val:
-                return idx
-    return None
 
 
 def build_labels(
@@ -99,7 +46,6 @@ def build_labels(
         settings = get_settings()
 
     # Load daily klines
-    from prosper.storage.layout import get_parquet_file_path
 
     # Need to load all daily data, not just one month
     # For simplicity, we'll load from processed directory
@@ -139,7 +85,7 @@ def build_labels(
     df_all = df_all.filter(pl.col("return_fwd").is_not_null())
 
     # Parse depth bins
-    depth_bins = parse_depth_bins(depth_bins_str)
+    depth_bins, _depth_labels = parse_depth_bins(depth_bins_str)
 
     # Build labels
     def assign_direction(return_val: float) -> str:

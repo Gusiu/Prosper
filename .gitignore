@@ -67,5 +67,5 @@ lightning_logs/
 *_out.txt
 out.txt
 *.json
-!debug_out.json
-debug_out.json
+tmp_*.parquet
+.testvenv*/

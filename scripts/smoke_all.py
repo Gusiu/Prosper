@@ -3,12 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 from pathlib import Path
-from typing import Any
 
 import polars as pl
-
 
 ALLOWED_RECOMMENDATIONS = {
     "Strong Buy",

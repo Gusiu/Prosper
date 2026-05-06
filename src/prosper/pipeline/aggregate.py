@@ -1,6 +1,6 @@
-"""Aggregation pipeline for resampling klines to different intervals."""
+"""Aggregation pipeline for resampling klines."""
 
-from datetime import timedelta, timezone
+from collections.abc import Iterable
 from typing import Any
 
 import polars as pl
@@ -8,7 +8,36 @@ import polars as pl
 from prosper.config import Settings, get_settings
 from prosper.storage.layout import get_parquet_file_path
 from prosper.storage.parquet import load_parquet, save_parquet
-from prosper.utils.time import get_year_week, timestamp_to_utc_datetime
+
+SUPPORTED_TARGET_INTERVALS = {
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "8h",
+    "12h",
+    "1d",
+    "3d",
+    "1w",
+}
+
+
+def normalize_target_intervals(intervals: str | Iterable[str]) -> list[str]:
+    """Normalize comma/space separated interval inputs into a deduplicated list."""
+    raw_items = [intervals] if isinstance(intervals, str) else list(intervals)
+    normalized: list[str] = []
+    for item in raw_items:
+        for part in str(item).replace(",", " ").split():
+            interval = part.strip()
+            if interval:
+                normalized.append(interval)
+
+    seen: set[str] = set()
+    return [interval for interval in normalized if not (interval in seen or seen.add(interval))]
 
 
 def aggregate_klines(df: pl.DataFrame, interval: str) -> pl.DataFrame:
@@ -25,7 +54,6 @@ def aggregate_klines(df: pl.DataFrame, interval: str) -> pl.DataFrame:
     if df.is_empty():
         return df
 
-    # Ensure open_time is datetime
     if df["open_time"].dtype != pl.Datetime:
         df = df.with_columns(
             pl.from_epoch(pl.col("open_time"), time_unit="ms")
@@ -33,7 +61,6 @@ def aggregate_klines(df: pl.DataFrame, interval: str) -> pl.DataFrame:
             .alias("open_time")
         )
 
-    # Convert to Python datetime for safe timezone-naive truncation
     df_python = df.with_columns(
         pl.col("open_time").dt.replace_time_zone(None).alias("open_time_py")
     )
@@ -70,7 +97,7 @@ def aggregate_klines(df: pl.DataFrame, interval: str) -> pl.DataFrame:
 def aggregate(
     symbol: str,
     from_interval: str,
-    to_intervals: list[str],
+    to_intervals: str | Iterable[str],
     start: str,
     end: str,
     settings: Settings | None = None,
@@ -92,64 +119,97 @@ def aggregate(
     if settings is None:
         settings = get_settings()
 
-    from prosper.pipeline.backfill import generate_month_range
-    from prosper.utils.time import parse_year_month
+    from prosper.utils.time import generate_month_range
 
+    to_intervals = normalize_target_intervals(to_intervals)
     months = generate_month_range(start, end)
     results: dict[str, Any] = {
         "symbol": symbol,
         "from_interval": from_interval,
         "to_intervals": to_intervals,
         "processed_months": [],
+        "written_files": {},
         "errors": [],
     }
 
-    # Removed static agg_functions dictionary
+    unsupported = sorted(set(to_intervals) - SUPPORTED_TARGET_INTERVALS)
+    if unsupported:
+        results["errors"].append(f"Unsupported target intervals: {', '.join(unsupported)}")
+        return results
 
+    source_parts: list[pl.DataFrame] = []
     for year, month in months:
+        source_path = get_parquet_file_path(symbol, from_interval, year, month, settings=settings)
+        if not source_path.exists():
+            results["errors"].append(f"{year}-{month:02d}: Source file not found")
+            continue
+
         try:
-            # Load source data
-            source_path = get_parquet_file_path(symbol, from_interval, year, month, settings=settings)
-            if not source_path.exists():
-                results["errors"].append(f"{year}-{month:02d}: Source file not found")
-                continue
-
             df_source = load_parquet(source_path)
-            if df_source.is_empty():
-                results["errors"].append(f"{year}-{month:02d}: Empty source data")
-                continue
-
-            # Aggregate to each target interval
-            for to_interval in to_intervals:
-                df_agg = aggregate_klines(df_source, to_interval)
-
-                if df_agg.is_empty():
-                    continue
-
-                # Determine output path
-                if to_interval == "1w":
-                    # For weekly, need to determine year/week for each row
-                    # Group by year/week and save separately
-                    df_agg = df_agg.with_columns(
-                        pl.col("open_time").dt.year().alias("year"),
-                        pl.col("open_time").dt.week().alias("week"),
-                    )
-
-                    for (year_w, week_w), group_df in df_agg.group_by(["year", "week"]):
-                        group_df_clean = group_df.drop(["year", "week"])
-                        output_path = get_parquet_file_path(
-                            symbol, to_interval, int(year_w), week=int(week_w), settings=settings
-                        )
-                        save_parquet(group_df_clean, output_path)
-                else:
-                    output_path = get_parquet_file_path(
-                        symbol, to_interval, year, month, settings=settings
-                    )
-                    save_parquet(df_agg, output_path)
-
-            results["processed_months"].append(f"{year}-{month:02d}")
-
         except Exception as e:
-            results["errors"].append(f"{year}-{month:02d}: {str(e)}")
+            results["errors"].append(f"{year}-{month:02d}: {e}")
+            continue
+
+        if df_source.is_empty():
+            results["errors"].append(f"{year}-{month:02d}: Empty source data")
+            continue
+
+        source_parts.append(df_source)
+        results["processed_months"].append(f"{year}-{month:02d}")
+
+    if not source_parts:
+        return results
+
+    df_all = (
+        pl.concat(source_parts, how="diagonal_relaxed")
+        .sort("open_time")
+        .unique(subset=["open_time"], keep="first")
+        .sort("open_time")
+    )
+
+    for to_interval in to_intervals:
+        try:
+            df_agg = aggregate_klines(df_all, to_interval)
+            results["written_files"][to_interval] = _save_aggregated_partitions(
+                df_agg,
+                symbol,
+                to_interval,
+                settings,
+            )
+        except Exception as e:
+            results["errors"].append(f"{to_interval}: {e}")
 
     return results
+
+
+def _save_aggregated_partitions(
+    df: pl.DataFrame,
+    symbol: str,
+    interval: str,
+    settings: Settings,
+) -> list[str]:
+    if df.is_empty():
+        return []
+
+    written_paths: list[str] = []
+    if interval == "1w":
+        partitioned = df.with_columns(
+            pl.col("open_time").dt.iso_year().alias("_year"),
+            pl.col("open_time").dt.week().alias("_week"),
+        )
+        for (year, week), group_df in partitioned.group_by(["_year", "_week"]):
+            output_path = get_parquet_file_path(symbol, interval, int(year), week=int(week), settings=settings)
+            save_parquet(group_df.drop(["_year", "_week"]).sort("open_time"), output_path)
+            written_paths.append(str(output_path))
+        return sorted(written_paths)
+
+    partitioned = df.with_columns(
+        pl.col("open_time").dt.year().alias("_year"),
+        pl.col("open_time").dt.month().alias("_month"),
+    )
+    for (year, month), group_df in partitioned.group_by(["_year", "_month"]):
+        output_path = get_parquet_file_path(symbol, interval, int(year), month=int(month), settings=settings)
+        save_parquet(group_df.drop(["_year", "_month"]).sort("open_time"), output_path)
+        written_paths.append(str(output_path))
+
+    return sorted(written_paths)

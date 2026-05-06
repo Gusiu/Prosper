@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-from datetime import timedelta
 from typing import Any
 
 import polars as pl
@@ -9,20 +7,8 @@ import polars as pl
 from prosper.config import Settings, get_settings
 from prosper.storage.layout import get_features_parquet_path, get_parquet_file_path
 from prosper.storage.parquet import load_parquet, save_parquet
-from prosper.utils.time import parse_date
+from prosper.utils.time import generate_month_range, parse_date
 
-
-def _month_iter(start_py_date: Any, end_py_date: Any) -> list[tuple[int, int]]:
-    months: list[tuple[int, int]] = []
-    y, m = start_py_date.year, start_py_date.month
-    y2, m2 = end_py_date.year, end_py_date.month
-    while (y, m) <= (y2, m2):
-        months.append((y, m))
-        m += 1
-        if m == 13:
-            m = 1
-            y += 1
-    return months
 
 
 def _rsi_ewm(close: pl.Expr, period: int = 14) -> pl.Expr:
@@ -73,7 +59,7 @@ def build_features(
     end_date = end_dt.date()
 
     # Load daily klines
-    months = _month_iter(start_date, end_date)
+    months = generate_month_range(start_date, end_date)
     daily_parts: list[pl.DataFrame] = []
     for y, m in months:
         path = get_parquet_file_path(symbol, "1d", y, month=m, settings=settings)
@@ -85,12 +71,7 @@ def build_features(
         return {"error": f"No daily parquet found for {symbol} in {base_interval}", "path": str(out_path)}
 
     df_daily = pl.concat(daily_parts).sort("open_time").unique(subset=["open_time"], keep="first")
-    df_daily = df_daily.with_columns(pl.col("open_time").dt.date().alias("_date"))
-    df_daily = (
-        df_daily.filter(pl.col("_date") >= start_date)
-        .filter(pl.col("_date") <= end_date)
-        .drop("_date")
-    )
+
 
     # Daily returns/indicators
     log_close = pl.col("close").log()
@@ -196,9 +177,18 @@ def build_features(
         pl.col("_intraday_drawdown").min().alias("max_intraday_drawdown"),
     )
 
-    # Join daily + intraday on date (avoids datetime tz mismatches)
+    # Filter final dataset to requested dates
     df_feat = df_feat.with_columns(pl.col("open_time").dt.date().alias("_date"))
+    df_feat = (
+        df_feat.filter(pl.col("_date") >= start_date)
+        .filter(pl.col("_date") <= end_date)
+    )
+
     df_feat = df_feat.join(df_intraday, on="_date", how="left").drop("_date").sort("open_time")
+
+    cols_to_drop = [c for c in ["symbol", "year", "month", "week"] if c in df_feat.columns]
+    if cols_to_drop:
+        df_feat = df_feat.drop(cols_to_drop)
 
     out_path = get_features_parquet_path(symbol, base_interval, settings=settings)
     save_parquet(df_feat, out_path)

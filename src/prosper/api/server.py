@@ -1,40 +1,86 @@
-import os
-from contextlib import asynccontextmanager
-from typing import Any
-from pathlib import Path
-
-import subprocess
-import shlex
-
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-import polars as pl
-import shutil
 import datetime
-
-from prosper.config import get_settings
-from prosper.storage.layout import get_prediction_report_path, get_features_parquet_path
-from prosper.eval.backtest import run_backtest
-
-import webbrowser
+import re
+import shlex
+import subprocess
 import threading
 import time
+import webbrowser
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from prosper.config import get_settings
+from prosper.core import DataManager
 
 # Resolve the absolute path dynamically based on this file's location.
 # This makes the project portable to any computer or directory.
 frontend_dir = Path(__file__).resolve().parent.parent.parent.parent / "frontend"
+SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,30}$")
+FORBIDDEN_COMMAND_CHARS = set("|;<>\n\r`")
+ALLOWED_PROSPER_COMMANDS = {
+    "backfill",
+    "aggregate",
+    "features",
+    "labels",
+    "predict",
+    "planner",
+    "eval",
+    "qa",
+    "symbols",
+}
+
+
+def _is_valid_symbol(symbol: str) -> bool:
+    return bool(SYMBOL_RE.fullmatch(symbol))
+
+
+def parse_safe_command_chain(command: str) -> list[list[str]]:
+    """
+    Parse a UI command chain into argv segments without allowing shell execution.
+
+    The frontend may chain Prosper CLI commands with `&&`. Each segment must be
+    `poetry run prosper ...`; shell metacharacters are rejected and subprocesses
+    are later started with shell=False.
+    """
+    if any(ch in command for ch in FORBIDDEN_COMMAND_CHARS):
+        raise ValueError("Command contains unsupported shell metacharacters")
+
+    segments: list[list[str]] = []
+    for raw_segment in command.split("&&"):
+        segment = raw_segment.strip()
+        if not segment:
+            continue
+        try:
+            args = shlex.split(segment)
+        except ValueError as e:
+            raise ValueError(f"Invalid command quoting: {e}") from e
+
+        if len(args) < 4 or args[:3] != ["python", "-m", "prosper.cli"]:
+            raise ValueError("Each segment must start with 'python -m prosper.cli'")
+        if args[3] not in ALLOWED_PROSPER_COMMANDS:
+            raise ValueError(f"Unsupported Prosper command: {args[3]}")
+        if any(any(ch in token for ch in FORBIDDEN_COMMAND_CHARS) for token in args):
+            raise ValueError("Command token contains unsupported characters")
+        segments.append(args)
+
+    if not segments:
+        raise ValueError("Command is empty")
+    return segments
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     frontend_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Auto-open browser via Python
     def open_browser():
         time.sleep(1.5)
         webbrowser.open("http://localhost:8000")
-        
+
     threading.Thread(target=open_browser, daemon=True).start()
     yield
 
@@ -45,33 +91,98 @@ class TaskRunner:
         self.process: subprocess.Popen | None = None
         self.logs: list[str] = []
         self.is_running: bool = False
-        
-    def start(self, cmd_str: str):
+        self.progress: dict[str, Any] = {
+            "visible": False,
+            "percent": 0.0,
+            "label": "Idle",
+            "stage": "idle",
+        }
+
+    def start(self, cmd_str: str, commands: list[list[str]]):
         if self.is_running:
             raise HTTPException(400, "A task is already running!")
         self.logs = [f"$ {cmd_str}"]
         self.is_running = True
-        
+        self.progress = {
+            "visible": True,
+            "percent": 0.0,
+            "label": "Starting",
+            "stage": "queued",
+        }
+
         def run_thread():
             try:
-                # Use shell=True for windows poetry env execution if needed,
-                # but shlex split is safer. We'll use shell=True for simplicity on Windows.
-                self.process = subprocess.Popen(
-                    cmd_str, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
-                )
-                if self.process.stdout:
-                    for line in iter(self.process.stdout.readline, ''):
-                        if line:
-                            self.logs.append(line.rstrip('\n'))
-                self.process.wait()
-                self.logs.append(f"Task finished with exit code {self.process.returncode}")
+                import sys
+
+                total_commands = max(1, len(commands))
+                for command_index, original_args in enumerate(commands):
+                    self.logs.append(f"$ {' '.join(original_args)}")
+                    self._set_command_progress(command_index, total_commands, original_args)
+
+                    # Ensure we use the current virtualenv's Python
+                    run_args = list(original_args)
+                    if run_args[0] == "python":
+                        run_args[0] = sys.executable
+
+                    self.process = subprocess.Popen(
+                        run_args,
+                        shell=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        bufsize=1,
+                    )
+                    if self.process.stdout:
+                        for line in iter(self.process.stdout.readline, ""):
+                            if line:
+                                clean_line = line.rstrip("\n")
+                                self.logs.append(clean_line)
+                                self._update_progress_from_log(
+                                    clean_line,
+                                    command_index,
+                                    total_commands,
+                                )
+                    self.process.wait()
+                    self.logs.append(f"Task finished with exit code {self.process.returncode}")
+                    self._set_percent(((command_index + 1) / total_commands) * 100)
+                    if self.process.returncode != 0:
+                        self.progress.update({"label": "Failed", "stage": "failed"})
+                        break
             except Exception as e:
                 self.logs.append(f"Error executing task: {str(e)}")
+                self.progress.update({"label": "Failed", "stage": "failed"})
             finally:
                 self.is_running = False
                 self.process = None
+                if self.progress.get("stage") != "failed":
+                    self.progress.update({"percent": 100.0, "label": "Complete", "stage": "complete"})
 
         threading.Thread(target=run_thread, daemon=True).start()
+
+    def _set_command_progress(self, command_index: int, total_commands: int, args: list[str]) -> None:
+        command_name = " ".join(args[3:5]) if len(args) > 4 else args[3]
+        self.progress.update(
+            {
+                "visible": True,
+                "percent": round((command_index / total_commands) * 100, 1),
+                "label": command_name.title(),
+                "stage": args[3],
+            }
+        )
+
+    def _update_progress_from_log(self, line: str, command_index: int, total_commands: int) -> None:
+        match = re.search(r"\[\s*(\d+(?:\.\d+)?)%\s*\]", line)
+        if not match:
+            return
+        local_percent = min(100.0, max(0.0, float(match.group(1))))
+        overall_percent = ((command_index + local_percent / 100.0) / total_commands) * 100.0
+        self._set_percent(overall_percent)
+
+    def _set_percent(self, percent: float) -> None:
+        self.progress["visible"] = True
+        self.progress["percent"] = round(min(100.0, max(0.0, percent)), 1)
 
 runner = TaskRunner()
 
@@ -93,25 +204,31 @@ class RunRequest(BaseModel):
 
 @app.post("/api/task/run")
 def run_task(req: RunRequest):
-    if not req.command.startswith("poetry run prosper"):
-        raise HTTPException(400, "Invalid command. Must start with 'poetry run prosper'")
-    runner.start(req.command)
+    try:
+        commands = parse_safe_command_chain(req.command)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    runner.start(req.command, commands)
     return {"status": "started", "command": req.command}
 
 @app.get("/api/task/logs")
 def get_task_logs(start_idx: int = 0):
-    return {"logs": runner.logs[start_idx:], "is_running": runner.is_running}
+    return {
+        "logs": runner.logs[start_idx:],
+        "is_running": runner.is_running,
+        "progress": runner.progress,
+    }
 
 @app.get("/api/task/status")
 def get_task_status():
-    return {"is_running": runner.is_running}
+    return {"is_running": runner.is_running, "progress": runner.progress}
 
 
 @app.get("/api/data/dates")
 def get_dates():
     today = datetime.datetime.now()
     yesterday = today - datetime.timedelta(days=1)
-    
+
     return {
         "today": today.strftime("%Y-%m-%d"),
         "yesterday": yesterday.strftime("%Y-%m-%d"),
@@ -120,123 +237,15 @@ def get_dates():
     }
 
 @app.get("/api/data/inventory")
-def get_inventory():
-    settings = get_settings()
-    inventory = []
-    symbols = set()
-    
-    raw_dir = settings.raw_binance_spot_klines_1m_dir
-    if raw_dir.exists():
-        for d in raw_dir.iterdir():
-            if d.is_dir():
-                symbols.add(d.name)
-                
-    processed_dir = settings.processed_binance_spot_klines_dir
-    if processed_dir.exists():
-        for interval_dir in processed_dir.iterdir():
-            if interval_dir.is_dir():
-                for sym_dir in interval_dir.glob("symbol=*"):
-                    symbols.add(sym_dir.name.split("=")[1])
-                    
-    for symbol in sorted(list(symbols)):
-        size_bytes = 0
-        
-        raw_sym = raw_dir / symbol
-        if raw_sym.exists():
-            size_bytes += sum(f.stat().st_size for f in raw_sym.rglob("*") if f.is_file())
-            
-        aggregations = []
-        if processed_dir.exists():
-            for interval_dir in processed_dir.iterdir():
-                if interval_dir.is_dir():
-                    sym_path = interval_dir / f"symbol={symbol}"
-                    if sym_path.exists():
-                        size_bytes += sum(f.stat().st_size for f in sym_path.rglob("*") if f.is_file())
-                        aggregations.append(interval_dir.name)
-                    
-        feat_path = settings.processed_data_dir / "binance" / "spot" / "features" / "1d" / f"symbol={symbol}"
-        if feat_path.exists():
-            size_bytes += sum(f.stat().st_size for f in feat_path.rglob("*") if f.is_file())
-            
-        pred_path = settings.reports_predictions_dir / symbol
-        if pred_path.exists():
-            size_bytes += sum(f.stat().st_size for f in pred_path.rglob("*") if f.is_file())
-            
-        start_date = "N/A"
-        end_date = "N/A"
-        
-        try:
-            klines_1m_path = processed_dir / "1m" / f"symbol={symbol}"
-            if klines_1m_path.exists():
-                years = [d.name for d in klines_1m_path.iterdir() if d.is_dir() and d.name.startswith("year=")]
-                if years:
-                    years.sort()
-                    min_year = years[0].split("=")[1]
-                    max_year = years[-1].split("=")[1]
-                    
-                    min_months = [d.name for d in (klines_1m_path / years[0]).iterdir() if d.is_dir() and d.name.startswith("month=")]
-                    max_months = [d.name for d in (klines_1m_path / years[-1]).iterdir() if d.is_dir() and d.name.startswith("month=")]
-                    
-                    if min_months and max_months:
-                        min_months.sort()
-                        max_months.sort()
-                        min_month = min_months[0].split("=")[1]
-                        max_month = max_months[-1].split("=")[1]
-                        
-                        start_date = f"{min_year}-{min_month}-01"
-                        end_date = f"{max_year}-{max_month}-28"
-        except Exception:
-            pass
-
-        if size_bytes == 0 and not aggregations:
-            continue
-
-        inventory.append({
-            "symbol": symbol,
-            "size_mb": round(size_bytes / (1024 * 1024), 2),
-            "aggregations": sorted(list(aggregations)),
-            "start_date": start_date,
-            "end_date": end_date
-        })
-        
-    return inventory
+def get_inventory(refresh: bool = False):
+    return DataManager().get_inventory(refresh=refresh)
 
 @app.delete("/api/data/{symbol}")
 def delete_symbol_data(symbol: str):
-    settings = get_settings()
-    
-    # Broad search for anything related to this symbol
-    # 1. Standard locations
-    paths = [
-        settings.raw_binance_spot_klines_1m_dir / symbol,
-        settings.reports_predictions_dir / symbol,
-        settings.processed_data_dir / "binance" / "spot" / "features" / f"symbol={symbol}",
-        settings.processed_binance_spot_labels_dir / f"symbol={symbol}"
-    ]
-    
-    # 2. All interval folders
-    for parent_dir in [
-        settings.processed_binance_spot_klines_dir,
-    ]:
-        if parent_dir.exists():
-            for interval_dir in parent_dir.iterdir():
-                if interval_dir.is_dir():
-                    paths.append(interval_dir / f"symbol={symbol}")
-                    # Also check for just symbol name if it's not partitioned
-                    paths.append(interval_dir / symbol)
-        
-    deleted_count = 0
-    for p in paths:
-        try:
-            if p.exists():
-                if p.is_dir():
-                    shutil.rmtree(p)
-                else:
-                    p.unlink()
-                deleted_count += 1
-        except Exception as e:
-            print(f"Error deleting {p}: {e}")
-            
+    symbol = symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+    deleted_count = DataManager().delete_symbol_data(symbol)
     return {"status": "deleted", "paths_removed": deleted_count}
 
 
@@ -245,12 +254,15 @@ def run_backtest_api(symbol: str, start: str = "2021-01-01", end: str = "2024-06
     """Dynamically run backtest and return capital curve & stats."""
     settings = get_settings()
     try:
+        # Import lazily to avoid pulling heavy ML/runtime deps during module import
+        from prosper.eval.backtest import run_backtest
+
         results = run_backtest(symbol, start, end, settings=settings)
         if "error" in results:
             raise HTTPException(status_code=400, detail=results["error"])
-            
+
         history = results.get("chart_data", [])
-        
+
         return {
             "roi": round(results["roi_pct"], 2),
             "max_drawdown": round(results["max_drawdown_pct"], 2),

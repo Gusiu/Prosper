@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import zipfile
 import hashlib
+import zipfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import requests
 from rich.console import Console
 
-from prosper.config import Settings, get_settings
+from prosper.config import get_settings
 from prosper.utils.hash import read_checksum_file, verify_checksum
 from prosper.utils.http import retry_with_backoff
 
@@ -126,7 +126,7 @@ def download_monthly_zip(
         Tuple of (zip_path, checksum_path) or None if dry_run
 
     Raises:
-        httpx.HTTPError: If download fails
+        requests.RequestException: If download fails
         ValueError: If checksum verification fails
     """
     settings = get_settings()

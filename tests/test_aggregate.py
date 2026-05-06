@@ -1,15 +1,16 @@
-"""Tests for aggregation functions."""
+"""Tests for aggregation."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import polars as pl
-
-from prosper.pipeline.aggregate import aggregate_1m_to_1d, aggregate_1m_to_1h, aggregate_1m_to_1w
+from prosper.config import Settings
+from prosper.pipeline.aggregate import aggregate, aggregate_klines, normalize_target_intervals
+from prosper.storage.layout import get_parquet_file_path
+from prosper.storage.parquet import load_parquet, save_parquet
 
 
 def create_sample_1m_data() -> pl.DataFrame:
-    """Create sample 1m klines data."""
-    base_time = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    base_time = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
     timestamps = [int((base_time + timedelta(minutes=i)).timestamp() * 1000) for i in range(120)]
 
     data = {
@@ -29,12 +30,11 @@ def create_sample_1m_data() -> pl.DataFrame:
 
 
 def test_aggregate_1m_to_1h() -> None:
-    """Test aggregation from 1m to 1h."""
     df_1m = create_sample_1m_data()
-    df_1h = aggregate_1m_to_1h(df_1m)
+    df_1h = aggregate_klines(df_1m, "1h")
 
     assert not df_1h.is_empty()
-    assert len(df_1h) == 2  # 120 minutes = 2 hours
+    assert len(df_1h) == 2
     assert "open_time" in df_1h.columns
     assert "open" in df_1h.columns
     assert "high" in df_1h.columns
@@ -42,18 +42,16 @@ def test_aggregate_1m_to_1h() -> None:
     assert "close" in df_1h.columns
     assert "volume" in df_1h.columns
 
-    # Check OHLC invariants
     assert (df_1h["high"] >= df_1h[["open", "close"]].max_horizontal()).all()
     assert (df_1h["low"] <= df_1h[["open", "close"]].min_horizontal()).all()
 
 
 def test_aggregate_1m_to_1d() -> None:
-    """Test aggregation from 1m to 1d."""
     df_1m = create_sample_1m_data()
-    df_1d = aggregate_1m_to_1d(df_1m)
+    df_1d = aggregate_klines(df_1m, "1d")
 
     assert not df_1d.is_empty()
-    assert len(df_1d) == 1  # All data in one day
+    assert len(df_1d) == 1
     assert "open_time" in df_1d.columns
     assert "open" in df_1d.columns
     assert "high" in df_1d.columns
@@ -63,9 +61,8 @@ def test_aggregate_1m_to_1d() -> None:
 
 
 def test_aggregate_1m_to_1w() -> None:
-    """Test aggregation from 1m to 1w."""
     df_1m = create_sample_1m_data()
-    df_1w = aggregate_1m_to_1w(df_1m)
+    df_1w = aggregate_klines(df_1m, "1w")
 
     assert not df_1w.is_empty()
     assert "open_time" in df_1w.columns
@@ -77,7 +74,6 @@ def test_aggregate_1m_to_1w() -> None:
 
 
 def test_aggregate_empty_dataframe() -> None:
-    """Test aggregation with empty DataFrame."""
     empty_df = pl.DataFrame(
         {
             "open_time": [],
@@ -89,6 +85,26 @@ def test_aggregate_empty_dataframe() -> None:
         }
     )
 
-    assert aggregate_1m_to_1h(empty_df).is_empty()
-    assert aggregate_1m_to_1d(empty_df).is_empty()
-    assert aggregate_1m_to_1w(empty_df).is_empty()
+    assert aggregate_klines(empty_df, "1h").is_empty()
+    assert aggregate_klines(empty_df, "1d").is_empty()
+    assert aggregate_klines(empty_df, "1w").is_empty()
+
+
+def test_aggregate_pipeline_writes_requested_intervals(tmp_path) -> None:
+    settings = Settings(data_root=tmp_path)
+    symbol = "TESTUSDT"
+    source = create_sample_1m_data()
+    save_parquet(source, get_parquet_file_path(symbol, "1m", 2024, month=1, settings=settings))
+
+    result = aggregate(symbol, "1m", ["1h", "1d"], "2024-01", "2024-01", settings=settings)
+
+    assert result["errors"] == []
+    assert get_parquet_file_path(symbol, "1h", 2024, month=1, settings=settings).exists()
+    assert get_parquet_file_path(symbol, "1d", 2024, month=1, settings=settings).exists()
+    assert len(load_parquet(get_parquet_file_path(symbol, "1h", 2024, month=1, settings=settings))) == 2
+
+
+def test_normalize_target_intervals_accepts_cli_shapes() -> None:
+    assert normalize_target_intervals("1h,1d") == ["1h", "1d"]
+    assert normalize_target_intervals(["1h", "1d", "1h"]) == ["1h", "1d"]
+    assert normalize_target_intervals(["1h,1d", "1w"]) == ["1h", "1d", "1w"]
