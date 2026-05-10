@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import polars as pl
@@ -65,7 +64,9 @@ def predict_baseline(
 
     df_daily = pl.concat(daily_parts).sort("open_time").unique(subset=["open_time"], keep="first")
     df_daily = df_daily.with_columns(pl.col("open_time").dt.date().alias("_date"))
-    df_daily = df_daily.filter(pl.col("_date") >= start_dt.date()).filter(pl.col("_date") <= end_dt.date())
+    df_daily = df_daily.filter(pl.col("_date") >= start_dt.date()).filter(
+        pl.col("_date") <= end_dt.date()
+    )
 
     if df_daily.is_empty():
         return {"error": "No daily rows for requested date range", "symbol": symbol}
@@ -131,9 +132,7 @@ def predict_baseline(
 
             def depth_probs_for(direction: str) -> dict[str, float]:
                 idxs = [
-                    d_idx[j]
-                    for j in window_idx
-                    if dirs[j] == direction and d_idx[j] is not None
+                    d_idx[j] for j in window_idx if dirs[j] == direction and d_idx[j] is not None
                 ]
                 total = len(idxs)
                 counts = [0] * depth_k
@@ -167,4 +166,3 @@ def predict_baseline(
         "end": end,
         "predictions": len(predictions),
     }
-

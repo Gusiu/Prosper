@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
 import polars as pl
 from sklearn.ensemble import HistGradientBoostingClassifier
 
@@ -45,6 +46,18 @@ def predict_ml(
     if settings is None:
         settings = get_settings()
 
+    # ── Seed & deterministic mode (research) ─────────────────────────────────
+    effective_seed = settings.seed if settings.seed is not None else 42
+    if settings.deterministic or settings.seed is not None:
+        import random
+
+        random.seed(effective_seed)
+        np.random.seed(effective_seed)
+        if settings.deterministic:
+            print(f"[research] Deterministic mode ON (seed={effective_seed})")
+        else:
+            print(f"[research] Seed set to {effective_seed}")
+
     depth_bins, depth_labels = parse_depth_bins(depth_bins_str)
 
     start_dt = parse_date(start)
@@ -53,7 +66,10 @@ def predict_ml(
     # 1. Load Features
     feat_path = get_features_parquet_path(symbol, "1d", settings=settings)
     if not feat_path.exists():
-        return {"error": f"No features parquet found for {symbol}. Run features build.", "symbol": symbol}
+        return {
+            "error": f"No features parquet found for {symbol}. Run features build.",
+            "symbol": symbol,
+        }
 
     # Disable hive partitioning to avoid duplicate schema errors if 'symbol' is already a column
     df_feat = pl.read_parquet(feat_path, hive_partitioning=False).sort("open_time")
@@ -95,10 +111,7 @@ def predict_ml(
                 directions[i] = d
                 if d in ("long", "short"):
                     depths[i] = assign_depth_bin(abs(r) * 100.0, depth_bins)
-        horizon_targets[h.name] = {
-            "direction": directions,
-            "depth": depths
-        }
+        horizon_targets[h.name] = {"direction": directions, "depth": depths}
 
     predictions: list[dict[str, Any]] = []
 
@@ -126,9 +139,11 @@ def predict_ml(
         if train_end_idx < 10:
             for h in horizons:
                 out[h.name] = {
-                    "P_long": 0.33, "P_flat": 0.34, "P_short": 0.33,
-                    "depth_long_bins": {label: 1.0/len(depth_labels) for label in depth_labels},
-                    "depth_short_bins": {label: 1.0/len(depth_labels) for label in depth_labels},
+                    "P_long": 0.33,
+                    "P_flat": 0.34,
+                    "P_short": 0.33,
+                    "depth_long_bins": {label: 1.0 / len(depth_labels) for label in depth_labels},
+                    "depth_short_bins": {label: 1.0 / len(depth_labels) for label in depth_labels},
                 }
             predictions.append(out)
             continue
@@ -157,12 +172,14 @@ def predict_ml(
                 y_train_valid = [dir_map[y_dirs[k]] for k in valid_idx]
 
                 # Direction classifier
-                clf_dir = HistGradientBoostingClassifier(random_state=42, max_iter=50, max_leaf_nodes=15)
+                clf_dir = HistGradientBoostingClassifier(
+                    random_state=effective_seed, max_iter=50, max_leaf_nodes=15
+                )
                 # Need at least 2 classes
                 if len(set(y_train_valid)) > 1:
                     clf_dir.fit(X_train_valid, y_train_valid)
                 else:
-                    clf_dir = None # fallback
+                    clf_dir = None  # fallback
 
                 # Depth classifiers (long and short separately)
                 idx_long = [k for k in valid_idx if y_dirs[k] == "long"]
@@ -170,12 +187,16 @@ def predict_ml(
 
                 clf_depth_long = None
                 if len(idx_long) > 5 and len(set(y_depths[k] for k in idx_long)) > 1:
-                    clf_depth_long = HistGradientBoostingClassifier(random_state=42, max_iter=30, max_leaf_nodes=10)
+                    clf_depth_long = HistGradientBoostingClassifier(
+                        random_state=effective_seed, max_iter=30, max_leaf_nodes=10
+                    )
                     clf_depth_long.fit(X_train[idx_long], [y_depths[k] for k in idx_long])
 
                 clf_depth_short = None
                 if len(idx_short) > 5 and len(set(y_depths[k] for k in idx_short)) > 1:
-                    clf_depth_short = HistGradientBoostingClassifier(random_state=42, max_iter=30, max_leaf_nodes=10)
+                    clf_depth_short = HistGradientBoostingClassifier(
+                        random_state=effective_seed, max_iter=30, max_leaf_nodes=10
+                    )
                     clf_depth_short.fit(X_train[idx_short], [y_depths[k] for k in idx_short])
 
                 # Fallback empirics for depth
@@ -210,9 +231,11 @@ def predict_ml(
             cache = models_cache.get(h.name)
             if not cache or not cache["clf_dir"]:
                 out[h.name] = {
-                    "P_long": 0.33, "P_flat": 0.34, "P_short": 0.33,
-                    "depth_long_bins": {label: 1.0/len(depth_labels) for label in depth_labels},
-                    "depth_short_bins": {label: 1.0/len(depth_labels) for label in depth_labels},
+                    "P_long": 0.33,
+                    "P_flat": 0.34,
+                    "P_short": 0.33,
+                    "depth_long_bins": {label: 1.0 / len(depth_labels) for label in depth_labels},
+                    "depth_short_bins": {label: 1.0 / len(depth_labels) for label in depth_labels},
                 }
                 continue
 

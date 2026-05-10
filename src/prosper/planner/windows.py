@@ -122,7 +122,9 @@ def plan_windows(
 
     predictions_dir = settings.reports_predictions_dir / symbol / "daily"
     if not predictions_dir.exists():
-        return {"error": f"No predictions found for {symbol}. Run `prosper predict baseline` first."}
+        return {
+            "error": f"No predictions found for {symbol}. Run `prosper predict baseline` first."
+        }
 
     start_dt = parse_date(start) if start else None
     end_dt = parse_date(end) if end else None

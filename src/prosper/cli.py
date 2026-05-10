@@ -52,11 +52,13 @@ app.add_typer(eval_app, name="eval")
 
 @symbols_app.command("list")
 def symbols_list(
-    quote_asset: str = typer.Option(None, "--quote-asset", help="Filter by quote asset (e.g., USDT)"),
+    quote_asset: str = typer.Option(
+        None, "--quote-asset", help="Filter by quote asset (e.g., USDT)"
+    ),
     output: Path = typer.Option(None, "--output", "-o", help="Output JSON file path"),
 ) -> None:
     """
-    Pobiera listę symboli SPOT z Binance exchangeInfo i zapisuje data/meta/binance_spot_symbols.json.
+    Fetch SPOT symbols list from Binance exchangeInfo and save to data/meta/binance_spot_symbols.json.
     """
     settings = get_settings()
 
@@ -72,7 +74,12 @@ def symbols_list(
         output_path = output or settings.meta_dir / "binance_spot_symbols.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
-            json.dump({"symbols": symbols_list_data, "count": len(symbols_list_data)}, f, indent=2, sort_keys=True)
+            json.dump(
+                {"symbols": symbols_list_data, "count": len(symbols_list_data)},
+                f,
+                indent=2,
+                sort_keys=True,
+            )
 
         console.print(f"[green]Saved to: {output_path}[/green]")
 
@@ -96,11 +103,15 @@ def backfill_cmd(
     workers: int = typer.Option(4, "--workers", "-w", help="Number of parallel workers"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Dry run mode (simulate only)"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
 ) -> None:
     """
     Backfill monthly data from Binance Public Data.
     """
-    settings = get_settings(data_root=root)
+    settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
 
     try:
         summary = backfill(
@@ -113,7 +124,12 @@ def backfill_cmd(
             settings=settings,
         )
 
-        if summary.get("failed", 0) > 0:
+        total = summary.get("total", 0)
+        failed = summary.get("failed", 0)
+        if failed > 0:
+            console.print(f"[yellow]Warning: {failed}/{total} months had errors[/yellow]")
+        if total > 0 and failed >= total:
+            # Only fail if ALL months failed — partial success should continue the chain
             raise typer.Exit(1)
 
     except Exception as e:
@@ -128,11 +144,15 @@ def qa_check(
     year: int = typer.Option(..., "--year", help="Year"),
     month: int = typer.Option(..., "--month", help="Month (1-12)"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
 ) -> None:
     """
     Run QA checks on data (sorting, duplicates, gaps, OHLC invariants).
     """
-    settings = get_settings(data_root=root)
+    settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
 
     try:
         results = run_qa_checks(symbol, interval, year, month, settings=settings)
@@ -173,6 +193,10 @@ def aggregate_cmd(
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM format"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
     extra_intervals: list[str] | None = typer.Argument(
         None,
         help="Additional target intervals (used only for syntax: --to 1h 1d 1w).",
@@ -181,16 +205,20 @@ def aggregate_cmd(
     """
     Aggregate klines from 1m to 1h, 1d, 1w.
     """
-    settings = get_settings(data_root=root)
+    settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
     to_list = normalize_target_intervals([to_intervals, *(extra_intervals or [])])
 
     try:
+        # Robust date handling: truncate YYYY-MM-DD to YYYY-MM if needed
+        clean_start = start[:7] if len(start) >= 7 else start
+        clean_end = end[:7] if len(end) >= 7 else end
+
         results = aggregate(
             symbol=symbol,
             from_interval=from_interval,
             to_intervals=to_list,
-            start=start,
-            end=end,
+            start=clean_start,
+            end=clean_end,
             settings=settings,
         )
 
@@ -198,13 +226,22 @@ def aggregate_cmd(
         console.print(f"Processed months: {len(results.get('processed_months', []))}")
         console.print(f"Errors: {len(results.get('errors', []))}")
 
-        if results.get("errors"):
-            console.print("[yellow]Errors:[/yellow]")
-            for error in results["errors"]:
+        errors = results.get("errors", [])
+        processed = results.get("processed_months", [])
+        if errors:
+            console.print("[yellow]Warnings:[/yellow]")
+            for error in errors:
                 console.print(f"  - {error}")
 
-        if results.get("errors"):
+        if errors and not processed:
+            # Only fail if there were ACTUAL errors and ZERO success.
+            # If 0 processed but 0 errors, it just means data was already there - CONTINUE.
             raise typer.Exit(1)
+
+        if not errors and not processed:
+            console.print(
+                "[blue]Info: No new months to aggregate (data already exists or range empty). Continuing...[/blue]"
+            )
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -226,18 +263,24 @@ def labels_build(
         "--forward_days",
         help="Forward horizon in days (N) for r_fwd",
     ),
-    flat_threshold: float = typer.Option(0.01, "--flat-threshold", help="Flat threshold (e.g., 0.01 = 1%)"),
+    flat_threshold: float = typer.Option(
+        0.01, "--flat-threshold", help="Flat threshold (e.g., 0.01 = 1%)"
+    ),
     depth_bins: str = typer.Option(
         "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34+",
         "--depth-bins",
         help="Depth bin definitions",
     ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
 ) -> None:
     """
     Build direction (long/flat/short) and depth labels from daily klines.
     """
-    settings = get_settings(data_root=root)
+    settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
 
     try:
         stats = build_labels(
@@ -276,12 +319,16 @@ def features_build(
         "--base_interval",
         help="Base interval for features (MVP: 1d)",
     ),
-    start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
-    end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
+    start: str = typer.Option(None, "--start", help="Start date in YYYY-MM-DD format"),
+    end: str = typer.Option(None, "--end", help="End date in YYYY-MM-DD format"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
 ) -> None:
     """Build engineered features parquet."""
-    settings = get_settings(data_root=root)
+    settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
 
     try:
         results = build_features(
@@ -313,9 +360,13 @@ def predict_baseline_cmd(
         help="Rolling window size in days (used for empirical frequencies)",
     ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
 ) -> None:
     """Generate baseline probabilistic predictions for short/medium/long horizons."""
-    settings = get_settings(data_root=root)
+    settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
 
     try:
         results = predict_baseline_3horizons(
@@ -347,9 +398,23 @@ def predict_ml_cmd(
         help="Training window size in days",
     ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    deterministic: bool = typer.Option(
+        False, "--deterministic", help="Enable deterministic training"
+    ),
+    seed: int = typer.Option(42, "--seed", help="Random seed for reproducibility"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
 ) -> None:
     """Generate ML probabilistic predictions for short/medium/long horizons."""
-    settings = get_settings(data_root=root)
+    settings = get_settings(
+        data_root=root,
+        strict=strict,
+        deterministic=deterministic,
+        seed=seed,
+        save_metadata=save_metadata,
+    )
 
     try:
         results = predict_ml(
@@ -374,23 +439,47 @@ def predict_gru_cmd(
     symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
-    train_window_days: int = typer.Option(365, "--train-window-days", help="Training window size in days"),
+    train_window_days: int = typer.Option(
+        365, "--train-window-days", help="Training window size in days"
+    ),
     seq_len: int = typer.Option(30, "--seq-len", help="Sequence length for GRU input"),
     epochs: int = typer.Option(20, "--epochs", help="Training epochs per window"),
     hidden_size: int = typer.Option(64, "--hidden-size", help="GRU hidden layer size"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    deterministic: bool = typer.Option(
+        False, "--deterministic", help="Enable deterministic training"
+    ),
+    seed: int = typer.Option(42, "--seed", help="Random seed for reproducibility"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
 ) -> None:
     """Generate GRU (Deep Learning) probabilistic predictions for short/medium/long horizons."""
-    settings = get_settings(data_root=root)
+    settings = get_settings(
+        data_root=root,
+        strict=strict,
+        deterministic=deterministic,
+        seed=seed,
+        save_metadata=save_metadata,
+    )
     try:
         results = predict_gru(
-            symbol=symbol, start=start, end=end, settings=settings,
-            seq_len=seq_len, train_window_days=train_window_days, epochs=epochs, hidden_size=hidden_size,
+            symbol=symbol,
+            start=start,
+            end=end,
+            settings=settings,
+            seq_len=seq_len,
+            train_window_days=train_window_days,
+            epochs=epochs,
+            hidden_size=hidden_size,
         )
         if "error" in results:
             console.print(f"[red]Error: {results['error']}[/red]")
             raise typer.Exit(1)
-        console.print(f"[green][OK][/green] GRU Predictions generated: {results['predictions']} rows (device: {results.get('device', 'cpu')})")
+        console.print(
+            f"[green][OK][/green] GRU Predictions generated: {results['predictions']} rows (device: {results.get('device', 'cpu')})"
+        )
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
@@ -401,25 +490,49 @@ def predict_tft_cmd(
     symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
-    train_window_days: int = typer.Option(365, "--train-window-days", help="Training window size in days"),
+    train_window_days: int = typer.Option(
+        365, "--train-window-days", help="Training window size in days"
+    ),
     seq_len: int = typer.Option(60, "--seq-len", help="Encoder sequence length"),
     max_epochs: int = typer.Option(10, "--max-epochs", help="Training epochs per window"),
     hidden_size: int = typer.Option(32, "--hidden-size", help="TFT hidden layer size"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    deterministic: bool = typer.Option(
+        False, "--deterministic", help="Enable deterministic training"
+    ),
+    seed: int = typer.Option(42, "--seed", help="Random seed for reproducibility"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
 ) -> None:
     """Generate TFT (Temporal Fusion Transformer) probabilistic predictions."""
     from prosper.predict.tft import predict_tft
-    settings = get_settings(data_root=root)
+
+    settings = get_settings(
+        data_root=root,
+        strict=strict,
+        deterministic=deterministic,
+        seed=seed,
+        save_metadata=save_metadata,
+    )
     try:
         results = predict_tft(
-            symbol=symbol, start=start, end=end, settings=settings,
-            seq_len=seq_len, train_window_days=train_window_days,
-            max_epochs=max_epochs, hidden_size=hidden_size,
+            symbol=symbol,
+            start=start,
+            end=end,
+            settings=settings,
+            seq_len=seq_len,
+            train_window_days=train_window_days,
+            max_epochs=max_epochs,
+            hidden_size=hidden_size,
         )
         if "error" in results:
             console.print(f"[red]Error: {results['error']}[/red]")
             raise typer.Exit(1)
-        console.print(f"[green][OK][/green] TFT Predictions generated: {results['predictions']} rows")
+        console.print(
+            f"[green][OK][/green] TFT Predictions generated: {results['predictions']} rows"
+        )
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
@@ -429,18 +542,25 @@ def predict_tft_cmd(
 def planner_windows(
     symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
     short_weeks: str = typer.Option("1-26", "--short-weeks", help="Short horizon weeks (min-max)"),
-    medium_weeks: str = typer.Option("13-52", "--medium-weeks", help="Medium horizon weeks (min-max)"),
+    medium_weeks: str = typer.Option(
+        "13-52", "--medium-weeks", help="Medium horizon weeks (min-max)"
+    ),
     long_weeks: str = typer.Option("26-104", "--long-weeks", help="Long horizon weeks (min-max)"),
     start: str = typer.Option(None, "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(None, "--end", help="End date in YYYY-MM-DD format"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
 ) -> None:
     """
     Plan action windows and generate recommendations (Strong Buy ... Strong Sell).
     """
-    settings = get_settings(data_root=root)
+    settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
 
     try:
+
         def parse_weeks(weeks_str: str) -> tuple[int, int]:
             parts = weeks_str.split("-")
             if len(parts) != 2:
@@ -487,14 +607,22 @@ def planner_windows(
 @eval_app.command("walkforward")
 def eval_walkforward_cmd(
     symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
-    train_months: int = typer.Option(24, "--train-months", "--train_months", help="Train months for walk-forward"),
-    step_months: int = typer.Option(1, "--step-months", "--step_months", help="Step months for walk-forward"),
+    train_months: int = typer.Option(
+        24, "--train-months", "--train_months", help="Train months for walk-forward"
+    ),
+    step_months: int = typer.Option(
+        1, "--step-months", "--step_months", help="Step months for walk-forward"
+    ),
     start: str = typer.Option(..., "--start", help="Start month in YYYY-MM"),
     end: str = typer.Option(..., "--end", help="End month in YYYY-MM"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
 ) -> None:
     """Evaluate predictions with walk-forward probabilistic + trading metrics (MVP)."""
-    settings = get_settings(data_root=root)
+    settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
 
     try:
         report = eval_walkforward(
@@ -521,9 +649,13 @@ def eval_backtest_cmd(
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD"),
     capital: float = typer.Option(10000.0, "--capital", help="Initial Capital in USDT"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
 ) -> None:
     """Run Trading Simulator (Backtest) using generated predictions."""
-    settings = get_settings(data_root=root)
+    settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
 
     try:
         res = run_backtest(
@@ -542,7 +674,7 @@ def eval_backtest_cmd(
         console.print(f"Initial Capital: ${res['initial_capital']:.2f}")
         console.print(f"Final Value:     ${res['final_value']:.2f}")
 
-        color = "green" if res['roi_pct'] >= 0 else "red"
+        color = "green" if res["roi_pct"] >= 0 else "red"
         console.print(f"ROI:             [{color}]{res['roi_pct']:.2f}%[/{color}]")
         console.print(f"Max Drawdown:    [red]-{res['max_drawdown_pct']:.2f}%[/red]")
         console.print(f"Total Trades:    {res['total_trades']}")

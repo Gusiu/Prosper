@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+
 class ProgressReporter:
     def __init__(self, path: Path):
         self.path = path
@@ -20,5 +21,5 @@ class ProgressReporter:
     def read(self):
         if not self.path.exists():
             return None
-        with open(self.path, "r", encoding="utf-8") as f:
+        with open(self.path, encoding="utf-8") as f:
             return json.load(f)

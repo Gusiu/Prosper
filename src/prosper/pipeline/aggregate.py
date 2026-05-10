@@ -74,7 +74,12 @@ def aggregate_klines(df: pl.DataFrame, interval: str) -> pl.DataFrame:
     ]
     if "close_time" in df.columns:
         agg_exprs.append(pl.last("close_time").alias("close_time"))
-    for opt_col in ["quote_asset_volume", "num_trades", "taker_buy_base_volume", "taker_buy_quote_volume"]:
+    for opt_col in [
+        "quote_asset_volume",
+        "num_trades",
+        "taker_buy_base_volume",
+        "taker_buy_quote_volume",
+    ]:
         if opt_col in df.columns:
             agg_exprs.append(pl.sum(opt_col).alias(opt_col))
 
@@ -85,9 +90,7 @@ def aggregate_klines(df: pl.DataFrame, interval: str) -> pl.DataFrame:
         .group_by("bucket_start")
         .agg(agg_exprs)
         .rename({"bucket_start": "open_time"})
-        .with_columns(
-            pl.col("open_time").dt.replace_time_zone("UTC").alias("open_time")
-        )
+        .with_columns(pl.col("open_time").dt.replace_time_zone("UTC").alias("open_time"))
         .sort("open_time")
     )
 
@@ -198,7 +201,9 @@ def _save_aggregated_partitions(
             pl.col("open_time").dt.week().alias("_week"),
         )
         for (year, week), group_df in partitioned.group_by(["_year", "_week"]):
-            output_path = get_parquet_file_path(symbol, interval, int(year), week=int(week), settings=settings)
+            output_path = get_parquet_file_path(
+                symbol, interval, int(year), week=int(week), settings=settings
+            )
             save_parquet(group_df.drop(["_year", "_week"]).sort("open_time"), output_path)
             written_paths.append(str(output_path))
         return sorted(written_paths)
@@ -208,7 +213,9 @@ def _save_aggregated_partitions(
         pl.col("open_time").dt.month().alias("_month"),
     )
     for (year, month), group_df in partitioned.group_by(["_year", "_month"]):
-        output_path = get_parquet_file_path(symbol, interval, int(year), month=int(month), settings=settings)
+        output_path = get_parquet_file_path(
+            symbol, interval, int(year), month=int(month), settings=settings
+        )
         save_parquet(group_df.drop(["_year", "_month"]).sort("open_time"), output_path)
         written_paths.append(str(output_path))
 

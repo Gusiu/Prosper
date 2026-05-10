@@ -107,7 +107,9 @@ def build_labels(
 
     # Assign direction labels
     df_labels = df_all.with_columns(
-        pl.col("return_fwd").map_elements(assign_direction, return_dtype=pl.Utf8).alias("direction"),
+        pl.col("return_fwd")
+        .map_elements(assign_direction, return_dtype=pl.Utf8)
+        .alias("direction"),
     )
 
     # Assign depth bins - need to use a wrapper function for map_elements
@@ -139,9 +141,7 @@ def build_labels(
     direction_stats = {row["direction"]: row["count"] for row in direction_counts}
 
     depth_counts = (
-        df_labels.filter(pl.col("depth_bin").is_not_null())["depth_bin"]
-        .value_counts()
-        .to_dicts()
+        df_labels.filter(pl.col("depth_bin").is_not_null())["depth_bin"].value_counts().to_dicts()
     )
     depth_stats = {str(row["depth_bin"]): row["count"] for row in depth_counts}
 

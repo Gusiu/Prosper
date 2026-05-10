@@ -14,7 +14,7 @@ from prosper.storage.layout import (
     get_eval_walkforward_summary_path,
     get_parquet_file_path,
 )
-from prosper.utils.time import generate_month_range, parse_year_month
+from prosper.utils.time import generate_month_range
 
 ALLOWED_RECOMMENDATIONS = {
     "Strong Buy",
@@ -59,8 +59,10 @@ def multiclass_logloss_brier(
 
 def load_daily_closes(symbol: str, start_ym: str, end_ym: str, settings: Settings) -> pl.DataFrame:
     """Load daily klines parquet across months and return open_time/date, close arrays."""
+    from prosper.utils.time import generate_month_range
+
     parts: list[pl.DataFrame] = []
-    for y, m in iter_months(start_ym, end_ym):
+    for y, m in generate_month_range(start_ym, end_ym):
         path = get_parquet_file_path(symbol, "1d", y, month=m, settings=settings)
         if path.exists():
             parts.append(pl.read_parquet(path, hive_partitioning=False))
@@ -73,12 +75,15 @@ def load_daily_closes(symbol: str, start_ym: str, end_ym: str, settings: Setting
     return df
 
 
-def load_predictions_jsonl(symbol: str, start_ym: str, end_ym: str, settings: Settings) -> list[dict[str, Any]]:
+def load_predictions_jsonl(
+    symbol: str, start_ym: str, end_ym: str, settings: Settings
+) -> list[dict[str, Any]]:
     """Load prediction JSONL rows for the requested months."""
     from prosper.storage.layout import get_prediction_report_path
+    from prosper.utils.time import generate_month_range
 
     rows: list[dict[str, Any]] = []
-    for y, m in iter_months(start_ym, end_ym):
+    for y, m in generate_month_range(start_ym, end_ym):
         p = get_prediction_report_path(symbol, y, m, settings=settings)
         if not p.exists():
             continue
@@ -89,12 +94,15 @@ def load_predictions_jsonl(symbol: str, start_ym: str, end_ym: str, settings: Se
     return rows
 
 
-def load_recommendations_windows(symbol: str, start_ym: str, end_ym: str, settings: Settings) -> list[dict[str, Any]]:
+def load_recommendations_windows(
+    symbol: str, start_ym: str, end_ym: str, settings: Settings
+) -> list[dict[str, Any]]:
     """Load recommendation windows JSON for requested months."""
     from prosper.storage.layout import get_recommendation_report_path
+    from prosper.utils.time import generate_month_range
 
     windows: list[dict[str, Any]] = []
-    for y, m in iter_months(start_ym, end_ym):
+    for y, m in generate_month_range(start_ym, end_ym):
         p = get_recommendation_report_path(symbol, y, m, settings=settings)
         if not p.exists():
             continue
@@ -211,7 +219,12 @@ def eval_walkforward(
 
         month_out: dict[str, Any] = {"month": ym, "horizons": {}}
         for h in horizons:
-            month_out["horizons"][h] = {"n_samples": 0, "logloss": None, "brier": None, "mean_pnl": None}
+            month_out["horizons"][h] = {
+                "n_samples": 0,
+                "logloss": None,
+                "brier": None,
+                "mean_pnl": None,
+            }
 
         for pred in month_rows:
             date_str = str(pred["date"])
@@ -249,7 +262,9 @@ def eval_walkforward(
                     logloss if month_h["logloss"] is None else month_h["logloss"] + logloss
                 )
                 month_h["brier"] = brier if month_h["brier"] is None else month_h["brier"] + brier
-                month_h["mean_pnl"] = pnl if month_h["mean_pnl"] is None else month_h["mean_pnl"] + pnl
+                month_h["mean_pnl"] = (
+                    pnl if month_h["mean_pnl"] is None else month_h["mean_pnl"] + pnl
+                )
 
         # finalize month metrics
         for h in horizons:
@@ -298,4 +313,3 @@ def eval_walkforward(
     out_path.write_text(json.dumps(report, indent=2, sort_keys=True, default=str), encoding="utf-8")
 
     return report
-

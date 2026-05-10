@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 # ── Direction constants ──────────────────────────────────────────────────────
 DIRECTION_CLASSES: list[str] = ["short", "flat", "long"]
 DIR_TO_IDX: dict[str, int] = {c: i for i, c in enumerate(DIRECTION_CLASSES)}
@@ -16,7 +15,14 @@ IDX_TO_DIR: dict[int, str] = {i: c for i, c in enumerate(DIRECTION_CLASSES)}
 # ── Depth-bin constants ──────────────────────────────────────────────────────
 DEFAULT_DEPTH_BINS_STR = "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34+"
 DEPTH_BIN_LABELS: list[str] = [
-    "1-2", "2-3", "3-5", "5-8", "8-13", "13-21", "21-34", "34+",
+    "1-2",
+    "2-3",
+    "3-5",
+    "5-8",
+    "8-13",
+    "13-21",
+    "21-34",
+    "34+",
 ]
 N_DEPTH_BINS: int = len(DEPTH_BIN_LABELS)
 
@@ -71,9 +77,7 @@ def parse_depth_bins(
     return bins, labels
 
 
-def assign_depth_bin(
-    value_pct: float, bins: list[tuple[float, float | None]]
-) -> int | None:
+def assign_depth_bin(value_pct: float, bins: list[tuple[float, float | None]]) -> int | None:
     """Assign a positive percentage value to a depth-bin index."""
     for idx, (min_val, max_val) in enumerate(bins):
         if max_val is None:

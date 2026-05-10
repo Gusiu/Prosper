@@ -87,8 +87,10 @@ def run_backtest(
         h_data = pred["short"]
         edge = calculate_edge(h_data["P_long"], h_data["P_short"])
         risk = calculate_risk_metric(
-            h_data["P_long"], h_data["P_short"],
-            h_data.get("depth_long_bins", {}), h_data.get("depth_short_bins", {})
+            h_data["P_long"],
+            h_data["P_short"],
+            h_data.get("depth_long_bins", {}),
+            h_data.get("depth_short_bins", {}),
         )
 
         rec = map_to_recommendation(edge, risk)
@@ -115,15 +117,19 @@ def run_backtest(
         if dd > max_drawdown:
             max_drawdown = dd
 
-        history.append({
-            "date": date_str,
-            "action": action,
-            "price": current_price,
-            "value": current_value,
-            "recommendation": rec
-        })
+        history.append(
+            {
+                "date": date_str,
+                "action": action,
+                "price": current_price,
+                "value": current_value,
+                "recommendation": rec,
+            }
+        )
 
-    final_mark_price = last_price if last_price is not None else prices.get(predictions[-1]["date"], 0)
+    final_mark_price = (
+        last_price if last_price is not None else prices.get(predictions[-1]["date"], 0)
+    )
     final_value = capital + (position * final_mark_price)
     roi = (final_value - initial_capital) / initial_capital
 
@@ -135,5 +141,5 @@ def run_backtest(
         "max_drawdown_pct": max_drawdown * 100,
         "total_trades": trades,
         "days_tested": len(history),
-        "chart_data": history
+        "chart_data": history,
     }
