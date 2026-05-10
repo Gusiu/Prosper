@@ -1,6 +1,8 @@
 """Utility for compacting/merging Parquet files into larger partitions."""
-import polars as pl
 from pathlib import Path
+
+import polars as pl
+
 
 def compact_parquet_files(parquet_dir: Path, out_path: Path, pattern: str = "*.parquet"):
     files = list(parquet_dir.glob(pattern))

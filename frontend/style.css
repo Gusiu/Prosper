@@ -101,6 +101,23 @@ body {
   animation: pulse-blue 1s infinite;
 }
 
+.status-dot.quality-complete {
+  background-color: var(--green-main);
+  box-shadow: 0 0 8px var(--green-main);
+}
+.status-dot.quality-healthy {
+  background-color: var(--green-main);
+  box-shadow: 0 0 8px var(--green-main);
+}
+.status-dot.quality-warning {
+  background-color: #ffbd2e;
+  box-shadow: 0 0 8px #ffbd2e;
+}
+.status-dot.quality-incomplete {
+  background-color: var(--red-main);
+  box-shadow: 0 0 8px var(--red-main);
+}
+
 @keyframes pulse {
   0% {
     transform: scale(0.95);
@@ -190,10 +207,15 @@ body {
   gap: 20px;
 }
 .ops-card {
-  padding: 20px;
+  padding: 24px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
+  height: 520px; /* Fixed height for consistency across modules */
+  background: var(--bg-card);
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
 }
 .ops-card h3 {
   font-size: 1.1rem;
@@ -410,13 +432,37 @@ body {
   color: var(--accent-glow);
 }
 
-/* Progress Bar */
+/* Progress Bar (Integrated into topbar) */
+#progress-container-stable {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
 #global-progress {
-  flex-direction: column;
-  min-width: 420px;
+  display: none;
+  width: 100%;
+  background: rgba(0, 229, 255, 0.05);
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 229, 255, 0.15);
+}
+
+.table-container {
+  flex: 1;
+  min-height: 0; /* Important for flex child scrolling */
+  overflow-y: auto;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.15);
 }
 
 #progress-bar-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-glow), #00b8d4);
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.4);
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   min-width: 2px;
 }
 
@@ -533,20 +579,169 @@ progress::-moz-progress-bar {
   color: white;
 }
 
-/* Checkboxes */
+/* Research Sidebar Layout */
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 20px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.research-sidebar-panel {
+  padding: 15px 10px;
+}
+
+.research-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--panel-border);
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 10px;
+}
+
+.research-options {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(0, 229, 255, 0.03);
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 229, 255, 0.1);
+  margin-bottom: 15px;
+}
+
+.research-options label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* Checkbox Spacing Fix */
 .checkbox-group {
   display: flex;
-  gap: 12px;
+  gap: 15px; /* More breathing room */
   align-items: center;
   font-size: 0.85rem;
 }
+
 .checkbox-group label {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px; /* More space between check and text */
+  margin-right: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* Research Mode Toggle */
+.research-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  transition: color 0.2s;
+}
+.research-toggle:hover {
+  color: var(--accent-glow);
+}
+.research-toggle.active {
+  color: var(--accent-glow);
+}
+.toggle-switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 11px;
+  transition: background 0.3s;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+.toggle-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: transform 0.3s, background 0.3s;
+}
+.toggle-switch.active {
+  background: rgba(0, 229, 255, 0.2);
+  border-color: rgba(0, 229, 255, 0.4);
+}
+.toggle-switch.active::after {
+  transform: translateX(18px);
+  background: var(--accent-glow);
+  box-shadow: 0 0 8px rgba(0, 229, 255, 0.5);
+}
+
+/* Research Options Panel */
+.research-options {
+  display: none;
+  padding: 12px 20px;
+  background: rgba(0, 229, 255, 0.04);
+  border: 1px solid rgba(0, 229, 255, 0.15);
+  border-radius: 10px;
+  margin-bottom: 12px;
+  animation: fadeIn 0.3s ease-in-out;
+}
+.research-options.visible {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+.research-options label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.2s;
+}
+.research-options label:hover {
+  color: var(--text-main);
+}
+.research-options input[type="checkbox"] {
+  accent-color: var(--accent-glow);
   cursor: pointer;
 }
-.checkbox-group input {
-  cursor: pointer;
-  accent-color: var(--accent-glow);
+.research-options input[type="number"] {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--panel-border);
+  color: var(--text-main);
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  width: 72px;
+  outline: none;
+}
+.research-options input[type="number"]:focus {
+  border-color: var(--accent-glow);
+}
+.research-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  background: rgba(0, 229, 255, 0.12);
+  color: var(--accent-glow);
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  text-transform: uppercase;
 }

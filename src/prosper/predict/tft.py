@@ -11,7 +11,6 @@ import polars as pl
 from prosper.config import Settings, get_settings
 from prosper.labels.depth import (
     DEPTH_BIN_LABELS,
-    DIRECTION_CLASSES,
     N_DEPTH_BINS,
     direction_from_return,
 )
@@ -46,6 +45,33 @@ def predict_tft(
     """
     if settings is None:
         settings = get_settings()
+
+    # ── Seed & deterministic mode (research) ─────────────────────────────────
+    if settings.deterministic:
+        seed = settings.seed if settings.seed is not None else 42
+        np.random.seed(seed)
+        import random
+
+        random.seed(seed)
+        try:
+            import torch
+
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(seed)
+                torch.cuda.manual_seed_all(seed)
+                torch.backends.cudnn.deterministic = True
+                torch.backends.cudnn.benchmark = False
+            torch.use_deterministic_algorithms(True)
+        except ImportError:
+            pass
+        print(f"[research] Deterministic mode ON (seed={seed})")
+    elif settings.seed is not None:
+        np.random.seed(settings.seed)
+        import random
+
+        random.seed(settings.seed)
+        print(f"[research] Seed set to {settings.seed} (non-deterministic CUDA)")
 
     # Suppress noisy upstream warnings
     warnings.filterwarnings("ignore", category=UserWarning)
@@ -88,7 +114,10 @@ def predict_tft(
         from pytorch_forecasting.data.encoders import NaNLabelEncoder
         from pytorch_forecasting.metrics import CrossEntropy
     except ImportError:
-        return {"error": "pytorch-forecasting not installed. Run: poetry add pytorch-forecasting lightning", "symbol": symbol}
+        return {
+            "error": "pytorch-forecasting not installed. Run: poetry add pytorch-forecasting lightning",
+            "symbol": symbol,
+        }
 
     predictions: list[dict[str, Any]] = []
     current_train_month = None
@@ -170,13 +199,16 @@ def predict_tft(
                     reduce_on_plateau_patience=2,
                 )
 
-                trainer = L.Trainer(
+                trainer_kwargs = dict(
                     max_epochs=max_epochs,
                     enable_progress_bar=False,
                     enable_model_summary=False,
                     logger=False,
                     accelerator="cpu",
                 )
+                if settings.deterministic:
+                    trainer_kwargs["deterministic"] = True
+                trainer = L.Trainer(**trainer_kwargs)
                 trainer.fit(tft, train_dataloaders=loader)
                 tft_model = tft
                 # Store normalised matrix for inference
@@ -191,8 +223,13 @@ def predict_tft(
 
         if tft_model is None or norm_params is None or i < seq_len:
             for h in ("short", "medium", "long"):
-                out[h] = {"P_long": 0.33, "P_flat": 0.34, "P_short": 0.33,
-                          "depth_long_bins": uniform_depth.copy(), "depth_short_bins": uniform_depth.copy()}
+                out[h] = {
+                    "P_long": 0.33,
+                    "P_flat": 0.34,
+                    "P_short": 0.33,
+                    "depth_long_bins": uniform_depth.copy(),
+                    "depth_short_bins": uniform_depth.copy(),
+                }
         else:
             try:
                 med, iqr_arr, X_norm_all, ds_ref = norm_params
@@ -209,14 +246,20 @@ def predict_tft(
                     rows_inf.append(row)
 
                 df_inf = pd.DataFrame(rows_inf)
-                ds_inf = TimeSeriesDataSet.from_dataset(ds_ref, df_inf, predict=True, stop_randomization=True)
+                ds_inf = TimeSeriesDataSet.from_dataset(
+                    ds_ref, df_inf, predict=True, stop_randomization=True
+                )
                 inf_loader = ds_inf.to_dataloader(train=False, batch_size=1, num_workers=0)
 
                 raw_preds = tft_model.predict(inf_loader, mode="raw", return_x=False)
                 if isinstance(raw_preds, dict):
                     logits = raw_preds["prediction"][0, 0].cpu().numpy()
                 elif isinstance(raw_preds, tuple):
-                    logits = raw_preds[0]["prediction"][0, 0].cpu().numpy() if isinstance(raw_preds[0], dict) else raw_preds[0].prediction[0, 0].cpu().numpy()
+                    logits = (
+                        raw_preds[0]["prediction"][0, 0].cpu().numpy()
+                        if isinstance(raw_preds[0], dict)
+                        else raw_preds[0].prediction[0, 0].cpu().numpy()
+                    )
                 elif hasattr(raw_preds, "output"):
                     logits = raw_preds.output.prediction[0, 0].cpu().numpy()
                 else:
@@ -227,8 +270,13 @@ def predict_tft(
                 print(f"Inference exception at {date_str}: {e}")
                 p_short, p_flat, p_long = 0.33, 0.34, 0.33
 
-            horizon_out = {"P_long": p_long, "P_flat": p_flat, "P_short": p_short,
-                           "depth_long_bins": uniform_depth.copy(), "depth_short_bins": uniform_depth.copy()}
+            horizon_out = {
+                "P_long": p_long,
+                "P_flat": p_flat,
+                "P_short": p_short,
+                "depth_long_bins": uniform_depth.copy(),
+                "depth_short_bins": uniform_depth.copy(),
+            }
             for h in ("short", "medium", "long"):
                 out[h] = horizon_out.copy()
 

@@ -72,6 +72,7 @@ def parse_safe_command_chain(command: str) -> list[list[str]]:
         raise ValueError("Command is empty")
     return segments
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     frontend_dir.mkdir(parents=True, exist_ok=True)
@@ -84,7 +85,9 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=open_browser, daemon=True).start()
     yield
 
+
 app = FastAPI(title="Prosper Analysis Platform UI", lifespan=lifespan)
+
 
 class TaskRunner:
     def __init__(self):
@@ -146,7 +149,10 @@ class TaskRunner:
                                 )
                     self.process.wait()
                     self.logs.append(f"Task finished with exit code {self.process.returncode}")
-                    self._set_percent(((command_index + 1) / total_commands) * 100)
+                    # Płynny skok postępu po zakończeniu sub-komendy
+                    self._set_command_progress(
+                        command_index, total_commands, original_args, finished=True
+                    )
                     if self.process.returncode != 0:
                         self.progress.update({"label": "Failed", "stage": "failed"})
                         break
@@ -157,18 +163,37 @@ class TaskRunner:
                 self.is_running = False
                 self.process = None
                 if self.progress.get("stage") != "failed":
-                    self.progress.update({"percent": 100.0, "label": "Complete", "stage": "complete"})
+                    self.progress.update(
+                        {"percent": 100.0, "label": "Complete", "stage": "complete"}
+                    )
 
         threading.Thread(target=run_thread, daemon=True).start()
 
-    def _set_command_progress(self, command_index: int, total_commands: int, args: list[str]) -> None:
-        command_name = " ".join(args[3:5]) if len(args) > 4 else args[3]
+    def _set_command_progress(
+        self, command_index: int, total_commands: int, args: list[str], finished: bool = False
+    ) -> None:
+        # Extract a human-readable command name + symbol
+        cli_cmd = args[3] if len(args) > 3 else "task"
+
+        # Try to extract --symbol value
+        symbol = ""
+        for i, arg in enumerate(args):
+            if arg == "--symbol" and i + 1 < len(args):
+                symbol = args[i + 1]
+                break
+
+        label = f"{cli_cmd.title()} {symbol}" if symbol else cli_cmd.title()
+
+        if finished:
+            percent = ((command_index + 1) / total_commands) * 100.0
+        else:
+            percent = (command_index / total_commands) * 100.0
         self.progress.update(
             {
                 "visible": True,
-                "percent": round((command_index / total_commands) * 100, 1),
-                "label": command_name.title(),
-                "stage": args[3],
+                "percent": round(percent, 1),
+                "label": label,
+                "stage": cli_cmd,
             }
         )
 
@@ -183,6 +208,7 @@ class TaskRunner:
     def _set_percent(self, percent: float) -> None:
         self.progress["visible"] = True
         self.progress["percent"] = round(min(100.0, max(0.0, percent)), 1)
+
 
 runner = TaskRunner()
 
@@ -199,8 +225,10 @@ app.add_middleware(
 def get_status() -> dict[str, str]:
     return {"status": "online", "message": "Prosper Engine is operational"}
 
+
 class RunRequest(BaseModel):
     command: str
+
 
 @app.post("/api/task/run")
 def run_task(req: RunRequest):
@@ -211,6 +239,7 @@ def run_task(req: RunRequest):
     runner.start(req.command, commands)
     return {"status": "started", "command": req.command}
 
+
 @app.get("/api/task/logs")
 def get_task_logs(start_idx: int = 0):
     return {
@@ -218,6 +247,7 @@ def get_task_logs(start_idx: int = 0):
         "is_running": runner.is_running,
         "progress": runner.progress,
     }
+
 
 @app.get("/api/task/status")
 def get_task_status():
@@ -233,12 +263,14 @@ def get_dates():
         "today": today.strftime("%Y-%m-%d"),
         "yesterday": yesterday.strftime("%Y-%m-%d"),
         "default_start_month": "2017-08",
-        "yesterday_month": yesterday.strftime("%Y-%m")
+        "yesterday_month": yesterday.strftime("%Y-%m"),
     }
+
 
 @app.get("/api/data/inventory")
 def get_inventory(refresh: bool = False):
     return DataManager().get_inventory(refresh=refresh)
+
 
 @app.delete("/api/data/{symbol}")
 def delete_symbol_data(symbol: str):
@@ -250,7 +282,9 @@ def delete_symbol_data(symbol: str):
 
 
 @app.get("/api/backtest/{symbol}")
-def run_backtest_api(symbol: str, start: str = "2021-01-01", end: str = "2024-06-30") -> dict[str, Any]:
+def run_backtest_api(
+    symbol: str, start: str = "2021-01-01", end: str = "2024-06-30"
+) -> dict[str, Any]:
     """Dynamically run backtest and return capital curve & stats."""
     settings = get_settings()
     try:
@@ -271,11 +305,12 @@ def run_backtest_api(symbol: str, start: str = "2021-01-01", end: str = "2024-06
             "chart_data": {
                 "dates": [h["date"] for h in history],
                 "capital": [h["value"] for h in history],
-                "close": [h["price"] for h in history]
-            }
+                "close": [h["price"] for h in history],
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 class NoCacheStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope):
@@ -283,6 +318,7 @@ class NoCacheStaticFiles(StaticFiles):
         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         resp.headers["Expires"] = "0"
         return resp
+
 
 # Mount Frontend App
 app.mount("/", NoCacheStaticFiles(directory=str(frontend_dir), html=True), name="frontend")

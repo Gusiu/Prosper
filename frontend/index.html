@@ -30,75 +30,54 @@
           Evaluation
         </li>
       </ul>
-      <div class="status-indicator" style="margin-top: auto">
-        <span class="status-dot online"></span>
-        <span id="api-status">Engine Online</span>
-      </div>
-      <div class="status-indicator" style="margin-top: 10px">
-        <span class="status-dot" id="task-dot" style="background: #8e9bb0; box-shadow: none; animation: none"></span>
-        <span id="task-status">Task: Idle</span>
+
+      <!-- Sidebar Footer with Research Mode -->
+      <div class="sidebar-footer">
+        <div class="research-sidebar-panel">
+          <div class="research-options" id="research-options" style="margin-bottom: 12px;">
+            <label><span>Strict Mode</span> <input type="checkbox" id="research-strict" /></label>
+            <label><span>Deterministic</span> <input type="checkbox" id="research-deterministic" /></label>
+            <label><span>Seed Value</span> <input type="number" id="research-seed" value="42" /></label>
+            <label><span>Meta Records</span> <input type="checkbox" id="research-metadata" /></label>
+          </div>
+
+          <div class="research-toggle" id="research-toggle" onclick="toggleResearchMode()">
+            <span style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted);">Research Mode</span>
+            <div class="toggle-switch" id="research-switch"></div>
+            <span class="research-badge off" id="research-badge" style="font-size: 0.6rem;">OFF</span>
+          </div>
+        </div>
+
+        <div class="status-indicator">
+          <span class="status-dot online"></span>
+          <span id="api-status">Engine Online</span>
+        </div>
+        <div class="status-indicator" style="margin-top: 10px">
+          <span class="status-dot" id="task-dot" style="background: #8e9bb0; box-shadow: none; animation: none"></span>
+          <span id="task-status">Task: Idle</span>
+        </div>
       </div>
     </nav>
 
     <!-- Main Content Area -->
     <main class="main-content">
-      <header class="topbar" style="
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-          ">
-        <h2 id="topbar-title">Data Manager</h2>
-
-        <!-- Global Progress Bar -->
-        <div id="global-progress" style="
-              display: none;
-              flex: 1;
-              max-width: none;
-              width: 100%;
-              margin-left: 40px;
-              background: rgba(0, 229, 255, 0.1);
-              padding: 10px 20px;
-              border-radius: 10px;
-              border: 1px solid rgba(0, 229, 255, 0.3);
-              box-shadow: 0 0 20px rgba(0, 229, 255, 0.1);
-            ">
-          <div id="progress-text" style="
-                font-size: 0.75rem;
-                color: var(--accent-glow);
-                font-weight: 600;
-                margin-bottom: 6px;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-              ">
-            Ready
-          </div>
-          <div style="display: flex; align-items: center; gap: 15px">
-            <div class="progress-container glass-input" style="
-                  flex: 1;
-                  height: 24px;
-                  padding: 0;
-                  overflow: hidden;
-                  position: relative;
-                  border: 1px solid rgba(0, 229, 255, 0.1);
-                ">
-              <div id="progress-bar-fill" style="
-                    width: 0%;
-                    height: 100%;
-                    background: rgba(0, 229, 255, 0.6);
-                    box-shadow: 0 0 10px rgba(0, 229, 255, 0.4);
-                    transition: width 0.2s ease-in-out;
-                  "></div>
+      <header class="topbar">
+        <h2 id="topbar-title" style="margin-right: 30px; white-space: nowrap;">Data Manager</h2>
+        
+        <!-- Global Progress Bar integrated into topbar -->
+        <div id="progress-container-stable" style="flex: 1; height: 100%; display: flex; align-items: center; min-width: 0;">
+          <div id="global-progress" style="width: 100%;">
+            <div style="display: flex; align-items: center; gap: 15px; width: 100%;">
+              <div id="progress-text" style="font-size: 0.6rem; color: var(--accent-glow); font-weight: 800; text-transform: uppercase; letter-spacing: 1px; min-width: 130px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Ready</div>
+              <div class="progress-container glass-input" style="flex: 1; height: 10px; padding: 0; overflow: hidden; position: relative; border: 1px solid rgba(0, 229, 255, 0.1);">
+                <div id="progress-bar-fill"></div>
+              </div>
+              <span id="progress-pct" class="text-green" style="font-weight: 800; font-size: 0.8rem; min-width: 45px; text-align: right; font-family: monospace;">0%</span>
             </div>
-            <span id="progress-pct" class="text-green" style="
-                  font-weight: 800;
-                  font-size: 0.95rem;
-                  min-width: 55px;
-                  text-align: right;
-                  font-family: monospace;
-                ">0%</span>
           </div>
         </div>
       </header>
+
 
       <!-- TAB 1: DATA MANAGER -->
       <div id="tab-data" class="tab-content active fade-in">
@@ -118,9 +97,9 @@
             </div>
 
             <div class="form-group row" style="display: flex; gap: 10px">
-              <input type="month" id="pipe-start" class="glass-input" style="flex: 1; min-width: 0"
-                title="Start Month" />
-              <input type="month" id="pipe-end" class="glass-input" style="flex: 1; min-width: 0" title="End Month" />
+              <input type="date" id="pipe-start" class="glass-input" style="flex: 1; min-width: 0"
+                title="Start Date" />
+              <input type="date" id="pipe-end" class="glass-input" style="flex: 1; min-width: 0" title="End Date" />
             </div>
 
             <div class="form-group row mt-2">
@@ -166,7 +145,7 @@
                 <span id="queue-count" class="text-muted">(0)</span>
               </h3>
             </div>
-            <div class="table-container mt-2" style="max-height: 400px">
+            <div class="table-container mt-2">
               <table class="inventory-table">
                 <tbody id="queue-tbody">
                   <tr>
@@ -183,13 +162,19 @@
                   display: flex;
                   justify-content: space-between;
                   align-items: center;
+                  gap: 10px;
                 ">
               <h3>Data Inventory</h3>
-              <button class="outline-btn" onclick="loadInventory()">
-                ⟳ Refresh
-              </button>
+              <div style="display: flex; gap: 8px;">
+                <button class="outline-btn" onclick="loadInventory(true)" title="Deep scan data files and update quality dots">
+                  🛡️ Verify Quality
+                </button>
+                <button class="outline-btn" onclick="loadInventory()">
+                  ⟳ Refresh
+                </button>
+              </div>
             </div>
-            <div class="table-container mt-2" style="min-height: 350px; max-height: 450px; overflow-y: auto">
+            <div class="table-container mt-2">
               <table class="inventory-table">
                 <thead>
                   <tr>

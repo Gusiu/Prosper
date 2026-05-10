@@ -3,8 +3,6 @@
 from pathlib import Path
 
 from prosper.config import Settings, get_settings
-from prosper.utils.time import get_year_week, timestamp_to_utc_datetime
-
 
 
 def get_processed_parquet_path(
@@ -70,9 +68,7 @@ def get_parquet_file_path(
     return dir_path / "part.parquet"
 
 
-def get_labels_parquet_path(
-    symbol: str, interval: str, settings: Settings | None = None
-) -> Path:
+def get_labels_parquet_path(symbol: str, interval: str, settings: Settings | None = None) -> Path:
     """
     Get path for labels Parquet file.
 
@@ -87,7 +83,12 @@ def get_labels_parquet_path(
     if settings is None:
         settings = get_settings()
 
-    return settings.processed_binance_spot_labels_dir / interval / f"symbol={symbol}" / "labels.parquet"
+    return (
+        settings.processed_binance_spot_labels_dir
+        / interval
+        / f"symbol={symbol}"
+        / "labels.parquet"
+    )
 
 
 def get_features_parquet_path(
@@ -196,5 +197,3 @@ def get_eval_walkforward_summary_path(
     if settings is None:
         settings = get_settings()
     return settings.reports_eval_dir / symbol / "walkforward_summary.json"
-
-

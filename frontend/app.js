@@ -4,9 +4,111 @@ let lastLogIdx = 0;
 let pipelineQueue = [];
 let isPipelineRunning = false;
 let globalInventory = [];
+let researchMode = false;
 
 function isValidSymbolPart(value) {
   return /^[A-Z0-9]{1,15}$/.test(value);
+}
+
+// --- RESEARCH MODE ---
+function initResearchMode() {
+  const saved = localStorage.getItem("prosper_research_mode");
+  researchMode = saved === "true";
+  applyResearchModeUI();
+
+  // Restore individual flag states
+  const flags = JSON.parse(localStorage.getItem("prosper_research_flags") || "{}");
+  if (flags.strict !== undefined) document.getElementById("research-strict").checked = flags.strict;
+  if (flags.deterministic !== undefined) document.getElementById("research-deterministic").checked = flags.deterministic;
+  if (flags.seed !== undefined) document.getElementById("research-seed").value = flags.seed;
+  if (flags.metadata !== undefined) document.getElementById("research-metadata").checked = flags.metadata;
+}
+
+function toggleResearchMode() {
+  const switchEl = document.getElementById("research-switch");
+  const optionsEl = document.getElementById("research-options");
+  const badgeEl = document.getElementById("research-badge");
+
+  const isResearch = switchEl.classList.toggle("active");
+  researchMode = isResearch;
+  localStorage.setItem("prosper_research_mode", String(researchMode));
+
+  if (isResearch) {
+    optionsEl.style.display = "flex";
+    badgeEl.innerText = "ON";
+    badgeEl.className = "research-badge on";
+  } else {
+    optionsEl.style.display = "none";
+    badgeEl.innerText = "OFF";
+    badgeEl.className = "research-badge off";
+  }
+}
+
+function applyResearchModeUI() {
+  const toggle = document.getElementById("research-toggle");
+  const sw = document.getElementById("research-switch");
+  const badge = document.getElementById("research-badge");
+  const options = document.getElementById("research-options");
+
+  if (researchMode) {
+    toggle.classList.add("active");
+    sw.classList.add("active");
+    badge.innerText = "ON";
+    badge.className = "research-badge on";
+    options.style.display = "flex";
+  } else {
+    toggle.classList.remove("active");
+    sw.classList.remove("active");
+    badge.innerText = "OFF";
+    badge.className = "research-badge off";
+    options.style.display = "none";
+  }
+}
+
+function saveResearchFlags() {
+  const flags = {
+    strict: document.getElementById("research-strict").checked,
+    deterministic: document.getElementById("research-deterministic").checked,
+    seed: document.getElementById("research-seed").value,
+    metadata: document.getElementById("research-metadata").checked,
+  };
+  localStorage.setItem("prosper_research_flags", JSON.stringify(flags));
+}
+
+// Save flags on change
+["research-strict", "research-deterministic", "research-seed", "research-metadata"].forEach((id) => {
+  document.getElementById(id)?.addEventListener("change", saveResearchFlags);
+});
+
+/**
+ * Build research flag string to append to a CLI command.
+ * Only appends flags relevant to the given command type.
+ * commandType: 'pipeline' | 'predict' | 'eval' | 'generic'
+ */
+function getResearchFlags(commandType) {
+  if (!researchMode) return "";
+  saveResearchFlags();
+
+  const strict = document.getElementById("research-strict").checked;
+  const deterministic = document.getElementById("research-deterministic").checked;
+  const seed = document.getElementById("research-seed").value;
+  const metadata = document.getElementById("research-metadata").checked;
+
+  let flags = "";
+
+  // --strict applies to most commands
+  if (strict) flags += " --strict";
+
+  // --deterministic and --seed only for predict commands
+  if (commandType === "predict") {
+    if (deterministic) flags += " --deterministic";
+    if (seed) flags += ` --seed ${seed}`;
+  }
+
+  // --save-metadata applies to all artifact-producing commands
+  if (metadata) flags += " --save-metadata";
+
+  return flags;
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -30,6 +132,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // Load metadata and inventory
   initializeDates();
   loadInventory();
+
+  // Initialize research mode from localStorage
+  initResearchMode();
 });
 
 // --- TABS LOGIC ---
@@ -53,26 +158,49 @@ async function initializeDates() {
     const res = await fetch("/api/data/dates");
     const data = await res.json();
 
-    document.getElementById("pipe-start").value = data.default_start_month;
-    document.getElementById("pipe-end").value = data.yesterday_month;
+    const startInput = document.getElementById("pipe-start");
+    const endInput = document.getElementById("pipe-end");
+    
+    // Default to last 3 months if no data
+    startInput.value = data.default_start_month ? `${data.default_start_month}-01` : "2023-01-01";
+    endInput.value = data.yesterday ? data.yesterday : new Date().toISOString().split('T')[0];
 
-    document.getElementById("train-start").value =
-      data.default_start_month + "-01";
-    document.getElementById("train-end").value = data.yesterday;
+    document.getElementById("train-start").value = startInput.value;
+    document.getElementById("train-end").value = endInput.value;
 
     document.getElementById("eval-start").value = "2024-01-01";
-    document.getElementById("eval-end").value = data.yesterday;
+    document.getElementById("eval-end").value = endInput.value;
   } catch (e) {
     console.error("Failed to fetch dates", e);
   }
 }
 
 async function loadInventory(refresh = false) {
+  const verifyBtn = document.querySelector('button[onclick="loadInventory(true)"]');
   try {
+    if (refresh) {
+      const term = document.getElementById("terminal-output");
+      term.innerHTML += `<div class="log-line text-muted">Deep scan initiated: verifying all files for gaps...</div>`;
+      term.scrollTop = term.scrollHeight;
+      if (verifyBtn) verifyBtn.innerHTML = "⌛ Scanning...";
+      updateProgress({ visible: true, percent: 45, label: "Deep Quality Scan..." });
+    }
+
     const url = refresh ? "/api/data/inventory?refresh=true" : "/api/data/inventory";
     const res = await fetch(url);
     globalInventory = await res.json();
+    
+    if (refresh) {
+      updateProgress({ visible: true, percent: 100, label: "Scan Complete" });
+      setTimeout(() => { if (!isPipelineRunning) updateProgress({ visible: false }); }, 3000);
+    }
+  } catch (e) {
+    console.error("Failed to load inventory", e);
+  } finally {
+    if (verifyBtn) verifyBtn.innerHTML = "🛡️ Verify Quality";
+  }
 
+  try {
     const tbody = document.getElementById("inventory-tbody");
     tbody.innerHTML = "";
 
@@ -89,19 +217,42 @@ async function loadInventory(refresh = false) {
     globalInventory.forEach((item) => {
       const tr = document.createElement("tr");
 
-      // Format checkmarks for aggregations
+      // Format checkmarks for aggregations with status colors
       const aggs =
         item.aggregations.length > 0
           ? item.aggregations
-              .map((a) => `<span style="color:var(--accent-glow)">${a}</span>`)
+              .map((a) => {
+                let color = "var(--text-muted)"; // default
+                if (a.status === "complete") color = "var(--accent-glow)";
+                if (a.status === "warning") color = "#ffbd2e";
+                if (a.status === "incomplete") color = "var(--red-main)";
+                return `<span style="color:${color}" title="${a.message}">${a.interval}</span>`;
+              })
               .join(", ")
           : '<span class="text-muted">None</span>';
 
+      // Quality Status Dot + Fix button
+      const quality = item.quality || { status: "incomplete", label: "N/A", message: "No data" };
+      const dotClass = `status-dot quality-${quality.status}`;
+      const showFix = quality.status !== "complete";
+      const fixBtn = showFix
+        ? `<button class="action-btn" style="font-size:0.6rem; padding:2px 6px; margin-left:6px; background:rgba(255,189,46,0.15); color:#ffbd2e; border-color:rgba(255,189,46,0.3);" onclick="fixQuality('${item.symbol}')">Fix</button>`
+        : "";
+
+      // Build existing intervals set for graying out
+      const existingIntervals = item.aggregations.map(a => a.interval);
+      
       tr.innerHTML = `
                 <td><strong>${item.symbol}</strong></td>
                 <td><span class="text-muted">${item.start_date}</span> → <span class="text-muted">${item.end_date}</span></td>
                 <td>${item.size_mb} MB</td>
                 <td style="font-size:0.75rem;">${aggs}</td>
+                <td>
+                    <div style="display:flex; align-items:center;">
+                        <div class="${dotClass}" title="${quality.label}: ${quality.message}"></div>
+                        ${fixBtn}
+                    </div>
+                </td>
                 <td style="position: relative;">
                     <button class="action-btn" style="background: rgba(0, 229, 255, 0.1); color: var(--accent-glow); border-color: rgba(0, 229, 255, 0.2);" onclick="showAggregatePanel('${item.symbol}')">Aggregate</button>
                     <button class="action-btn" onclick="deleteSymbol('${item.symbol}')">Delete</button>
@@ -123,15 +274,15 @@ async function loadInventory(refresh = false) {
                               "3d",
                               "1w",
                             ]
-                                .map((a) => {
-                                  const idSuffix = `agg-inline-${a}-${item.symbol}`;
-                                  const exists = item.aggregations.includes(a);
-                                  const disabled = exists ? "disabled" : "";
-                                  const style = exists
-                                    ? "opacity: 0.4; text-decoration: line-through;"
-                                    : "";
-                                  return `<label style="${style}"><input type="checkbox" id="${idSuffix}" value="${a}" ${disabled}> ${a}</label>`;
-                                })
+                              .map((a) => {
+                                const idSuffix = `agg-inline-${a}-${item.symbol}`;
+                                const exists = existingIntervals.includes(a);
+                                const disabled = exists ? "disabled" : "";
+                                const style = exists
+                                  ? "opacity: 0.4; text-decoration: line-through;"
+                                  : "";
+                                return `<label style="${style}"><input type="checkbox" id="${idSuffix}" value="${a}" ${disabled}> ${a}</label>`;
+                              })
                               .join("")}
                         </div>
                         <div style="display: flex; gap: 8px; justify-content: space-between;">
@@ -229,9 +380,103 @@ async function deleteSymbol(symbol) {
   }
 }
 
+function fixQuality(symbol) {
+  const item = globalInventory.find((i) => i.symbol === symbol);
+  if (!item) return alert("Symbol not found in inventory");
+
+  const quality = item.quality;
+  const rFlags = getResearchFlags("pipeline");
+  let cmds = [];
+  const sMonth = item.start_date.substring(0, 7);
+  const eMonth = item.end_date.substring(0, 7);
+
+  // 1. Fix gaps in 1m data (re-backfill the entire range)
+  const agg1m = item.aggregations.find(a => a.interval === "1m");
+  if (agg1m && agg1m.gaps > 0) {
+    cmds.push(`python -m prosper.cli backfill --symbol ${symbol} --start ${sMonth} --end ${eMonth} --root ./data${rFlags}`);
+  }
+
+  // 2. Fix gaps in other intervals (re-aggregate from 1m)
+  const gappedOther = item.aggregations
+    .filter(a => a.interval !== "1m" && a.gaps > 0)
+    .map(a => a.interval);
+
+  if (gappedOther.length > 0) {
+    const toArg = gappedOther.join(",");
+    cmds.push(`python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${sMonth} --end ${eMonth} --to ${toArg} --root ./data${rFlags}`);
+  }
+
+  // 3. Fix broken parquet data (empty folders — re-aggregate)
+  const brokenIntervals = item.aggregations
+    .filter(a => a.status === "incomplete" && a.interval !== "1m" && (a.gaps || 0) === 0)
+    .map(a => a.interval);
+
+  if (brokenIntervals.length > 0) {
+    const toArg = brokenIntervals.join(",");
+    cmds.push(`python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${sMonth} --end ${eMonth} --to ${toArg} --root ./data${rFlags}`);
+  }
+
+  // 4. Fix missing features/labels
+  const needsFeatures = new Set();
+
+  // From per-interval status
+  item.aggregations.forEach(a => {
+    if (a.status === "warning") needsFeatures.add(a.interval);
+  });
+
+  // From quality message
+  if (quality.message && quality.message.includes("Features/Labels missing")) {
+    const match = quality.message.match(/for: (.+)/);
+    if (match) {
+      match[1].split(",").map(s => s.trim()).forEach(i => needsFeatures.add(i));
+    }
+  }
+
+  for (const interval of needsFeatures) {
+    cmds.push(`python -m prosper.cli features build --symbol ${symbol} --base-interval ${interval} --start ${item.start_date} --end ${item.end_date} --root ./data${rFlags}`);
+    cmds.push(`python -m prosper.cli labels build --symbol ${symbol} --base-interval ${interval} --root ./data${rFlags}`);
+  }
+
+  if (cmds.length === 0) {
+    return alert(`No automatic fix available for: ${quality.label} — ${quality.message}`);
+  }
+
+  const fullCmd = cmds.join(" && ");
+  const taskName = `Fix Quality [${symbol}]`;
+  
+  console.log("Fix command:", fullCmd);
+  pipelineQueue.push({ name: taskName, cmd: fullCmd });
+  updateQueueUI();
+  processQueue();
+}
+
 function showAggregatePanel(symbol) {
   const p = document.getElementById(`agg-panel-${symbol}`);
-  p.style.display = p.style.display === "none" ? "block" : "none";
+  const isOpening = p.style.display === "none";
+  p.style.display = isOpening ? "block" : "none";
+
+  if (isOpening) {
+    const item = globalInventory.find((i) => i.symbol === symbol);
+    if (item) {
+      const existing = item.aggregations.map(a => a.interval);
+      const possible = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w"];
+      possible.forEach(a => {
+        const cb = document.getElementById(`agg-inline-${a}-${symbol}`);
+        if (cb) {
+          if (existing.includes(a)) {
+            cb.checked = false;
+            cb.disabled = true;
+            cb.parentElement.style.opacity = "0.4";
+            cb.parentElement.title = "Already present";
+          } else {
+            cb.disabled = false;
+            cb.parentElement.style.opacity = "1";
+            cb.parentElement.title = "";
+          }
+        }
+      });
+    }
+  }
 }
 
 function getCheckedAggregations(symbol) {
@@ -261,21 +506,32 @@ function getCheckedAggregations(symbol) {
 
 function getInlineAggConfig(symbol, start, end) {
   const itemInfo = globalInventory.find((i) => i.symbol === symbol);
-  if (!itemInfo.aggregations.includes("1m")) {
+  // Note: 1m is required for any aggregation
+  if (!itemInfo.aggregations.some(a => a.interval === "1m" && a.status !== "incomplete")) {
     return {
       error:
-        "Error: 1m source data is missing! You must Backfill 1m data first before you can aggregate 'up'.",
+        "Error: Valid 1m source data is missing! You must Backfill 1m data first.",
     };
   }
   const aggs = getCheckedAggregations(symbol);
   if (aggs.length === 0) return { error: "Select at least one aggregation" };
-  const s = start.substring(0, 7);
-  const e = end.substring(0, 7);
+  
+  const sMonth = start.substring(0, 7);
+  const eMonth = end.substring(0, 7);
   const toArg = aggs.join(",");
-  let cmd = `python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${s} --end ${e} --to ${toArg} --root ./data`;
-  cmd += ` && python -m prosper.cli features build --symbol ${symbol} --start ${start} --end ${end} --root ./data`;
-  cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --root ./data`;
-  const taskName = `Agg & Features [${symbol}] to ${aggs.join(",")}`;
+  const rFlags = getResearchFlags("pipeline");
+  
+  let cmd = `python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${sMonth} --end ${eMonth} --to ${toArg} --root ./data${rFlags}`;
+  
+  const allIntervals = ["1m", ...aggs];
+  for (const interval of allIntervals) {
+      // Use full dates for features, month format for aggregate
+      cmd += ` && python -m prosper.cli features build --symbol ${symbol} --base-interval ${interval} --start ${start} --end ${end} --root ./data${rFlags}`;
+      cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --base-interval ${interval} --root ./data${rFlags}`;
+  }
+
+  const taskName = `Agg & Auto-Features [${symbol}] to [${aggs.join(",")}]`;
+  console.log("Full Generated Command:", cmd);
   return { cmd, taskName };
 }
 
@@ -304,6 +560,12 @@ function runInlineAggregation(symbol, start, end) {
 
 function fmtMonth(val, isEnd) {
   if (!val) return "";
+  // If we already have a full date (YYYY-MM-DD), use it or truncate to month if needed
+  if (val.length === 10) {
+    if (isEnd) return val; // Use selected end day
+    return val;
+  }
+  
   let base = val + "-01";
   if (isEnd) {
     let [y, m] = val.split("-");
@@ -329,15 +591,15 @@ function addToQueue() {
   }
 
   const symbol = base + quote;
-  const s = document.getElementById("pipe-start").value;
-  const e = document.getElementById("pipe-end").value;
+  const s = document.getElementById("pipe-start").value.substring(0, 7); // CLI expects YYYY-MM
+  const e = document.getElementById("pipe-end").value.substring(0, 7);
   if (!s || !e) {
-    alert("Please select both start and end months.");
+    alert("Please select both start and end dates.");
     return;
   }
 
-  const sFull = fmtMonth(s, false);
-  const eFull = fmtMonth(e, true);
+  const sFull = document.getElementById("pipe-start").value;
+  const eFull = document.getElementById("pipe-end").value;
 
   const aggs = [];
   const possible = [
@@ -363,19 +625,30 @@ function addToQueue() {
       aggs.push(a);
   });
 
-  let cmd = `python -m prosper.cli backfill --symbol ${symbol} --start ${s} --end ${e} --root ./data`;
+  const rFlags = getResearchFlags("pipeline");
+  let cmd = `python -m prosper.cli backfill --symbol ${symbol} --start ${s} --end ${e} --root ./data${rFlags}`;
 
   if (aggs.length > 0) {
-    // Pass intervals as a comma-separated string to --to and set explicit root
     const toArg = aggs.join(",");
-    cmd += ` && python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${s} --end ${e} --to ${toArg} --root ./data`;
+    cmd += ` && python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${s} --end ${e} --to ${toArg} --root ./data${rFlags}`;
+    
+    // Automatically build features for ALL selected intervals + 1m
+    const allIntervals = ["1m", ...aggs];
+    for (const interval of allIntervals) {
+        cmd += ` && python -m prosper.cli features build --symbol ${symbol} --base-interval ${interval} --start ${sFull} --end ${eFull} --root ./data${rFlags}`;
+        cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --base-interval ${interval} --root ./data${rFlags}`;
+    }
+  } else {
+    // Only 1m if no aggregations selected
+    cmd += ` && python -m prosper.cli features build --symbol ${symbol} --base-interval 1m --start ${sFull} --end ${eFull} --root ./data${rFlags}`;
+    cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --base-interval 1m --root ./data${rFlags}`;
   }
-
-  cmd += ` && python -m prosper.cli features build --symbol ${symbol} --start ${sFull} --end ${eFull} --root ./data`;
-  cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --root ./data`;
+  
+  console.log("Pipeline command generated:", cmd);
 
   const aggNamePart = aggs.length > 0 ? ` + [${aggs.join(",")}]` : "";
-  const taskName = `Pipeline [${symbol}] ${s} to ${e} (1m)${aggNamePart}`;
+  const taskName = `Pipeline [${symbol}] ${s} to ${e} (Auto-Features)${aggNamePart}`;
+
   if (pipelineQueue.some((i) => i.name === taskName)) {
     if (!confirm(`${taskName} is already in the queue. Add again?`)) return;
   }
@@ -396,12 +669,12 @@ function addToQueue() {
 function startQueueProcessing() {
   const baseInput = document.getElementById("base-coin");
   const baseValue = baseInput.value.trim();
-  
+
   // If user typed something, add it to queue first
   if (baseValue) {
     addToQueue();
   }
-  
+
   // If we have something to do (either just added or already there)
   if (pipelineQueue.length > 0) {
     if (isPipelineRunning) {
@@ -470,13 +743,14 @@ function runTrain() {
   const e = document.getElementById("train-end").value;
   const ep = document.getElementById("train-epochs").value;
 
+  const rFlags = getResearchFlags("predict");
   let cmd = "";
   if (model === "ml") {
-    cmd = `python -m prosper.cli predict ml --symbol ${symbol} --start ${s} --end ${e} --root ./data`;
+    cmd = `python -m prosper.cli predict ml --symbol ${symbol} --start ${s} --end ${e} --root ./data${rFlags}`;
   } else if (model === "gru") {
-    cmd = `python -m prosper.cli predict gru --symbol ${symbol} --start ${s} --end ${e} --epochs ${ep} --root ./data`;
+    cmd = `python -m prosper.cli predict gru --symbol ${symbol} --start ${s} --end ${e} --epochs ${ep} --root ./data${rFlags}`;
   } else {
-    cmd = `python -m prosper.cli predict ${model} --symbol ${symbol} --start ${s} --end ${e} --max-epochs ${ep} --root ./data`;
+    cmd = `python -m prosper.cli predict ${model} --symbol ${symbol} --start ${s} --end ${e} --max-epochs ${ep} --root ./data${rFlags}`;
   }
 
   pipelineQueue.push({
@@ -526,23 +800,40 @@ async function checkTaskLogs() {
       taskDot.className = "status-dot active";
       taskTxt.innerText = `Task: RUNNING (Queue: ${pipelineQueue.length})`;
       taskTxt.style.color = "var(--accent-glow)";
+      
+      // Ensure progress bar is shown if running
+      if (data.progress && data.progress.visible) {
+        updateProgress(data.progress);
+      }
     } else {
       taskDot.className = "status-dot";
       taskDot.style.background = "#8e9bb0";
       taskTxt.innerText = `Task: Idle (Queue: ${pipelineQueue.length})`;
       taskTxt.style.color = "var(--text-muted)";
 
-      // Hide progress when idle
-      const progContainer = document.getElementById("global-progress");
-      if (progContainer.style.display !== "none") {
-        progContainer.style.display = "none";
-      }
-
       if (isPipelineRunning) {
         // Task just finished!
         isPipelineRunning = false;
-        loadInventory(true); // Refresh inventory after any task finishes
-        processQueue(); // Process next in queue
+        
+        // Ensure we show 100%
+        updateProgress({ visible: true, percent: 100, label: "Complete" });
+
+        // Hide after delay
+        setTimeout(() => {
+          if (!isPipelineRunning) {
+            const progContainer = document.getElementById("global-progress");
+            if (progContainer) progContainer.style.display = "none";
+          }
+        }, 3000);
+
+        loadInventory(true);
+        processQueue();
+      } else {
+        // Hide immediately if truly idle
+        const progContainer = document.getElementById("global-progress");
+        if (progContainer && !isPipelineRunning) {
+            progContainer.style.display = "none";
+        }
       }
     }
   } catch (e) {

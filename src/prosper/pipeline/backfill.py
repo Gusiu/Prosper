@@ -8,7 +8,7 @@ from rich.console import Console
 from prosper.binance.public_data import download_monthly_zip, extract_csv_from_zip
 from prosper.config import Settings, get_settings
 from prosper.storage.parquet import candles_to_dataframe, check_parquet_exists, save_parquet
-from prosper.utils.time import generate_month_range, parse_year_month
+from prosper.utils.time import generate_month_range
 
 console = Console()
 
@@ -146,7 +146,9 @@ def backfill(
         "failed_months": failed,
     }
 
-    console.print(f"\n[bold]Summary:[/bold] {summary['processed']}/{summary['total_months']} months processed")
+    console.print(
+        f"\n[bold]Summary:[/bold] {summary['processed']}/{summary['total_months']} months processed"
+    )
     if failed:
         console.print(f"[red]Failed months: {failed}[/red]")
 

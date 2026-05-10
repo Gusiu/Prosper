@@ -6,9 +6,11 @@ Prosper is a crypto market analysis tool for Binance SPOT data. It provides a co
 
 - **Data Download**: Backfill historical 1-minute klines from Binance Public Data
 - **Data Processing**: Convert raw CSV to optimized Parquet format with automatic timestamp normalization
-- **Quality Assurance**: Comprehensive QA checks for data integrity (gaps, duplicates, OHLC invariants)
-- **Aggregation**: Resample 1m data to 1h, 1d, and 1w intervals
-- **Label Building**: Generate direction (long/flat/short) and depth labels for daily predictions
+- **Quality Assurance**: Comprehensive multi-interval QA checks for data integrity (gaps, missing features, missing labels)
+- **Auto-Repair System**: One-click UI functionality to automatically backfill gaps, re-aggregate missing data, or rebuild missing features/labels
+- **Aggregation**: Resample 1m data to 1h, 1d, and 1w intervals natively
+- **Feature Engineering**: Automated indicator building for any base interval (1m to 1w)
+- **Label Building**: Generate direction (long/flat/short) and depth labels for predictions
 - **Baseline Predictions**: Simple rolling window frequency-based predictions
 - **Action Windows**: Segment predictions into actionable time windows with recommendations
 

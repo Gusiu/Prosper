@@ -5,10 +5,8 @@ from typing import Any
 import polars as pl
 
 from prosper.config import Settings, get_settings
-from prosper.storage.layout import get_features_parquet_path, get_parquet_file_path
+from prosper.storage.layout import get_features_parquet_path
 from prosper.storage.parquet import load_parquet, save_parquet
-from prosper.utils.time import generate_month_range, parse_date
-
 
 
 def _rsi_ewm(close: pl.Expr, period: int = 14) -> pl.Expr:
@@ -40,61 +38,57 @@ def build_features(
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     """
-    Build minimal daily+intraday features parquet.
-
-    Notes:
-    - We intentionally keep rolling-window warmup as nulls.
-    - Intraday features use 1m minute returns aggregated per UTC day.
+    Build engineered features parquet for any base interval.
     """
-
     if settings is None:
         settings = get_settings()
-    if base_interval != "1d":
-        raise ValueError("MVP supports base_interval=1d only")
 
-    start_dt = parse_date(start)
-    end_dt = parse_date(end)
-    # inclusive filtering by date (UTC)
-    start_date = start_dt.date()
-    end_date = end_dt.date()
-
-    # Load daily klines
-    months = generate_month_range(start_date, end_date)
-    daily_parts: list[pl.DataFrame] = []
-    for y, m in months:
-        path = get_parquet_file_path(symbol, "1d", y, month=m, settings=settings)
-        if path.exists():
-            daily_parts.append(load_parquet(path))
-
-    if not daily_parts:
+    # Load klines for selected interval
+    # We scan the entire symbol directory for the interval to be robust (works for both months and weeks)
+    base_path = settings.processed_binance_spot_klines_dir / base_interval / f"symbol={symbol}"
+    if not base_path.exists():
         out_path = get_features_parquet_path(symbol, base_interval, settings=settings)
-        return {"error": f"No daily parquet found for {symbol} in {base_interval}", "path": str(out_path)}
+        return {
+            "error": f"No data directory found for {symbol} at {base_interval}",
+            "path": str(out_path),
+        }
 
-    df_daily = pl.concat(daily_parts).sort("open_time").unique(subset=["open_time"], keep="first")
+    parts: list[pl.DataFrame] = []
+    for p in base_path.glob("**/*.parquet"):
+        if p.is_file() and p.stat().st_size > 0:
+            parts.append(load_parquet(p))
 
+    if not parts:
+        out_path = get_features_parquet_path(symbol, base_interval, settings=settings)
+        return {
+            "error": f"No {base_interval} parquet files found for {symbol}",
+            "path": str(out_path),
+        }
 
-    # Daily returns/indicators
+    df = pl.concat(parts).sort("open_time").unique(subset=["open_time"], keep="first")
+
+    # Timeframe-agnostic features (based on rows/candles)
     log_close = pl.col("close").log()
-    df_feat = df_daily.with_columns(
+    df_feat = df.with_columns(
         [
-            (log_close - log_close.shift(1)).alias("log_return_1d"),
-            (log_close - log_close.shift(3)).alias("log_return_3d"),
-            (log_close - log_close.shift(7)).alias("log_return_7d"),
-            (log_close - log_close.shift(14)).alias("log_return_14d"),
+            (log_close - log_close.shift(1)).alias("log_return_1b"),
+            (log_close - log_close.shift(3)).alias("log_return_3b"),
+            (log_close - log_close.shift(7)).alias("log_return_7b"),
+            (log_close - log_close.shift(14)).alias("log_return_14b"),
         ]
     )
 
     df_feat = df_feat.with_columns(
         [
-            pl.col("log_return_1d").rolling_std(window_size=7).alias("rolling_vol_7"),
-            pl.col("log_return_1d").rolling_std(window_size=14).alias("rolling_vol_14"),
-            pl.col("log_return_1d").rolling_std(window_size=30).alias("rolling_vol_30"),
+            pl.col("log_return_1b").rolling_std(window_size=7).alias("rolling_vol_7"),
+            pl.col("log_return_1b").rolling_std(window_size=14).alias("rolling_vol_14"),
+            pl.col("log_return_1b").rolling_std(window_size=30).alias("rolling_vol_30"),
         ]
     )
 
     df_feat = df_feat.with_columns(
         [
-            ((pl.col("high") - pl.col("low")) / pl.col("close")).alias("daily_range"),
+            ((pl.col("high") - pl.col("low")) / pl.col("close")).alias("candle_range"),
             pl.col("close").rolling_max(window_size=30).alias("_roll_max_30"),
             pl.col("close").rolling_max(window_size=90).alias("_roll_max_90"),
         ]
@@ -142,49 +136,66 @@ def build_features(
     ema26 = _ema(pl.col("close"), 26)
     macd = (ema12 - ema26).alias("_macd")
     signal = _ema(pl.col("_macd"), 9).alias("_signal")
-    df_feat = df_feat.with_columns([macd]).with_columns([signal]).with_columns(
-        [(pl.col("_macd") - pl.col("_signal")).alias("macd_hist")]
-    ).drop(["_macd", "_signal"])
-
-    # Intraday derived features
-    intraday_parts: list[pl.DataFrame] = []
-    for y, m in months:
-        path = get_parquet_file_path(symbol, "1m", y, month=m, settings=settings)
-        if path.exists():
-            intraday_parts.append(load_parquet(path))
-    if not intraday_parts:
-        raise FileNotFoundError(f"No 1m parquet found for intraday features: {symbol}")
-
-    df_1m = pl.concat(intraday_parts).sort("open_time").unique(subset=["open_time"], keep="first")
-    df_1m = df_1m.with_columns(pl.col("open_time").dt.date().alias("_date"))
-    df_1m = df_1m.filter(pl.col("_date") >= start_date).filter(pl.col("_date") <= end_date)
-
-    df_1m = df_1m.with_columns(
-        [
-            (pl.col("close") / pl.col("close").shift(1).over("_date") - 1.0).alias("minute_return"),
-        ]
-    )
-    df_1m = df_1m.with_columns(
-        [
-            pl.col("minute_return").pow(2).alias("_minute_return_sq"),
-            (pl.col("close") / pl.col("close").cummax().over("_date") - 1.0).alias("_intraday_drawdown"),
-        ]
-    )
-
-    df_intraday = df_1m.group_by("_date").agg(
-        pl.col("_minute_return_sq").sum().alias("realized_vol_1d"),
-        pl.col("minute_return").abs().gt(jump_threshold).sum().alias("jump_count"),
-        pl.col("_intraday_drawdown").min().alias("max_intraday_drawdown"),
-    )
-
-    # Filter final dataset to requested dates
-    df_feat = df_feat.with_columns(pl.col("open_time").dt.date().alias("_date"))
     df_feat = (
-        df_feat.filter(pl.col("_date") >= start_date)
-        .filter(pl.col("_date") <= end_date)
+        df_feat.with_columns([macd])
+        .with_columns([signal])
+        .with_columns([(pl.col("_macd") - pl.col("_signal")).alias("macd_hist")])
+        .drop(["_macd", "_signal"])
     )
 
-    df_feat = df_feat.join(df_intraday, on="_date", how="left").drop("_date").sort("open_time")
+    # Intraday derived features (only when base interval is 1d and 1m data exists)
+    intraday_base = settings.processed_binance_spot_klines_dir / "1m" / f"symbol={symbol}"
+    if base_interval == "1d" and intraday_base.exists():
+        intraday_files = list(intraday_base.glob("**/*.parquet"))
+        intraday_parts = [load_parquet(p) for p in intraday_files if p.stat().st_size > 0]
+
+        if intraday_parts:
+            df_1m = (
+                pl.concat(intraday_parts)
+                .sort("open_time")
+                .unique(subset=["open_time"], keep="first")
+            )
+            df_1m = df_1m.with_columns(pl.col("open_time").dt.date().alias("_date"))
+
+            df_1m = df_1m.with_columns(
+                [
+                    (pl.col("close") / pl.col("close").shift(1).over("_date") - 1.0).alias(
+                        "minute_return"
+                    ),
+                ]
+            )
+            df_1m = df_1m.with_columns(
+                [
+                    pl.col("minute_return").pow(2).alias("_minute_return_sq"),
+                    (pl.col("close") / pl.col("close").cummax().over("_date") - 1.0).alias(
+                        "_intraday_drawdown"
+                    ),
+                ]
+            )
+
+            df_intraday = df_1m.group_by("_date").agg(
+                pl.col("_minute_return_sq").sum().alias("realized_vol_1d"),
+                pl.col("minute_return").abs().gt(jump_threshold).sum().alias("jump_count"),
+                pl.col("_intraday_drawdown").min().alias("max_intraday_drawdown"),
+            )
+
+            # Join intraday features to main features
+            df_feat = df_feat.with_columns(pl.col("open_time").dt.date().alias("_date"))
+            df_feat = (
+                df_feat.join(df_intraday, on="_date", how="left").drop("_date").sort("open_time")
+            )
+        else:
+            # No 1m data - just add empty intraday columns for schema consistency
+            df_feat = df_feat.with_columns(
+                [
+                    pl.lit(None).cast(pl.Float64).alias("realized_vol_1d"),
+                    pl.lit(None).cast(pl.Int64).alias("jump_count"),
+                    pl.lit(None).cast(pl.Float64).alias("max_intraday_drawdown"),
+                ]
+            )
+    else:
+        # Non-daily intervals don't need intraday features
+        pass
 
     cols_to_drop = [c for c in ["symbol", "year", "month", "week"] if c in df_feat.columns]
     if cols_to_drop:
@@ -193,4 +204,3 @@ def build_features(
     out_path = get_features_parquet_path(symbol, base_interval, settings=settings)
     save_parquet(df_feat, out_path)
     return {"symbol": symbol, "rows": int(len(df_feat)), "path": str(out_path)}
-

@@ -53,6 +53,7 @@ def get_year_week(dt: datetime) -> tuple[int, int]:
 
 # ── Month iteration ─────────────────────────────────────────────────────────
 
+
 def generate_month_range(
     start: str | _dt.date,
     end: str | _dt.date,
@@ -80,4 +81,3 @@ def generate_month_range(
             m = 1
             y += 1
     return months
-

@@ -53,14 +53,36 @@ class Settings(BaseSettings):
     baseline_min_samples: int = Field(default=30, ge=1)
 
     # Planner settings
-    planner_short_weeks: tuple[int, int] = Field(default=(1, 26), description="Short horizon weeks range")
-    planner_medium_weeks: tuple[int, int] = Field(default=(13, 52), description="Medium horizon weeks range")
-    planner_long_weeks: tuple[int, int] = Field(default=(26, 104), description="Long horizon weeks range")
+    planner_short_weeks: tuple[int, int] = Field(
+        default=(1, 26), description="Short horizon weeks range"
+    )
+    planner_medium_weeks: tuple[int, int] = Field(
+        default=(13, 52), description="Medium horizon weeks range"
+    )
+    planner_long_weeks: tuple[int, int] = Field(
+        default=(26, 104), description="Long horizon weeks range"
+    )
 
     # Trading simulation costs (for eval walk-forward MVP)
-    trading_fee_rate: float = Field(default=0.001, ge=0.0, le=1.0, description="Fee rate per position")
+    trading_fee_rate: float = Field(
+        default=0.001, ge=0.0, le=1.0, description="Fee rate per position"
+    )
     trading_slippage_proxy_rate: float = Field(
         default=0.001, ge=0.0, le=1.0, description="Slippage proxy rate per position"
+    )
+
+    # Research / reproducibility settings
+    strict: bool = Field(
+        default=False, description="Fail fast on data quality issues (research mode)"
+    )
+    deterministic: bool = Field(
+        default=False, description="Enable deterministic training (research mode)"
+    )
+    save_metadata: bool = Field(
+        default=False, description="Save meta.json alongside artifacts (research mode)"
+    )
+    seed: int | None = Field(
+        default=None, description="Random seed for reproducibility (research mode)"
     )
 
     # Logging
@@ -136,16 +158,18 @@ class Settings(BaseSettings):
 _settings: Settings | None = None
 
 
-def get_settings(config_file: Path | None = None, data_root: Path | None = None) -> Settings:
+def get_settings(
+    config_file: Path | None = None, data_root: Path | None = None, **kwargs: Any
+) -> Settings:
     """
     Get settings.
 
-    If `data_root` is provided, returns a fresh Settings instance bound to that root
-    (so CLI smoke runs can isolate their data lake).
+    If `data_root` or any research kwargs are provided, returns a fresh Settings instance
+    (so CLI smoke runs can isolate their data lake and research flags take effect).
     """
     global _settings
-    if data_root is not None:
-        return Settings(config_file=config_file, data_root=data_root)
+    if data_root is not None or kwargs:
+        return Settings(config_file=config_file, data_root=data_root, **kwargs)
     if _settings is None:
         _settings = Settings(config_file=config_file)
     return _settings

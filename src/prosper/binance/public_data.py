@@ -78,7 +78,9 @@ def download_text(url: str, timeout: int) -> str:
     )
 
 
-def download_to_file(url: str, output_path: Path, timeout: int, chunk_size: int = 1024 * 1024) -> None:
+def download_to_file(
+    url: str, output_path: Path, timeout: int, chunk_size: int = 1024 * 1024
+) -> None:
     """Download binary content to a file with retry/backoff."""
     settings = get_settings()
 

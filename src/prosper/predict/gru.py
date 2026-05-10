@@ -12,7 +12,6 @@ from torch.utils.data import DataLoader, Dataset
 from prosper.config import Settings, get_settings
 from prosper.labels.depth import (
     DEPTH_BIN_LABELS,
-    DIRECTION_CLASSES,
     DIR_TO_IDX,
     N_DEPTH_BINS,
     direction_from_return,
@@ -36,8 +35,8 @@ class SequenceDataset(Dataset):
 
     def __init__(
         self,
-        X: np.ndarray,          # (T, F)  – feature matrix, already normalised
-        y_dir: np.ndarray,      # (T,)    – int labels 0/1/2
+        X: np.ndarray,  # (T, F)  – feature matrix, already normalised
+        y_dir: np.ndarray,  # (T,)    – int labels 0/1/2
         seq_len: int,
     ):
         self.X = torch.tensor(X, dtype=torch.float32)
@@ -48,8 +47,8 @@ class SequenceDataset(Dataset):
         return max(0, len(self.X) - self.seq_len)
 
     def __getitem__(self, idx: int):
-        x_seq = self.X[idx : idx + self.seq_len]           # (seq_len, F)
-        y_lbl = self.y[idx + self.seq_len]                  # scalar
+        x_seq = self.X[idx : idx + self.seq_len]  # (seq_len, F)
+        y_lbl = self.y[idx + self.seq_len]  # scalar
         return x_seq, y_lbl
 
 
@@ -78,10 +77,10 @@ class GRUClassifier(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out, _ = self.gru(x)           # (B, T, H)
-        last = out[:, -1, :]           # (B, H) – last timestep
+        out, _ = self.gru(x)  # (B, T, H)
+        last = out[:, -1, :]  # (B, H) – last timestep
         last = self.norm(last)
-        return self.head(last)         # (B, C)
+        return self.head(last)  # (B, C)
 
 
 # ── normalisation ─────────────────────────────────────────────────────────────
@@ -124,6 +123,29 @@ def predict_gru(
     if settings is None:
         settings = get_settings()
 
+    # ── Seed & deterministic mode (research) ─────────────────────────────────
+    if settings.deterministic:
+        seed = settings.seed if settings.seed is not None else 42
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+        import random
+
+        random.seed(seed)
+        torch.use_deterministic_algorithms(True)
+        print(f"[research] Deterministic mode ON (seed={seed})")
+    elif settings.seed is not None:
+        np.random.seed(settings.seed)
+        torch.manual_seed(settings.seed)
+        import random
+
+        random.seed(settings.seed)
+        print(f"[research] Seed set to {settings.seed} (non-deterministic CUDA)")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # ── 1. Load features ──────────────────────────────────────────────────────
@@ -151,12 +173,12 @@ def predict_gru(
     end_dt = parse_date(end).date()
 
     # ── 2. Pre-compute forward labels ─────────────────────────────────────────
-    y_dir_all = np.full(n, -1, dtype=np.int64)          # -1 = unknown / future
+    y_dir_all = np.full(n, -1, dtype=np.int64)  # -1 = unknown / future
     for i in range(n - forward_days):
         j = i + forward_days
         if closes[i] and closes[j]:
             r = closes[j] / closes[i] - 1.0
-            y_dir_all[i] = DIR_TO_IDX[_direction_from_return(r, flat_threshold)]
+            y_dir_all[i] = DIR_TO_IDX[direction_from_return(r, flat_threshold)]
 
     # ── 3. Rolling-month training + inference ─────────────────────────────────
     predictions: list[dict[str, Any]] = []
@@ -183,7 +205,7 @@ def predict_gru(
             if len(valid) >= seq_len + 5 and len(set(y_dir_all[valid])) > 1:
                 X_train_raw = X_all_raw[train_start : train_end + 1]
                 X_norm = _robust_normalise(X_train_raw, X_all_raw)
-                scaler_params = (X_norm,)      # store the full normalised matrix
+                scaler_params = (X_norm,)  # store the full normalised matrix
 
                 # Build dataset from train window
                 y_norm = y_dir_all[train_start : train_end + 1]
@@ -220,22 +242,28 @@ def predict_gru(
         if model is None or scaler_params is None or i < seq_len:
             for h in ("short", "medium", "long"):
                 out[h] = {
-                    "P_long": 0.33, "P_flat": 0.34, "P_short": 0.33,
+                    "P_long": 0.33,
+                    "P_flat": 0.34,
+                    "P_short": 0.33,
                     "depth_long_bins": uniform_depth.copy(),
                     "depth_short_bins": uniform_depth.copy(),
                 }
         else:
             X_norm = scaler_params
-            x_seq = torch.tensor(X_norm[i - seq_len : i], dtype=torch.float32).unsqueeze(0).to(device)
+            x_seq = (
+                torch.tensor(X_norm[i - seq_len : i], dtype=torch.float32).unsqueeze(0).to(device)
+            )
 
             model.eval()
             with torch.no_grad():
-                logits = model(x_seq)           # (1, 3)
+                logits = model(x_seq)  # (1, 3)
                 probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
 
             p_short, p_flat, p_long = float(probs[0]), float(probs[1]), float(probs[2])
             horizon_out = {
-                "P_long": p_long, "P_flat": p_flat, "P_short": p_short,
+                "P_long": p_long,
+                "P_flat": p_flat,
+                "P_short": p_short,
                 "depth_long_bins": uniform_depth.copy(),
                 "depth_short_bins": uniform_depth.copy(),
             }
@@ -249,4 +277,10 @@ def predict_gru(
 
     write_predictions_jsonl(predictions, symbol, settings)
 
-    return {"symbol": symbol, "start": start, "end": end, "predictions": len(predictions), "device": str(device)}
+    return {
+        "symbol": symbol,
+        "start": start,
+        "end": end,
+        "predictions": len(predictions),
+        "device": str(device),
+    }
