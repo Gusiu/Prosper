@@ -53,7 +53,7 @@ poetry run prosper symbols list --quote-asset USDT
 
 ### Smoke Pipeline (BTCUSDT, 2020-01)
 
-Poniższy smoke pipeline pobiera i przetwarza dane tylko dla `BTCUSDT` i tylko dla `2020-01` (root można zmienić przez `--root`).
+The smoke pipeline below downloads and processes data only for `BTCUSDT` for `2020-01` (the root directory can be changed via `--root`).
 
 ```powershell
 poetry run prosper backfill --symbol BTCUSDT --start 2020-01 --end 2020-01 --workers 2 --root data_smoke

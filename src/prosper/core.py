@@ -366,7 +366,7 @@ class DataManager:
         return self.settings.processed_binance_spot_labels_dir / interval / f"symbol={symbol}"
 
     def _fingerprint(self) -> dict[str, int]:
-        # Szybki fingerprint: tylko mtime głównych katalogów i liczba plików bezpośrednio w folderach symboli
+        # Fast fingerprint: only mtime of main directories and file count directly in symbol folders
         roots = [
             self.settings.raw_binance_spot_klines_1m_dir,
             self.settings.processed_binance_spot_klines_dir,
@@ -379,7 +379,7 @@ class DataManager:
         for root in roots:
             if not root.exists():
                 continue
-            # tylko bezpośrednie podfoldery (np. symbol)
+            # only direct subfolders (e.g. symbol)
             for sub in root.iterdir():
                 try:
                     stat = sub.stat()
@@ -387,7 +387,7 @@ class DataManager:
                     continue
                 latest_mtime = max(latest_mtime, stat.st_mtime_ns)
                 if sub.is_dir():
-                    # liczymy tylko pliki bezpośrednio w folderze symbolu
+                    # count only files directly in the symbol folder
                     file_count += sum(1 for f in sub.iterdir() if f.is_file())
                 elif sub.is_file():
                     file_count += 1

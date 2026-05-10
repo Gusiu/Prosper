@@ -58,7 +58,7 @@ def symbols_list(
     output: Path = typer.Option(None, "--output", "-o", help="Output JSON file path"),
 ) -> None:
     """
-    Pobiera listę symboli SPOT z Binance exchangeInfo i zapisuje data/meta/binance_spot_symbols.json.
+    Fetch SPOT symbols list from Binance exchangeInfo and save to data/meta/binance_spot_symbols.json.
     """
     settings = get_settings()
 

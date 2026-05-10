@@ -1,49 +1,49 @@
 # Fresh Windows Quickstart (PowerShell)
 
-Poniższa checklist ma uruchomić kompletny smoke pipeline na świeżym Windows 10/11 (PowerShell), zakładając brak Poetry i brak venv.
+The following checklist is intended to run a complete smoke pipeline on a fresh Windows 10/11 (PowerShell) installation, assuming no Poetry or venv is present.
 
 ## Checklist
 
-1. Instalacja Python 3.12 (zaznacz w instalatorze):
+1. Install Python 3.12 (check the following in the installer):
    - `Add to PATH`
    - `pip`
    - `venv`
 
-2. Komendy weryfikacyjne:
+2. Verification commands:
    ```powershell
    py -0p
    py -3.12 -V
    ```
 
-3. Instalacja Poetry (preferowane `pipx`):
+3. Install Poetry (prefer `pipx`):
    ```powershell
    py -m pip install --user pipx
    py -m pipx ensurepath
-   restart PowerShell
+   # restart PowerShell
    ```
 
-4. Instalacja Poetry:
+4. Install Poetry:
    ```powershell
    pipx install poetry
    poetry --version
    ```
 
-5. Klonowanie repo / wejście do folderu projektu:
+5. Clone repo / enter project folder:
    ```powershell
    cd Prosper
    ```
 
-6. Konfiguracja Poetry (żeby venv było w projekcie i nie psuło się na cache):
+6. Configure Poetry (so venv is in-project and doesn't break on cache):
    ```powershell
    poetry config virtualenvs.in-project true --local
    ```
 
-7. Instalacja zależności:
+7. Install dependencies:
    ```powershell
    poetry install
    ```
 
-8. Smoke pipeline na `BTCUSDT` w osobnym root:
+8. Smoke pipeline for `BTCUSDT` in a separate root:
    ```powershell
    poetry run prosper backfill --symbol BTCUSDT --start 2020-01 --end 2020-01 --workers 2 --root data_smoke
    poetry run prosper qa check --symbol BTCUSDT --interval 1m --year 2020 --month 01 --root data_smoke
@@ -54,12 +54,12 @@ Poniższa checklist ma uruchomić kompletny smoke pipeline na świeżym Windows 
    poetry run prosper planner windows --symbol BTCUSDT --start 2020-01-01 --end 2020-01-31 --root data_smoke
    ```
 
-9. Uruchomienie testów:
+9. Run tests:
    ```powershell
    poetry run pytest
    ```
 
-10. Alternatywa bez Poetry (venv + pip):
+10. Alternative without Poetry (venv + pip):
    ```powershell
    py -3.12 -m venv .venv
    .\.venv\Scripts\Activate.ps1
@@ -70,30 +70,29 @@ Poniższa checklist ma uruchomić kompletny smoke pipeline na świeżym Windows 
 
 ## Troubleshooting
 
-1. `poetry` nie znalezione
-   - Sprawdź `PATH` i zrestartuj PowerShell.
-   - Jeśli używasz `pipx`, wykonaj jeszcze raz: `py -m pipx ensurepath`.
+1. `poetry` not found
+   - Check `PATH` and restart PowerShell.
+   - If using `pipx`, run again: `py -m pipx ensurepath`.
 
-2. Poetry tworzy venv w cache i się psuje
-   - Ustaw: `poetry config virtualenvs.in-project true --local`
+2. Poetry creates venv in cache and breaks
+   - Set: `poetry config virtualenvs.in-project true --local`
 
-3. Zła wersja Pythona (3.13 zamiast 3.12)
-   - Ustaw explicite:
+3. Wrong Python version (3.13 instead of 3.12)
+   - Explicitly set:
      ```powershell
      poetry env use $(py -3.12 -c "import sys;print(sys.executable)")
      ```
 
-4. Policy w PowerShell (activate)
-   - Dla bieżącego użytkownika:
+4. Execution Policy in PowerShell (activate)
+   - For current user:
      ```powershell
      Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
      ```
 
-5. Brak internetu
-   - Wygeneruj offline fixture (syntetyczne 1m Parquet) w `data_smoke`, a następnie uruchom smoke pipeline jak w kroku 8.
-   - Komenda offline fixture:
+5. No internet
+   - Generate offline fixture (synthetic 1m Parquet) in `data_smoke`, then run smoke pipeline as in step 8.
+   - Offline fixture command:
      ```powershell
      py scripts\offline_smoke_fixture.py --root data_smoke --symbol BTCUSDT --year 2020 --month 1
      ```
-   - Potem możesz uruchomić z kroku 8, w tym `backfill` (pipeline powinien przeskoczyć pobieranie, bo Parquet już istnieje).
-
+   - Then you can run from step 8, including `backfill` (the pipeline should skip downloading as Parquet already exists).
