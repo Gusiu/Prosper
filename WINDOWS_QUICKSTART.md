@@ -30,9 +30,7 @@ Poniższa checklist ma uruchomić kompletny smoke pipeline na świeżym Windows 
 
 5. Klonowanie repo / wejście do folderu projektu:
    ```powershell
-   cd A:\_\PJATK
-   # klonuj repo do: A:\_\PJATK\Praca_inzynierska (ścieżkę dopasuj do siebie)
-   cd A:\_\PJATK\Praca_inzynierska
+   cd Prosper
    ```
 
 6. Konfiguracja Poetry (żeby venv było w projekcie i nie psuło się na cache):

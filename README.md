@@ -30,7 +30,7 @@ Prosper is a crypto market analysis tool for Binance SPOT data. It provides a co
 
 2. Clone or navigate to the project directory:
    ```powershell
-   cd A:\_\PJATK\Praca_inzynierska
+   cd Prosper
    ```
 
 3. Install dependencies:
