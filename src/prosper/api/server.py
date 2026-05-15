@@ -1,4 +1,5 @@
 import datetime
+import json
 import re
 import shlex
 import subprocess
@@ -270,6 +271,94 @@ def get_dates():
 @app.get("/api/data/inventory")
 def get_inventory(refresh: bool = False):
     return DataManager().get_inventory(refresh=refresh)
+
+
+@app.get("/api/meta/symbols")
+def get_symbol_metadata() -> dict[str, Any]:
+    settings = get_settings()
+    symbols_path = settings.meta_dir / "binance_spot_symbols.json"
+    if not symbols_path.exists():
+        return {"symbols": [], "base_assets": [], "quote_assets": []}
+
+    try:
+        payload = json.loads(symbols_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise HTTPException(status_code=500, detail=f"Cannot read symbols metadata: {e}") from e
+
+    symbols_raw = payload.get("symbols", []) if isinstance(payload, dict) else payload
+    symbols: set[str] = set()
+    base_assets: set[str] = set()
+    quote_assets: set[str] = set()
+    known_quotes = [
+        "USDT",
+        "FDUSD",
+        "USDC",
+        "TUSD",
+        "BUSD",
+        "BTC",
+        "ETH",
+        "BNB",
+        "EUR",
+        "TRY",
+        "BRL",
+        "DAI",
+    ]
+
+    for item in symbols_raw if isinstance(symbols_raw, list) else []:
+        if isinstance(item, str):
+            symbol = item.upper()
+            symbols.add(symbol)
+            for quote in sorted(known_quotes, key=len, reverse=True):
+                if symbol.endswith(quote) and len(symbol) > len(quote):
+                    base_assets.add(symbol[: -len(quote)])
+                    quote_assets.add(quote)
+                    break
+        elif isinstance(item, dict):
+            symbol = str(item.get("symbol", "")).upper()
+            base = str(item.get("baseAsset", item.get("base_asset", ""))).upper()
+            quote = str(item.get("quoteAsset", item.get("quote_asset", ""))).upper()
+            if symbol:
+                symbols.add(symbol)
+            if base:
+                base_assets.add(base)
+            if quote:
+                quote_assets.add(quote)
+
+    return {
+        "symbols": sorted(symbols),
+        "base_assets": sorted(base_assets),
+        "quote_assets": sorted(quote_assets),
+    }
+
+
+@app.get("/api/data/klines/{symbol}/{interval}")
+def get_kline_chart_data(
+    symbol: str,
+    interval: str,
+    limit: int = 1000,
+    start: str | None = None,
+    end: str | None = None,
+) -> dict[str, Any]:
+    symbol = symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+    if limit < 1 or limit > 5000:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 5000")
+
+    try:
+        payload = DataManager().get_chart_data(
+            symbol=symbol,
+            interval=interval,
+            limit=limit,
+            start=start,
+            end=end,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if payload["rows"] == 0:
+        raise HTTPException(status_code=404, detail="No chart data found")
+    return payload
 
 
 @app.delete("/api/data/{symbol}")

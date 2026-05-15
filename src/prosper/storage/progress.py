@@ -1,4 +1,5 @@
 """Structured progress reporting for CLI tasks (JSON-based)."""
+
 import json
 from pathlib import Path
 from typing import Any

@@ -1,4 +1,5 @@
 """Temporal Fusion Transformer predictions using pytorch-forecasting."""
+
 from __future__ import annotations
 
 import warnings

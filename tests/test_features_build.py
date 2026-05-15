@@ -76,3 +76,32 @@ def test_build_features_uses_daily_warmup_before_requested_start(tmp_path) -> No
         "2024-01-12",
     ]
     assert features["ma_10"][0] is not None
+
+
+def test_build_features_exports_professional_analysis_indicators(tmp_path) -> None:
+    settings = Settings(data_root=tmp_path)
+    symbol = "TESTUSDT"
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+
+    save_parquet(
+        _daily_rows(start, 35),
+        get_parquet_file_path(symbol, "1d", 2024, month=1, settings=settings),
+    )
+
+    result = build_features(
+        symbol,
+        "1d",
+        "2024-01-25",
+        "2024-02-04",
+        settings=settings,
+    )
+
+    assert result["rows"] == 11
+    features = load_parquet(get_features_parquet_path(symbol, "1d", settings=settings))
+    for column in ["bb_upper", "bb_lower", "bb_mid", "atr_14", "obv"]:
+        assert column in features.columns
+
+    assert features["bb_mid"].null_count() == 0
+    assert features["bb_upper"][0] > features["bb_mid"][0] > features["bb_lower"][0]
+    assert features["atr_14"].null_count() == 0
+    assert features["obv"].to_list() == [sum(1000.0 + i for i in range(1, day + 1)) for day in range(24, 35)]

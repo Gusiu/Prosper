@@ -1,265 +1,103 @@
 # Prosper
 
-Prosper is a crypto market analysis tool for Binance SPOT data. It provides a complete pipeline for downloading, processing, quality assurance, and generating predictions and recommendations for cryptocurrency trading pairs.
+Prosper is a research-grade crypto market analysis platform for Binance SPOT data. It provides an end-to-end pipeline covering data acquisition, aggregation, technical indicator generation, labeling, and machine learning predictions. The system features a comprehensive Web UI for data management alongside a powerful CLI for automated processing.
 
-## Features
+---
 
-- **Data Download**: Backfill historical 1-minute klines from Binance Public Data
-- **Data Processing**: Convert raw CSV to optimized Parquet format with automatic timestamp normalization
-- **Quality Assurance**: Comprehensive multi-interval QA checks for data integrity (gaps, missing features, missing labels)
-- **Auto-Repair System**: One-click UI functionality to automatically backfill gaps, re-aggregate missing data, or rebuild missing features/labels
-- **Aggregation**: Resample 1m data to 1h, 1d, and 1w intervals natively
-- **Feature Engineering**: Automated indicator building for any base interval (1m to 1w)
-- **Label Building**: Generate direction (long/flat/short) and depth labels for predictions
-- **Baseline Predictions**: Simple rolling window frequency-based predictions
-- **Action Windows**: Segment predictions into actionable time windows with recommendations
+## 🚀 Features
 
-## Requirements
+### Web Dashboard & Data Manager
+- **Task Queue Pipeline**: Build complex multi-interval data pipelines (Download -> Aggregate -> Features -> Labels) and execute them asynchronously via an interactive UI.
+- **Inventory Matrix**: View your entire data lake at a glance. Visual indicators show precisely where data gaps, missing indicators, or missing labels exist.
+- **Auto-Repair System**: One-click "Fix" buttons automatically dispatch background tasks to repair missing or outdated parquet files.
+- **Interactive Analysis Drawer**: Slide-out TradingView-style Lightweight Charts implementation.
+  - **Bidirectional Sync**: Pan, zoom, and move your crosshair on the main chart, and watch RSI, MACD, and ATR subcharts synchronize perfectly in real-time.
+  - **Data Health Overlay**: Visually identify time-gaps in your dataset directly on the chart with warning bands.
 
-- Python >= 3.12,<3.13
-- Poetry for dependency management
+### Research & Machine Learning
+- **Research Mode**: Toggle strict data validation, deterministic CUDA execution, and global seeds for 100% reproducible experiments. Meta-data tracking saves environment variables alongside models.
+- **Deep Learning Ready**: Built-in support for time-series forecasting using GRU and TFT (Temporal Fusion Transformer) models via PyTorch.
+- **Feature Engineering**: Automated generation of technical indicators (Moving Averages, Bollinger Bands, RSI, MACD, ATR, OBV) mapped natively to Parquet files via Polars.
+- **Action Windows**: Convert raw model predictions into actionable time-windows with clearly defined recommendations (Strong Buy/Sell, Accumulate, etc.) based on predicted edge and risk.
 
-## Installation
+---
 
-### Windows
+## 💻 Installation
 
-1. Install Poetry (if not already installed):
-   ```powershell
-   (Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | python -
-   ```
-
-2. Clone or navigate to the project directory:
+1. Install Python (3.12 recommended) and [Poetry](https://python-poetry.org/docs/).
+2. Clone the repository and navigate into it:
    ```powershell
    cd Prosper
    ```
-
-3. Install dependencies:
+3. Configure Poetry to create virtual environments inside the project (optional but recommended):
+   ```powershell
+   poetry config virtualenvs.in-project true --local
+   ```
+4. Install dependencies:
    ```powershell
    poetry install
    ```
 
-4. Activate the virtual environment:
-   ```powershell
-   poetry shell
-   ```
+---
 
-## Usage
+## 🖥️ Starting the Web UI (Data Manager)
 
-### List Available Symbols
+To launch the visual dashboard:
 
 ```powershell
-poetry run prosper symbols list --quote-asset USDT
+poetry run prosper ui
 ```
+The server will start on `http://127.0.0.1:8000`. Open this address in your browser to access the Data Manager, Inventory, Task Queue, and Analysis Drawer.
 
-### Smoke Pipeline (BTCUSDT, 2020-01)
+---
 
-The smoke pipeline below downloads and processes data only for `BTCUSDT` for `2020-01` (the root directory can be changed via `--root`).
+## ⚙️ CLI Usage (Headless Mode)
 
+Prosper can also be driven entirely via the Command Line Interface.
+
+### Smoke Pipeline Example
+Run a full end-to-end test on BTCUSDT for January 2020:
 ```powershell
-poetry run prosper backfill --symbol BTCUSDT --start 2020-01 --end 2020-01 --workers 2 --root data_smoke
-poetry run prosper qa check --symbol BTCUSDT --interval 1m --year 2020 --month 01 --root data_smoke
-poetry run prosper aggregate --symbol BTCUSDT --from 1m --to 1h 1d 1w --start 2020-01 --end 2020-01 --root data_smoke
-poetry run prosper features build --symbol BTCUSDT --base_interval 1d --start 2020-01-01 --end 2020-01-31 --root data_smoke
-poetry run prosper labels build --symbol BTCUSDT --base_interval 1d --forward_days 1 --root data_smoke
-poetry run prosper predict baseline --symbol BTCUSDT --start 2020-01-01 --end 2020-01-31 --root data_smoke
-poetry run prosper planner windows --symbol BTCUSDT --start 2020-01-01 --end 2020-01-31 --root data_smoke
-```
-
-### Backfill Historical Data
-
-Download and process monthly 1-minute klines:
-
-```powershell
-poetry run prosper backfill --symbol BTCUSDT --start 2019-01 --end 2024-12 --workers 4
-```
-
-Options:
-- `--start`: Start date in YYYY-MM format
-- `--end`: End date in YYYY-MM format
-- `--workers`: Number of parallel download workers (default: 4)
-- `--dry-run`: Simulate without downloading
-
-### Quality Assurance
-
-Run QA checks on processed data:
-
-```powershell
-poetry run prosper qa check --symbol BTCUSDT --interval 1m --year 2024 --month 01
-```
-
-Checks performed:
-- Data sorting
-- Duplicate timestamps
-- Time gaps
-- OHLC invariants (high >= max(open,close), low <= min(open,close), no negative values)
-
-### Aggregate Data
-
-Resample 1m data to higher intervals:
-
-```powershell
-poetry run prosper aggregate --symbol BTCUSDT --from 1m --to 1h 1d 1w --start 2019-01 --end 2024-12
-```
-
-Supported intervals:
-- `1h`: Hourly aggregation (UTC hour boundaries)
-- `1d`: Daily aggregation (UTC day boundaries)
-- `1w`: Weekly aggregation (ISO weeks, Monday start)
-
-### Build Labels
-
-Generate direction and depth labels for daily predictions:
-
-```powershell
+poetry run prosper backfill --symbol BTCUSDT --start 2020-01 --end 2020-01 --workers 2
+poetry run prosper qa check --symbol BTCUSDT --interval 1m --year 2020 --month 01
+poetry run prosper aggregate --symbol BTCUSDT --from 1m --to 1h 1d 1w --start 2020-01 --end 2020-01
+poetry run prosper features build --symbol BTCUSDT --base_interval 1d --start 2020-01-01 --end 2020-01-31
 poetry run prosper labels build --symbol BTCUSDT --base_interval 1d --forward_days 1
+poetry run prosper predict baseline --symbol BTCUSDT --start 2020-01-01 --end 2020-01-31
+poetry run prosper planner windows --symbol BTCUSDT --start 2020-01-01 --end 2020-01-31
 ```
 
-Options:
-- `--base-interval`: Base interval for labels (default: 1d)
-- `--flat-threshold`: Threshold for flat label (default: 0.01 = 1%)
-- `--depth-bins`: Depth bin definitions (default: "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34+")
+### Research Mode Flags
+When executing CLI commands or background tasks, you can enforce reproducibility:
+- `--strict`: Fails fast on data gaps instead of interpolating.
+- `--deterministic`: Enforces deterministic algorithms in PyTorch.
+- `--seed <int>`: Sets a global random seed for exact reproducibility.
+- `--save-metadata`: Generates a `meta.json` audit trail alongside results.
 
-Label definitions:
-- **Direction**:
-  - `flat`: |r_{t+1}| <= threshold
-  - `long`: r_{t+1} > threshold
-  - `short`: r_{t+1} < -threshold
-- **Depth**: Conditional binning based on absolute return percentage (only for long/short)
+---
 
-### Generate Baseline Predictions
+## 📂 Data Storage Architecture
 
-Generate predictions using rolling window frequencies:
+All data is stored in the `./data` directory, utilizing highly optimized Parquet files partitioned by year and month.
 
-```powershell
-poetry run prosper predict baseline --symbol BTCUSDT --start 2024-01-01 --end 2024-12-31
-```
-
-Options:
-- `--horizon`: Prediction horizon (short/medium/long) - not used in baseline
-- `--start`: Start date in YYYY-MM-DD format
-- `--end`: End date in YYYY-MM-DD format
-- `--window-days`: Rolling window size in days (default: 180)
-
-### Plan Action Windows
-
-Generate actionable recommendations based on predictions:
-
-```powershell
-poetry run prosper planner windows --symbol BTCUSDT --start 2024-01-01 --end 2024-12-31
-```
-
-Options:
-- `--short-weeks`: Short horizon weeks range (default: 1-26)
-- `--medium-weeks`: Medium horizon weeks range (default: 13-52)
-- `--long-weeks`: Long horizon weeks range (default: 26-104)
-
-Recommendations:
-- **Strong Buy**: edge > 0.3, risk < 0.2
-- **Buy**: edge > 0.15, risk < 0.3
-- **Accumulate**: edge > 0.05, risk < 0.4
-- **Hold**: |edge| <= 0.05
-- **Reduce**: edge < -0.05, risk < 0.4
-- **Sell**: edge < -0.15, risk < 0.3
-- **Strong Sell**: edge < -0.3, risk < 0.2
-
-Where:
-- `edge = P_long - P_short`
-- `risk` = probability of large moves (>5% depth bins)
-
-## Data Storage Layout
-
-All data is stored in the `./data` directory:
-
-```
+```text
 data/
-├── raw/
-│   └── binance/spot/klines/1m/{SYMBOL}/
-│       ├── {SYMBOL}-1m-YYYY-MM.zip
-│       └── {SYMBOL}-1m-YYYY-MM.zip.CHECKSUM
+├── raw/                   # Original Binance ZIP files
 ├── processed/
 │   └── binance/spot/
-│       ├── klines/
+│       ├── klines/        # Processed OHLCV data partitioned by interval
 │       │   ├── 1m/symbol={SYMBOL}/year=YYYY/month=MM/part.parquet
-│       │   ├── 1h/symbol={SYMBOL}/year=YYYY/month=MM/part.parquet
-│       │   ├── 1d/symbol={SYMBOL}/year=YYYY/month=MM/part.parquet
-│       │   └── 1w/symbol={SYMBOL}/year=YYYY/week=WW/part.parquet
-│       └── labels/
-│           └── 1d/symbol={SYMBOL}/labels.parquet
-└── reports/
-    ├── qa/{SYMBOL}/{INTERVAL}/YYYY-MM.json
-    ├── predictions/{SYMBOL}/daily/YYYY-MM.jsonl
-    └── recommendations/{SYMBOL}/windows/YYYY-MM.json
+│       │   └── 1d/symbol={SYMBOL}/year=YYYY/month=MM/part.parquet
+│       └── labels/        # Ground-truth targets for ML
+└── reports/               # QA reports, predictions, and recommendations
 ```
 
-## Weekly Aggregation
+---
 
-Weekly data uses ISO week numbering (weeks start on Monday, UTC). Week boundaries are determined by the Monday of each ISO week.
-
-## Testing
-
-Run tests with pytest:
-
-```powershell
-poetry run pytest
-```
-
-Run with coverage:
-
-```powershell
-poetry run pytest --cov=prosper --cov-report=html
-```
-
-## Project Structure
-
-```
-prosper/
-├── src/prosper/
-│   ├── binance/          # Binance API clients
-│   ├── baseline/         # Baseline prediction models
-│   ├── labels/           # Label building
-│   ├── pipeline/         # Data processing pipelines
-│   ├── planner/          # Action window planning
-│   ├── qa/               # Quality assurance
-│   ├── storage/          # Storage layout and Parquet operations
-│   ├── utils/            # Utility functions
-│   ├── cli.py            # CLI entrypoint
-│   └── config.py         # Configuration management
-├── tests/                # Test suite
-├── pyproject.toml        # Poetry configuration
-└── README.md             # This file
-```
-
-## Configuration
-
-Configuration is managed through Pydantic Settings. You can:
-
-1. Set environment variables with `PROSPER_` prefix (e.g., `PROSPER_DATA_ROOT`)
-2. Create a `config.yaml` file (not implemented in MVP)
-3. Use defaults defined in `prosper/config.py`
-
-## Limitations
-
-- MVP focuses only on Binance SPOT market
-- Only 1-minute klines are supported for backfill
-- Baseline model is simple frequency-based (no machine learning)
-- Weekly aggregation uses ISO weeks (Monday start)
-
-## Disclaimer
+## ⚖️ Disclaimer
 
 **This software is for educational and research purposes only. It is not investment advice.**
+Trading cryptocurrencies involves substantial risk of loss. Past performance does not guarantee future results. The authors and contributors of this software are not responsible for any financial losses incurred through the use of this software.
 
-Trading cryptocurrencies involves substantial risk of loss. Past performance does not guarantee future results. Always do your own research and consult with a qualified financial advisor before making investment decisions.
-
-The authors and contributors of this software are not responsible for any financial losses incurred through the use of this software.
-
-## License
-
+## 📜 License
 MIT License - see LICENSE file for details.
-
-## Contributing
-
-This is a research project. Contributions are welcome but please ensure:
-- Code follows existing style (ruff formatting)
-- Tests are added for new features
-- Type hints are used throughout
-- Documentation is updated

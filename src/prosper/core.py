@@ -4,13 +4,70 @@ from __future__ import annotations
 
 import calendar
 import json
+import math
+import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import polars as pl
+
 from prosper.config import Settings, get_settings
+from prosper.storage.layout import get_features_parquet_path, get_labels_parquet_path
+
+INTERVAL_ORDER = [
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "8h",
+    "12h",
+    "1d",
+    "3d",
+    "1w",
+]
+INTERVAL_TO_MILLISECONDS = {
+    "1m": 60_000,
+    "3m": 3 * 60_000,
+    "5m": 5 * 60_000,
+    "15m": 15 * 60_000,
+    "30m": 30 * 60_000,
+    "1h": 60 * 60_000,
+    "2h": 2 * 60 * 60_000,
+    "4h": 4 * 60 * 60_000,
+    "6h": 6 * 60 * 60_000,
+    "8h": 8 * 60 * 60_000,
+    "12h": 12 * 60 * 60_000,
+    "1d": 24 * 60 * 60_000,
+    "3d": 3 * 24 * 60 * 60_000,
+    "1w": 7 * 24 * 60 * 60_000,
+}
+KLINE_COLUMNS = ["open_time", "open", "high", "low", "close", "volume"]
+KLINE_SIDE_COLUMNS = {
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "close_time",
+    "quote_asset_volume",
+    "num_trades",
+    "taker_buy_base_volume",
+    "taker_buy_quote_volume",
+    "symbol",
+    "year",
+    "month",
+    "week",
+}
+LABEL_COLUMNS = ["return_fwd", "direction", "depth_bin"]
 
 
 @dataclass(frozen=True)
@@ -71,6 +128,65 @@ class DataManager:
         self._invalidate_cache()
         return deleted_count
 
+    def get_chart_data(
+        self,
+        symbol: str,
+        interval: str,
+        limit: int = 1000,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> dict[str, Any]:
+        """Return joined OHLCV, features, labels, and data gaps for chart inspection."""
+        symbol = symbol.upper()
+        limit = max(1, min(int(limit), 5000))
+        step_ms = self._interval_milliseconds(interval)
+        start_dt = self._parse_iso_datetime(start, is_end=False)
+        end_dt = self._parse_iso_datetime(end, is_end=True)
+
+        klines = self._collect_klines(symbol, interval, start_dt, end_dt, limit)
+        if klines.is_empty():
+            return {
+                "symbol": symbol,
+                "interval": interval,
+                "limit": limit,
+                "rows": 0,
+                "candles": [],
+                "gaps": [],
+                "columns": {"features": [], "labels": []},
+            }
+
+        range_start = klines["open_time"].min()
+        range_end = klines["open_time"].max()
+        features = self._collect_features(symbol, interval, range_start, range_end)
+        labels = self._collect_labels(symbol, interval, range_start, range_end)
+
+        chart_df = klines
+        feature_columns: list[str] = []
+        label_columns: list[str] = []
+
+        if not features.is_empty():
+            feature_columns = [c for c in features.columns if c != "open_time"]
+            chart_df = chart_df.join(features, on="open_time", how="left", coalesce=True)
+        if not labels.is_empty():
+            label_columns = [c for c in labels.columns if c != "open_time"]
+            chart_df = chart_df.join(labels, on="open_time", how="left", coalesce=True)
+
+        chart_df = chart_df.sort("open_time")
+        gaps = self._detect_time_gaps(chart_df, step_ms)
+
+        return {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit,
+            "rows": len(chart_df),
+            "candles": self._frame_to_chart_rows(chart_df),
+            "gaps": gaps,
+            "columns": {
+                "features": feature_columns,
+                "labels": label_columns,
+            },
+        }
+
     def _scan_inventory(self) -> list[dict[str, Any]]:
         symbols = self._discover_symbols()
         inventory: list[dict[str, Any]] = []
@@ -101,9 +217,9 @@ class DataManager:
                 elif interval_gaps > 0:
                     status = "incomplete"
                     msg = f"{interval_gaps} gap(s) in data continuity"
-                elif not self._has_parquet_data(f_path):
+                elif not self._has_valid_features(f_path):
                     status = "warning"
-                    msg = "Missing Indicators (Features)"
+                    msg = "Missing or Outdated Features"
                 elif not self._has_parquet_data(l_path):
                     status = "warning"
                     msg = "Missing Prediction Labels"
@@ -167,7 +283,7 @@ class DataManager:
             # even if it's empty (so _symbol_quality can flag it as broken)
             if symbol_path.exists():
                 intervals.append(interval_dir.name)
-        return intervals
+        return sorted(intervals, key=self._interval_sort_key)
 
     def _symbol_size(self, symbol: str) -> int:
         paths = self._symbol_paths(symbol)
@@ -298,18 +414,12 @@ class DataManager:
             )
 
         # 3. Check for warnings (Features/Labels)
-        missing_fl = []
-        for interval in check_intervals:
-            f_path = self._features_path(symbol, interval)
-            l_path = self._labels_path(symbol, interval)
-            if not self._has_parquet_data(f_path) or not self._has_parquet_data(l_path):
-                missing_fl.append(interval)
-
-        if missing_fl:
+        warnings = [a["interval"] for a in aggregations if a["status"] == "warning"]
+        if warnings:
             return InventoryQuality(
                 "warning",
                 "Incomplete Pipeline",
-                f"Features/Labels missing for: {', '.join(sorted(missing_fl))}",
+                f"Features/Labels missing/outdated for: {', '.join(sorted(warnings))}",
             )
 
         qa_warning = self._qa_warning(symbol)
@@ -364,6 +474,243 @@ class DataManager:
 
     def _labels_path(self, symbol: str, interval: str = "1d") -> Path:
         return self.settings.processed_binance_spot_labels_dir / interval / f"symbol={symbol}"
+
+    def _collect_klines(
+        self,
+        symbol: str,
+        interval: str,
+        start_dt: datetime | None,
+        end_dt: datetime | None,
+        limit: int,
+    ) -> pl.DataFrame:
+        base_path = self.settings.processed_binance_spot_klines_dir / interval / f"symbol={symbol}"
+        lazy = self._scan_parquet_tree(base_path)
+        if lazy is None:
+            return pl.DataFrame()
+
+        schema = lazy.schema
+        missing = [col for col in KLINE_COLUMNS if col not in schema]
+        if missing:
+            raise ValueError(f"Klines data is missing required columns: {', '.join(missing)}")
+
+        lazy = self._normalize_open_time_lazy(lazy)
+        lazy = self._filter_time_range(lazy, start_dt, end_dt)
+        lazy = (
+            lazy.select(KLINE_COLUMNS)
+            .unique(subset=["open_time"], keep="last")
+            .sort("open_time")
+            .tail(limit)
+        )
+        return lazy.collect()
+
+    def _collect_features(
+        self,
+        symbol: str,
+        interval: str,
+        start_dt: datetime,
+        end_dt: datetime,
+    ) -> pl.DataFrame:
+        path = get_features_parquet_path(symbol, interval, settings=self.settings)
+        if not path.exists() or path.stat().st_size == 0:
+            return pl.DataFrame()
+
+        lazy = pl.scan_parquet(str(path), hive_partitioning=False)
+        if "open_time" not in lazy.schema:
+            return pl.DataFrame()
+
+        feature_cols = [
+            col for col in lazy.schema if col == "open_time" or col not in KLINE_SIDE_COLUMNS
+        ]
+        if len(feature_cols) <= 1:
+            return pl.DataFrame()
+
+        lazy = self._normalize_open_time_lazy(lazy)
+        lazy = self._filter_time_range(lazy, start_dt, end_dt)
+        return (
+            lazy.select(feature_cols)
+            .unique(subset=["open_time"], keep="last")
+            .sort("open_time")
+            .collect()
+        )
+
+    def _collect_labels(
+        self,
+        symbol: str,
+        interval: str,
+        start_dt: datetime,
+        end_dt: datetime,
+    ) -> pl.DataFrame:
+        path = get_labels_parquet_path(symbol, interval, settings=self.settings)
+        if not path.exists() or path.stat().st_size == 0:
+            return pl.DataFrame()
+
+        lazy = pl.scan_parquet(str(path), hive_partitioning=False)
+        if "open_time" not in lazy.schema:
+            return pl.DataFrame()
+
+        label_cols = ["open_time", *[col for col in LABEL_COLUMNS if col in lazy.schema]]
+        if len(label_cols) <= 1:
+            return pl.DataFrame()
+
+        lazy = self._normalize_open_time_lazy(lazy)
+        lazy = self._filter_time_range(lazy, start_dt, end_dt)
+        return (
+            lazy.select(label_cols)
+            .unique(subset=["open_time"], keep="last")
+            .sort("open_time")
+            .collect()
+        )
+
+    def _has_valid_features(self, f_path: Path) -> bool:
+        if not self._has_parquet_data(f_path):
+            return False
+        try:
+            import polars as pl
+
+            p_files = list(f_path.rglob("*.parquet"))
+            if p_files:
+                schema = pl.scan_parquet(p_files[-1]).schema
+                if "bb_upper" not in schema:
+                    return False
+        except Exception:
+            pass
+        return True
+
+    @staticmethod
+    def _scan_parquet_tree(path: Path) -> pl.LazyFrame | None:
+        if path.is_file() and path.suffix == ".parquet" and path.stat().st_size > 0:
+            return pl.scan_parquet(str(path), hive_partitioning=False)
+        if not path.exists():
+            return None
+
+        files = [p for p in path.glob("**/*.parquet") if p.is_file() and p.stat().st_size > 0]
+        if not files:
+            return None
+        return pl.scan_parquet([str(p) for p in files], hive_partitioning=False)
+
+    @staticmethod
+    def _normalize_open_time_lazy(lazy: pl.LazyFrame) -> pl.LazyFrame:
+        dtype = lazy.schema.get("open_time")
+        if dtype in (pl.Int32, pl.Int64, pl.UInt32, pl.UInt64):
+            expr = pl.from_epoch(pl.col("open_time"), time_unit="ms").dt.replace_time_zone("UTC")
+        else:
+            expr = pl.col("open_time").cast(pl.Datetime("ms", "UTC"))
+        return lazy.with_columns(expr.alias("open_time"))
+
+    @staticmethod
+    def _filter_time_range(
+        lazy: pl.LazyFrame,
+        start_dt: datetime | None,
+        end_dt: datetime | None,
+    ) -> pl.LazyFrame:
+        if start_dt is not None:
+            lazy = lazy.filter(pl.col("open_time") >= start_dt)
+        if end_dt is not None:
+            lazy = lazy.filter(pl.col("open_time") <= end_dt)
+        return lazy
+
+    @staticmethod
+    def _parse_iso_datetime(value: str | None, *, is_end: bool) -> datetime | None:
+        if not value:
+            return None
+
+        raw = value.strip()
+        if re.fullmatch(r"\d{4}-\d{2}$", raw):
+            if is_end:
+                year, month = (int(part) for part in raw.split("-"))
+                raw = f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
+            else:
+                raw = f"{raw}-01"
+
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            parsed = datetime.fromisoformat(raw)
+            if is_end:
+                parsed = parsed + timedelta(days=1) - timedelta(milliseconds=1)
+        else:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    def _detect_time_gaps(self, df: pl.DataFrame, step_ms: int) -> list[dict[str, int]]:
+        timestamps = [self._to_epoch_ms(value) for value in df["open_time"].to_list()]
+        gaps: list[dict[str, int]] = []
+        for previous, current in zip(timestamps, timestamps[1:]):
+            diff = current - previous
+            if diff <= step_ms:
+                continue
+            missing = max(1, int(diff // step_ms) - 1)
+            first_missing = previous + step_ms
+            gaps.append(
+                {
+                    "time": first_missing // 1000,
+                    "from": previous // 1000,
+                    "to": current // 1000,
+                    "missing": missing,
+                }
+            )
+        return gaps
+
+    def _frame_to_chart_rows(self, df: pl.DataFrame) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for row in df.to_dicts():
+            try:
+                candle = {
+                    "time": self._to_epoch_ms(row["open_time"]) // 1000,
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(row["volume"]),
+                }
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            if not all(
+                math.isfinite(candle[key]) for key in ["open", "high", "low", "close", "volume"]
+            ):
+                continue
+
+            for key, value in row.items():
+                if key in KLINE_COLUMNS:
+                    continue
+                cleaned = self._json_scalar(value)
+                if cleaned is not None or key in LABEL_COLUMNS:
+                    candle[key] = cleaned
+            rows.append(candle)
+        return rows
+
+    @staticmethod
+    def _json_scalar(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, datetime):
+            return int(value.timestamp())
+        return value
+
+    @staticmethod
+    def _to_epoch_ms(value: Any) -> int:
+        if isinstance(value, datetime):
+            return int(value.timestamp() * 1000)
+        if isinstance(value, int | float):
+            return int(value)
+        raise TypeError(f"Unsupported timestamp value: {value!r}")
+
+    @staticmethod
+    def _interval_milliseconds(interval: str) -> int:
+        try:
+            return INTERVAL_TO_MILLISECONDS[interval]
+        except KeyError as e:
+            raise ValueError(f"Unsupported interval: {interval}") from e
+
+    @staticmethod
+    def _interval_sort_key(interval: str) -> tuple[int, str]:
+        if interval in INTERVAL_ORDER:
+            return (INTERVAL_ORDER.index(interval), interval)
+        return (len(INTERVAL_ORDER), interval)
 
     def _fingerprint(self) -> dict[str, int]:
         # Fast fingerprint: only mtime of main directories and file count directly in symbol folders

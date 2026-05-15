@@ -1,4 +1,5 @@
 """Utility for compacting/merging Parquet files into larger partitions."""
+
 from pathlib import Path
 
 import polars as pl
