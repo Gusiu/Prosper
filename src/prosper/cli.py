@@ -685,5 +685,22 @@ def eval_backtest_cmd(
         raise typer.Exit(1)
 
 
+@app.command("ui")
+def start_ui(
+    port: int = typer.Option(8000, "--port", "-p", help="Port to run the UI server on"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host IP to bind to"),
+) -> None:
+    """
+    Start the Prosper Data Manager Web UI (Dashboard).
+    """
+    try:
+        import uvicorn
+        console.print(f"[green]Starting Prosper UI on http://{host}:{port}[/green]")
+        uvicorn.run("prosper.api.server:app", host=host, port=port, reload=False)
+    except ImportError:
+        console.print("[red]Uvicorn is not installed. Please install it with: poetry add uvicorn[/red]")
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

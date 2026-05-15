@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import polars as pl
@@ -15,8 +16,8 @@ def _rsi_ewm(close: pl.Expr, period: int = 14) -> pl.Expr:
     loss = pl.when(delta < 0).then(-delta).otherwise(0.0)
 
     # Wilder-like smoothing approximation via ewm (span=period).
-    avg_gain = gain.ewm_mean(span=period, adjust=False)
-    avg_loss = loss.ewm_mean(span=period, adjust=False)
+    avg_gain = gain.ewm_mean(span=period, adjust=False, ignore_nulls=True)
+    avg_loss = loss.ewm_mean(span=period, adjust=False, ignore_nulls=True)
 
     rs = avg_gain / avg_loss
     rsi = 100.0 - (100.0 / (1.0 + rs))
@@ -26,7 +27,18 @@ def _rsi_ewm(close: pl.Expr, period: int = 14) -> pl.Expr:
 
 
 def _ema(expr: pl.Expr, span: int) -> pl.Expr:
-    return expr.ewm_mean(span=span, adjust=False)
+    return expr.ewm_mean(span=span, adjust=False, ignore_nulls=True)
+
+
+def _parse_date_bound(value: str, *, is_end: bool) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    else:
+        parsed = parsed.astimezone(UTC)
+    if is_end and len(value) == 10:
+        parsed = parsed + timedelta(days=1) - timedelta(milliseconds=1)
+    return parsed
 
 
 def build_features(
@@ -65,7 +77,12 @@ def build_features(
             "path": str(out_path),
         }
 
-    df = pl.concat(parts).sort("open_time").unique(subset=["open_time"], keep="first")
+    df = (
+        pl.concat(parts)
+        .with_columns(pl.col("open_time").cast(pl.Datetime("us", "UTC")).alias("open_time"))
+        .sort("open_time")
+        .unique(subset=["open_time"], keep="first")
+    )
 
     # Timeframe-agnostic features (based on rows/candles)
     log_close = pl.col("close").log()
@@ -104,14 +121,18 @@ def build_features(
         [
             pl.col("close").rolling_mean(window_size=10).alias("ma_10"),
             pl.col("close").rolling_mean(window_size=30).alias("ma_30"),
+            pl.col("close").rolling_mean(window_size=20).alias("bb_mid"),
+            pl.col("close").rolling_std(window_size=20).alias("_bb_std_20"),
         ]
     )
     df_feat = df_feat.with_columns(
         [
             (pl.col("ma_10") - pl.col("ma_30")).alias("ma_diff"),
             (pl.col("ma_10") - pl.col("ma_10").shift(1)).alias("ma_slope"),
+            (pl.col("bb_mid") + 2.0 * pl.col("_bb_std_20")).alias("bb_upper"),
+            (pl.col("bb_mid") - 2.0 * pl.col("_bb_std_20")).alias("bb_lower"),
         ]
-    )
+    ).drop("_bb_std_20")
 
     df_feat = df_feat.with_columns([_rsi_ewm(pl.col("close"), 14).alias("rsi_14")])
     # Clamp for numeric safety
@@ -128,9 +149,18 @@ def build_features(
     df_feat = df_feat.with_columns(
         [
             true_range.alias("_true_range"),
-            true_range.ewm_mean(span=14, adjust=False).alias("atr_14"),
+            true_range.ewm_mean(span=14, adjust=False, ignore_nulls=True).alias("atr_14"),
         ]
     ).drop(["_true_range"])
+
+    signed_volume = (
+        pl.when(pl.col("close") > pl.col("close").shift(1))
+        .then(pl.col("volume"))
+        .when(pl.col("close") < pl.col("close").shift(1))
+        .then(-pl.col("volume"))
+        .otherwise(0.0)
+    )
+    df_feat = df_feat.with_columns(signed_volume.cum_sum().alias("obv"))
 
     ema12 = _ema(pl.col("close"), 12)
     ema26 = _ema(pl.col("close"), 26)
@@ -152,6 +182,7 @@ def build_features(
         if intraday_parts:
             df_1m = (
                 pl.concat(intraday_parts)
+                .with_columns(pl.col("open_time").cast(pl.Datetime("us", "UTC")).alias("open_time"))
                 .sort("open_time")
                 .unique(subset=["open_time"], keep="first")
             )
@@ -167,7 +198,7 @@ def build_features(
             df_1m = df_1m.with_columns(
                 [
                     pl.col("minute_return").pow(2).alias("_minute_return_sq"),
-                    (pl.col("close") / pl.col("close").cummax().over("_date") - 1.0).alias(
+                    (pl.col("close") / pl.col("close").cum_max().over("_date") - 1.0).alias(
                         "_intraday_drawdown"
                     ),
                 ]
@@ -182,7 +213,9 @@ def build_features(
             # Join intraday features to main features
             df_feat = df_feat.with_columns(pl.col("open_time").dt.date().alias("_date"))
             df_feat = (
-                df_feat.join(df_intraday, on="_date", how="left").drop("_date").sort("open_time")
+                df_feat.join(df_intraday, on="_date", how="left", coalesce=True)
+                .drop("_date")
+                .sort("open_time")
             )
         else:
             # No 1m data - just add empty intraday columns for schema consistency
@@ -200,6 +233,10 @@ def build_features(
     cols_to_drop = [c for c in ["symbol", "year", "month", "week"] if c in df_feat.columns]
     if cols_to_drop:
         df_feat = df_feat.drop(cols_to_drop)
+
+    start_dt = _parse_date_bound(start, is_end=False)
+    end_dt = _parse_date_bound(end, is_end=True)
+    df_feat = df_feat.filter((pl.col("open_time") >= start_dt) & (pl.col("open_time") <= end_dt))
 
     out_path = get_features_parquet_path(symbol, base_interval, settings=settings)
     save_parquet(df_feat, out_path)

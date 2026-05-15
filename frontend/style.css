@@ -578,6 +578,253 @@ progress::-moz-progress-bar {
   background: var(--red-main);
   color: white;
 }
+.analysis-action-btn {
+  background: rgba(0, 230, 118, 0.1);
+  color: var(--green-main);
+  border-color: rgba(0, 230, 118, 0.25);
+}
+.analysis-action-btn:hover {
+  background: var(--green-main);
+  color: #06120d;
+}
+
+/* Professional Analysis Drawer */
+.analysis-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.35s ease;
+  z-index: 150;
+}
+.analysis-backdrop.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.analysis-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: min(1500px, calc(100vw - 36px));
+  height: 100vh;
+  padding: 24px;
+  background: rgba(10, 15, 20, 0.88);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: -24px 0 80px rgba(0, 0, 0, 0.55);
+  transform: translateX(104%);
+  transition: transform 0.55s cubic-bezier(0.2, 0.9, 0.2, 1);
+  z-index: 160;
+  overflow-y: auto;
+}
+.analysis-drawer.open {
+  transform: translateX(0);
+}
+.analysis-drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+.analysis-kicker {
+  display: inline-flex;
+  color: var(--accent-glow);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.analysis-drawer-header h2 {
+  font-size: 2rem;
+  margin-bottom: 4px;
+}
+.analysis-drawer-header p {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+.drawer-close-btn {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-main);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.drawer-close-btn:hover {
+  border-color: var(--accent-glow);
+  color: var(--accent-glow);
+}
+.analysis-toolbar {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.7fr) repeat(3, minmax(130px, 1fr)) auto auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+.analysis-toolbar label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.analysis-layers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 12px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+.indicator-chip {
+  --chip-color: var(--accent-glow);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid color-mix(in srgb, var(--chip-color) 32%, rgba(255, 255, 255, 0.08));
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+.analysis-layers input {
+  accent-color: var(--accent-glow);
+}
+.indicator-chip:has(input:checked) {
+  color: var(--chip-color);
+  background: color-mix(in srgb, var(--chip-color) 14%, rgba(255, 255, 255, 0.04));
+  border-color: color-mix(in srgb, var(--chip-color) 72%, rgba(255, 255, 255, 0.12));
+  box-shadow: 0 0 18px color-mix(in srgb, var(--chip-color) 30%, transparent);
+}
+.indicator-ma10 {
+  --chip-color: #00e5ff;
+}
+.indicator-ma30 {
+  --chip-color: #ffbd2e;
+}
+.indicator-bb {
+  --chip-color: #ba68ff;
+}
+.indicator-rsi {
+  --chip-color: #7dd3fc;
+}
+.indicator-macd {
+  --chip-color: #00e676;
+}
+.indicator-atr {
+  --chip-color: #fb7185;
+}
+.layer-volume {
+  --chip-color: #8e9bb0;
+}
+.layer-labels {
+  --chip-color: #00e676;
+}
+.layer-gaps {
+  --chip-color: #ff1744;
+}
+.analysis-status {
+  min-height: 22px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin-bottom: 12px;
+}
+.analysis-chart-surface {
+  position: relative;
+  height: min(58vh, 560px);
+  min-height: 380px;
+  border-radius: 18px;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 36%),
+    rgba(2, 6, 12, 0.58);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.gap-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.analysis-gap-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, rgba(255, 23, 68, 0.22), rgba(255, 189, 46, 0.12));
+  border-left: 1px solid rgba(255, 23, 68, 0.75);
+  border-right: 1px solid rgba(255, 189, 46, 0.55);
+  box-shadow: 0 0 22px rgba(255, 23, 68, 0.12);
+}
+.chart-legend {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  right: 14px;
+  z-index: 4;
+  width: fit-content;
+  max-width: calc(100% - 28px);
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(5, 9, 15, 0.76);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-main);
+  font-family: "Fira Code", monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  pointer-events: none;
+}
+.analysis-subcharts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-top: 14px;
+}
+.analysis-subchart-card {
+  min-height: 190px;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(2, 6, 12, 0.46);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.analysis-subchart-title {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.analysis-subchart {
+  height: 150px;
+}
+.analysis-empty-subchart {
+  display: grid;
+  place-items: center;
+  height: 150px;
+  color: var(--text-muted);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+@media (max-width: 980px) {
+  .analysis-drawer {
+    width: 100vw;
+    padding: 18px;
+  }
+  .analysis-toolbar,
+  .analysis-subcharts {
+    grid-template-columns: 1fr;
+  }
+  .analysis-chart-surface {
+    height: 430px;
+  }
+}
 
 /* Research Sidebar Layout */
 .sidebar-footer {

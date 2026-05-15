@@ -1,6 +1,6 @@
 """Tests for time utilities."""
 
-from datetime import UTC, datetime
+from datetime import UTC
 
 import pytest
 from prosper.utils.time import (
