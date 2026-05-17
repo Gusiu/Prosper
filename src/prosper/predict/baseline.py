@@ -13,7 +13,7 @@ from prosper.labels.depth import (
 )
 from prosper.storage.layout import get_parquet_file_path
 from prosper.storage.parquet import load_parquet
-from prosper.storage.predictions import write_predictions_jsonl
+from prosper.storage.predictions import write_predictions_jsonl, write_versioned_predictions
 from prosper.utils.time import generate_month_range, parse_date
 
 
@@ -159,6 +159,12 @@ def predict_baseline(
         predictions.append(out)
 
     write_predictions_jsonl(predictions, symbol, settings)
+
+    # Also emit a consolidated predictions.jsonl into a versioned folder
+    try:
+        write_versioned_predictions(predictions, symbol, "baseline", settings)
+    except Exception:
+        pass
 
     return {
         "symbol": symbol,

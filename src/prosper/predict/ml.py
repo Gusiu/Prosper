@@ -15,7 +15,7 @@ from prosper.labels.depth import (
     parse_depth_bins,
 )
 from prosper.storage.layout import get_features_parquet_path
-from prosper.storage.predictions import write_predictions_jsonl
+from prosper.storage.predictions import write_predictions_jsonl, write_versioned_predictions
 from prosper.utils.time import parse_date
 
 
@@ -274,6 +274,12 @@ def predict_ml(
         predictions.append(out)
 
     write_predictions_jsonl(predictions, symbol, settings)
+
+    # Also write a consolidated predictions.jsonl into a versioned folder for UI convenience
+    try:
+        write_versioned_predictions(predictions, symbol, "ml", settings)
+    except Exception:
+        pass
 
     return {
         "symbol": symbol,

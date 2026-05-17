@@ -197,3 +197,28 @@ def get_eval_walkforward_summary_path(
     if settings is None:
         settings = get_settings()
     return settings.reports_eval_dir / symbol / "walkforward_summary.json"
+
+
+def get_versioned_prediction_dir(
+    symbol: str, model_type: str, timestamp: str, settings: Settings | None = None
+) -> Path:
+    """
+    Get directory for a versioned prediction run.
+
+    Layout example:
+      data/reports/predictions/{symbol}/{model_type}_{timestamp}/
+    """
+    if settings is None:
+        settings = get_settings()
+    return settings.reports_predictions_dir / symbol / f"{model_type}_{timestamp}"
+
+
+def get_versioned_prediction_file(
+    symbol: str,
+    model_type: str,
+    timestamp: str,
+    filename: str = "predictions.jsonl",
+    settings: Settings | None = None,
+) -> Path:
+    """Return path to a file inside a versioned prediction directory."""
+    return get_versioned_prediction_dir(symbol, model_type, timestamp, settings=settings) / filename

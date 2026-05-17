@@ -18,7 +18,7 @@ from prosper.labels.depth import (
     direction_from_return,
 )
 from prosper.storage.layout import get_features_parquet_path
-from prosper.storage.predictions import write_predictions_jsonl
+from prosper.storage.predictions import write_predictions_jsonl, write_versioned_predictions
 from prosper.utils.time import parse_date
 
 
@@ -115,7 +115,9 @@ def predict_gru(
     batch_size: int = 32,
     lr: float = 1e-3,
     flat_threshold: float = 0.01,
-    forward_days: int = 1,
+    short_forward_days: int = 28,
+    medium_forward_days: int = 182,
+    long_forward_days: int = 365,
 ) -> dict[str, Any]:
     """
     Train a GRU classifier on rolling windows and produce daily JSONL predictions.
@@ -174,19 +176,27 @@ def predict_gru(
     end_dt = parse_date(end).date()
 
     # ── 2. Pre-compute forward labels ─────────────────────────────────────────
-    y_dir_all = np.full(n, -1, dtype=np.int64)  # -1 = unknown / future
-    for i in range(n - forward_days):
-        j = i + forward_days
-        if closes[i] and closes[j]:
-            r = closes[j] / closes[i] - 1.0
-            y_dir_all[i] = DIR_TO_IDX[direction_from_return(r, flat_threshold)]
+    horizons = {
+        "short": short_forward_days,
+        "medium": medium_forward_days,
+        "long": long_forward_days,
+    }
+    y_dir_all = {}
+    for h_name, f_days in horizons.items():
+        arr = np.full(n, -1, dtype=np.int64)
+        for i in range(n - f_days):
+            j = i + f_days
+            if closes[i] and closes[j]:
+                r = closes[j] / closes[i] - 1.0
+                arr[i] = DIR_TO_IDX[direction_from_return(r, flat_threshold)]
+        y_dir_all[h_name] = arr
 
     # ── 3. Rolling-month training + inference ─────────────────────────────────
     predictions: list[dict[str, Any]] = []
     # We retrain once per calendar month to balance speed vs. freshness
     current_train_month = None
-    model: GRUClassifier | None = None
-    scaler_params: tuple[np.ndarray, np.ndarray] | None = None  # (med, iqr)
+    models_cache = {}
+    scaler_params = None
 
     for i in range(n):
         row_date = dates[i]
@@ -200,39 +210,39 @@ def predict_gru(
         month_key = (row_date.year, row_date.month)
         if month_key != current_train_month and train_end - train_start >= seq_len + 10:
             current_train_month = month_key
+            models_cache = {}
 
-            # Indices with valid labels in train window
-            valid = [k for k in range(train_start, train_end + 1) if y_dir_all[k] >= 0]
-            if len(valid) >= seq_len + 5 and len(set(y_dir_all[valid])) > 1:
-                X_train_raw = X_all_raw[train_start : train_end + 1]
-                X_norm = _robust_normalise(X_train_raw, X_all_raw)
-                scaler_params = (X_norm,)  # store the full normalised matrix
+            X_train_raw = X_all_raw[train_start : train_end + 1]
+            X_norm = _robust_normalise(X_train_raw, X_all_raw)
+            scaler_params = X_norm
 
-                # Build dataset from train window
-                y_norm = y_dir_all[train_start : train_end + 1]
-                ds = SequenceDataset(X_norm[train_start : train_end + 1], y_norm, seq_len)
+            for h_name in horizons.keys():
+                y_norm = y_dir_all[h_name][train_start : train_end + 1]
+                valid = [k for k in range(len(y_norm)) if y_norm[k] >= 0]
+                if len(valid) >= seq_len + 5 and len(set(y_norm[valid])) > 1:
+                    ds = SequenceDataset(X_norm, y_norm, seq_len)
+                    if len(ds) < 8:
+                        models_cache[h_name] = None
+                        continue
+                    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
+                    m = GRUClassifier(len(feature_cols), hidden_size, num_layers, dropout).to(
+                        device
+                    )
+                    opt = torch.optim.Adam(m.parameters(), lr=lr)
+                    loss_fn = nn.CrossEntropyLoss()
 
-                if len(ds) < 8:
-                    model = None
-                    continue
+                    m.train()
+                    for _ in range(epochs):
+                        for xb, yb in loader:
+                            xb, yb = xb.to(device), yb.to(device)
+                            opt.zero_grad()
+                            loss_fn(m(xb), yb).backward()
+                            torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0)
+                            opt.step()
 
-                loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
-                m = GRUClassifier(len(feature_cols), hidden_size, num_layers, dropout).to(device)
-                opt = torch.optim.Adam(m.parameters(), lr=lr)
-                loss_fn = nn.CrossEntropyLoss()
-
-                m.train()
-                for _ in range(epochs):
-                    for xb, yb in loader:
-                        xb, yb = xb.to(device), yb.to(device)
-                        opt.zero_grad()
-                        loss_fn(m(xb), yb).backward()
-                        torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0)
-                        opt.step()
-
-                model = m
-                # keep track of the normalised matrix
-                scaler_params = X_norm
+                    models_cache[h_name] = m
+                else:
+                    models_cache[h_name] = None
 
         # ── Inference ─────────────────────────────────────────────────────────
         date_str = row_date.isoformat()
@@ -240,36 +250,34 @@ def predict_gru(
 
         uniform_depth = {lbl: 1.0 / N_DEPTH_BINS for lbl in DEPTH_BIN_LABELS}
 
-        if model is None or scaler_params is None or i < seq_len:
-            for h in ("short", "medium", "long"):
-                out[h] = {
+        for h_name in horizons.keys():
+            m = models_cache.get(h_name)
+            if m is None or scaler_params is None or i < seq_len:
+                out[h_name] = {
                     "P_long": 0.33,
                     "P_flat": 0.34,
                     "P_short": 0.33,
                     "depth_long_bins": uniform_depth.copy(),
                     "depth_short_bins": uniform_depth.copy(),
                 }
-        else:
-            X_norm = scaler_params
-            x_seq = (
-                torch.tensor(X_norm[i - seq_len : i], dtype=torch.float32).unsqueeze(0).to(device)
-            )
+            else:
+                x_seq = (
+                    torch.tensor(scaler_params[i - seq_len : i], dtype=torch.float32)
+                    .unsqueeze(0)
+                    .to(device)
+                )
+                m.eval()
+                with torch.no_grad():
+                    logits = m(x_seq)  # (1, 3)
+                    probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
 
-            model.eval()
-            with torch.no_grad():
-                logits = model(x_seq)  # (1, 3)
-                probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
-
-            p_short, p_flat, p_long = float(probs[0]), float(probs[1]), float(probs[2])
-            horizon_out = {
-                "P_long": p_long,
-                "P_flat": p_flat,
-                "P_short": p_short,
-                "depth_long_bins": uniform_depth.copy(),
-                "depth_short_bins": uniform_depth.copy(),
-            }
-            for h in ("short", "medium", "long"):
-                out[h] = horizon_out.copy()
+                out[h_name] = {
+                    "P_long": float(probs[2]),
+                    "P_flat": float(probs[1]),
+                    "P_short": float(probs[0]),
+                    "depth_long_bins": uniform_depth.copy(),
+                    "depth_short_bins": uniform_depth.copy(),
+                }
 
         predictions.append(out)
 
@@ -277,6 +285,12 @@ def predict_gru(
         return {"error": "No predictions generated for the requested date range", "symbol": symbol}
 
     write_predictions_jsonl(predictions, symbol, settings)
+
+    # Also write a consolidated predictions.jsonl into a versioned folder
+    try:
+        write_versioned_predictions(predictions, symbol, "gru", settings)
+    except Exception:
+        pass
 
     return {
         "symbol": symbol,

@@ -6,7 +6,23 @@ let isPipelineRunning = false;
 let globalInventory = [];
 let researchMode = false;
 let symbolMetadata = { symbols: [], base_assets: [], quote_assets: [] };
-const ANALYSIS_INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"];
+let analysisDrawerContext = { symbol: null, model_type: null, timestamp: null };
+const ANALYSIS_INTERVALS = [
+  "1m",
+  "3m",
+  "5m",
+  "15m",
+  "30m",
+  "1h",
+  "2h",
+  "4h",
+  "6h",
+  "8h",
+  "12h",
+  "1d",
+  "3d",
+  "1w",
+];
 let analysisState = {
   symbol: null,
   interval: null,
@@ -31,6 +47,24 @@ let analysisState = {
   rowsByTime: new Map(),
 };
 
+// Canonical depth bin labels (keep in sync with backend `DEFAULT_DEPTH_BINS_STR`)
+const DEPTH_BIN_LABELS = [
+  "1-2",
+  "2-3",
+  "3-5",
+  "5-8",
+  "8-13",
+  "13-21",
+  "21-34",
+  "34+",
+];
+
+let predictionCalendarState = {
+  rowsByDate: new Map(),
+  year: 0,
+  month: 0,
+};
+
 function isValidSymbolPart(value) {
   return /^[A-Z0-9]{1,15}$/.test(value);
 }
@@ -42,11 +76,18 @@ function initResearchMode() {
   applyResearchModeUI();
 
   // Restore individual flag states
-  const flags = JSON.parse(localStorage.getItem("prosper_research_flags") || "{}");
-  if (flags.strict !== undefined) document.getElementById("research-strict").checked = flags.strict;
-  if (flags.deterministic !== undefined) document.getElementById("research-deterministic").checked = flags.deterministic;
-  if (flags.seed !== undefined) document.getElementById("research-seed").value = flags.seed;
-  if (flags.metadata !== undefined) document.getElementById("research-metadata").checked = flags.metadata;
+  const flags = JSON.parse(
+    localStorage.getItem("prosper_research_flags") || "{}",
+  );
+  if (flags.strict !== undefined)
+    document.getElementById("research-strict").checked = flags.strict;
+  if (flags.deterministic !== undefined)
+    document.getElementById("research-deterministic").checked =
+      flags.deterministic;
+  if (flags.seed !== undefined)
+    document.getElementById("research-seed").value = flags.seed;
+  if (flags.metadata !== undefined)
+    document.getElementById("research-metadata").checked = flags.metadata;
 }
 
 function toggleResearchMode() {
@@ -101,7 +142,12 @@ function saveResearchFlags() {
 }
 
 // Save flags on change
-["research-strict", "research-deterministic", "research-seed", "research-metadata"].forEach((id) => {
+[
+  "research-strict",
+  "research-deterministic",
+  "research-seed",
+  "research-metadata",
+].forEach((id) => {
   document.getElementById(id)?.addEventListener("change", saveResearchFlags);
 });
 
@@ -115,7 +161,9 @@ function getResearchFlags(commandType) {
   saveResearchFlags();
 
   const strict = document.getElementById("research-strict").checked;
-  const deterministic = document.getElementById("research-deterministic").checked;
+  const deterministic = document.getElementById(
+    "research-deterministic",
+  ).checked;
   const seed = document.getElementById("research-seed").value;
   const metadata = document.getElementById("research-metadata").checked;
 
@@ -158,6 +206,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initializeDates();
   loadSymbolMetadata();
   loadInventory();
+  loadAIInventory();
 
   // Initialize research mode from localStorage
   initResearchMode();
@@ -187,10 +236,14 @@ async function initializeDates() {
 
     const startInput = document.getElementById("pipe-start");
     const endInput = document.getElementById("pipe-end");
-    
+
     // Default to last 3 months if no data
-    startInput.value = data.default_start_month ? `${data.default_start_month}-01` : "2023-01-01";
-    endInput.value = data.yesterday ? data.yesterday : new Date().toISOString().split('T')[0];
+    startInput.value = data.default_start_month
+      ? `${data.default_start_month}-01`
+      : "2023-01-01";
+    endInput.value = data.yesterday
+      ? data.yesterday
+      : new Date().toISOString().split("T")[0];
 
     document.getElementById("train-start").value = startInput.value;
     document.getElementById("train-end").value = endInput.value;
@@ -223,7 +276,11 @@ function populateCoinOptions() {
     ...(symbolMetadata.quote_assets || []),
     ...fallbackQuotes,
   ];
-  const uniqueOptions = [...new Set(options.filter(Boolean).map((item) => String(item).toUpperCase()))].sort();
+  const uniqueOptions = [
+    ...new Set(
+      options.filter(Boolean).map((item) => String(item).toUpperCase()),
+    ),
+  ].sort();
   datalist.innerHTML = "";
   uniqueOptions.forEach((asset) => {
     const option = document.createElement("option");
@@ -233,23 +290,33 @@ function populateCoinOptions() {
 }
 
 async function loadInventory(refresh = false) {
-  const verifyBtn = document.querySelector('button[onclick="loadInventory(true)"]');
+  const verifyBtn = document.querySelector(
+    'button[onclick="loadInventory(true)"]',
+  );
   try {
     if (refresh) {
       const term = document.getElementById("terminal-output");
       term.innerHTML += `<div class="log-line text-muted">Deep scan initiated: verifying all files for gaps...</div>`;
       term.scrollTop = term.scrollHeight;
       if (verifyBtn) verifyBtn.innerHTML = "⌛ Scanning...";
-      updateProgress({ visible: true, percent: 45, label: "Deep Quality Scan..." });
+      updateProgress({
+        visible: true,
+        percent: 45,
+        label: "Deep Quality Scan...",
+      });
     }
 
-    const url = refresh ? "/api/data/inventory?refresh=true" : "/api/data/inventory";
+    const url = refresh
+      ? "/api/data/inventory?refresh=true"
+      : "/api/data/inventory";
     const res = await fetch(url);
     globalInventory = await res.json();
-    
+
     if (refresh) {
       updateProgress({ visible: true, percent: 100, label: "Scan Complete" });
-      setTimeout(() => { if (!isPipelineRunning) updateProgress({ visible: false }); }, 3000);
+      setTimeout(() => {
+        if (!isPipelineRunning) updateProgress({ visible: false });
+      }, 3000);
     }
   } catch (e) {
     console.error("Failed to load inventory", e);
@@ -289,7 +356,11 @@ async function loadInventory(refresh = false) {
           : '<span class="text-muted">None</span>';
 
       // Quality Status Dot + Fix button
-      const quality = item.quality || { status: "incomplete", label: "N/A", message: "No data" };
+      const quality = item.quality || {
+        status: "incomplete",
+        label: "N/A",
+        message: "No data",
+      };
       const dotClass = `status-dot quality-${quality.status}`;
       const showFix = quality.status !== "complete";
       const fixBtn = showFix
@@ -297,8 +368,8 @@ async function loadInventory(refresh = false) {
         : "";
 
       // Build existing intervals set for graying out
-      const existingIntervals = item.aggregations.map(a => a.interval);
-      
+      const existingIntervals = item.aggregations.map((a) => a.interval);
+
       tr.innerHTML = `
                 <td><strong>${item.symbol}</strong></td>
                 <td><span class="text-muted">${item.start_date}</span> → <span class="text-muted">${item.end_date}</span></td>
@@ -366,19 +437,27 @@ async function loadInventory(refresh = false) {
 }
 
 function updateQueueUI() {
-  const tbody = document.getElementById("queue-tbody");
-  const count = document.getElementById("queue-count");
-  count.innerText = `(${pipelineQueue.length})`;
+  // Update both global queue and AI tab queue (if present)
+  const targets = [
+    { tbodyId: "queue-tbody", countId: "queue-count" },
+    { tbodyId: "ai-queue-tbody", countId: "ai-queue-count" },
+  ];
 
-  if (pipelineQueue.length === 0) {
-    tbody.innerHTML = `<tr><td class="text-muted">Queue is empty</td></tr>`;
-    return;
-  }
+  targets.forEach(({ tbodyId, countId }) => {
+    const tbody = document.getElementById(tbodyId);
+    const count = document.getElementById(countId);
+    if (count) count.innerText = `(${pipelineQueue.length})`;
+    if (!tbody) return;
 
-  tbody.innerHTML = "";
-  pipelineQueue.forEach((item, idx) => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
+    if (pipelineQueue.length === 0) {
+      tbody.innerHTML = `<tr><td class="text-muted">Queue is empty</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = "";
+    pipelineQueue.forEach((item, idx) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
             <td style="font-size: 0.75rem; word-break: break-all;">${item.name}</td>
             <td style="width: 80px; text-align: right;">
                 <button class="action-btn" style="padding: 2px 4px; color: #2962ff;" onclick="moveQueue(${idx}, -1)">▲</button>
@@ -386,7 +465,8 @@ function updateQueueUI() {
                 <button class="action-btn" style="padding: 2px 4px; color: var(--red-main);" onclick="removeQueue(${idx})">X</button>
             </td>
         `;
-    tbody.appendChild(tr);
+      tbody.appendChild(tr);
+    });
   });
 }
 
@@ -449,36 +529,45 @@ function fixQuality(symbol) {
   const eMonth = item.end_date.substring(0, 7);
 
   // 1. Fix gaps in 1m data (re-backfill the entire range)
-  const agg1m = item.aggregations.find(a => a.interval === "1m");
+  const agg1m = item.aggregations.find((a) => a.interval === "1m");
   if (agg1m && agg1m.gaps > 0) {
-    cmds.push(`python -m prosper.cli backfill --symbol ${symbol} --start ${sMonth} --end ${eMonth} --root ./data${rFlags}`);
+    cmds.push(
+      `python -m prosper.cli backfill --symbol ${symbol} --start ${sMonth} --end ${eMonth} --root ./data${rFlags}`,
+    );
   }
 
   // 2. Fix gaps in other intervals (re-aggregate from 1m)
   const gappedOther = item.aggregations
-    .filter(a => a.interval !== "1m" && a.gaps > 0)
-    .map(a => a.interval);
+    .filter((a) => a.interval !== "1m" && a.gaps > 0)
+    .map((a) => a.interval);
 
   if (gappedOther.length > 0) {
     const toArg = gappedOther.join(",");
-    cmds.push(`python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${sMonth} --end ${eMonth} --to ${toArg} --root ./data${rFlags}`);
+    cmds.push(
+      `python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${sMonth} --end ${eMonth} --to ${toArg} --root ./data${rFlags}`,
+    );
   }
 
   // 3. Fix broken parquet data (empty folders — re-aggregate)
   const brokenIntervals = item.aggregations
-    .filter(a => a.status === "incomplete" && a.interval !== "1m" && (a.gaps || 0) === 0)
-    .map(a => a.interval);
+    .filter(
+      (a) =>
+        a.status === "incomplete" && a.interval !== "1m" && (a.gaps || 0) === 0,
+    )
+    .map((a) => a.interval);
 
   if (brokenIntervals.length > 0) {
     const toArg = brokenIntervals.join(",");
-    cmds.push(`python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${sMonth} --end ${eMonth} --to ${toArg} --root ./data${rFlags}`);
+    cmds.push(
+      `python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${sMonth} --end ${eMonth} --to ${toArg} --root ./data${rFlags}`,
+    );
   }
 
   // 4. Fix missing features/labels
   const needsFeatures = new Set();
 
   // From per-interval status
-  item.aggregations.forEach(a => {
+  item.aggregations.forEach((a) => {
     if (a.status === "warning") needsFeatures.add(a.interval);
   });
 
@@ -486,26 +575,371 @@ function fixQuality(symbol) {
   if (quality.message && quality.message.includes("Features/Labels missing")) {
     const match = quality.message.match(/for: (.+)/);
     if (match) {
-      match[1].split(",").map(s => s.trim()).forEach(i => needsFeatures.add(i));
+      match[1]
+        .split(",")
+        .map((s) => s.trim())
+        .forEach((i) => needsFeatures.add(i));
     }
   }
 
   for (const interval of needsFeatures) {
-    cmds.push(`python -m prosper.cli features build --symbol ${symbol} --base-interval ${interval} --start ${item.start_date} --end ${item.end_date} --root ./data${rFlags}`);
-    cmds.push(`python -m prosper.cli labels build --symbol ${symbol} --base-interval ${interval} --root ./data${rFlags}`);
+    cmds.push(
+      `python -m prosper.cli features build --symbol ${symbol} --base-interval ${interval} --start ${item.start_date} --end ${item.end_date} --root ./data${rFlags}`,
+    );
+    cmds.push(
+      `python -m prosper.cli labels build --symbol ${symbol} --base-interval ${interval} --root ./data${rFlags}`,
+    );
   }
 
   if (cmds.length === 0) {
-    return alert(`No automatic fix available for: ${quality.label} — ${quality.message}`);
+    return alert(
+      `No automatic fix available for: ${quality.label} — ${quality.message}`,
+    );
   }
 
   const fullCmd = cmds.join(" && ");
   const taskName = `Fix Quality [${symbol}]`;
-  
+
   console.log("Fix command:", fullCmd);
   pipelineQueue.push({ name: taskName, cmd: fullCmd });
   updateQueueUI();
   processQueue();
+}
+
+// --- AI Inventory & Calendar ---
+async function loadAIInventory() {
+  try {
+    const res = await fetch("/api/ai/models");
+    const data = await res.json();
+    renderAIInventory(data.models || []);
+  } catch (e) {
+    console.error("Failed to load AI inventory", e);
+  }
+}
+
+function renderAIInventory(models) {
+  const tbody = document.getElementById("ai-inventory-tbody");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  if (!models || models.length === 0) {
+    tbody.innerHTML = `<tr><td class="text-muted">No model runs</td></tr>`;
+    return;
+  }
+
+  models.forEach((m) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${m.symbol}</td>
+      <td>${m.model_type}</td>
+      <td>${m.timestamp}</td>
+      <td>${m.predictions_files || 0}</td>
+      <td></td>
+    `;
+    const btnCell = tr.querySelector("td:last-child");
+    const btn = document.createElement("button");
+    btn.className = "action-btn";
+    btn.textContent = "View";
+    btn.addEventListener("click", () =>
+      openPredictionCalendar(m.symbol, m.model_type, m.timestamp),
+    );
+    btnCell.appendChild(btn);
+    tbody.appendChild(tr);
+  });
+}
+
+async function openPredictionCalendar(symbol, model_type, timestamp) {
+  const title = document.getElementById("analysis-title");
+  const subtitle = document.getElementById("analysis-subtitle");
+  if (title) title.innerText = `${model_type.toUpperCase()} - ${symbol}`;
+  if (subtitle) subtitle.innerText = `Run: ${timestamp}`;
+  document.getElementById("analysis-backdrop").classList.add("open");
+  const drawer = document.getElementById("analysis-drawer");
+  if (drawer) {
+    drawer.classList.add("open");
+    drawer.setAttribute("aria-hidden", "false");
+  }
+
+  try {
+    const res = await fetch(
+      `/api/ai/predictions?symbol=${encodeURIComponent(symbol)}&model_type=${encodeURIComponent(
+        model_type,
+      )}&timestamp=${encodeURIComponent(timestamp)}`,
+    );
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      document.getElementById("analysis-status").innerText =
+        `Failed to load predictions: ${j.detail || res.statusText}`;
+      return;
+    }
+    const data = await res.json();
+    const rows = data.predictions || [];
+    document.getElementById("analysis-status").innerText =
+      `Loaded ${rows.length} prediction rows`;
+
+    // Save context for download action
+    analysisDrawerContext = { symbol, model_type, timestamp };
+
+    // Check whether feature_importances.json exists for this run and toggle download button
+    try {
+      const fiRes = await fetch(
+        `/api/ai/feature_importances?symbol=${encodeURIComponent(symbol)}&model_type=${encodeURIComponent(model_type)}&timestamp=${encodeURIComponent(timestamp)}`,
+      );
+      const btn = document.getElementById("download-feature-imp-btn");
+      if (btn) btn.style.display = fiRes.ok ? "inline-block" : "none";
+    } catch (err) {
+      const btn = document.getElementById("download-feature-imp-btn");
+      if (btn) btn.style.display = "none";
+    }
+
+    // Hide the original chart containers and toolbar
+    const chartContainer = document.getElementById("chart-container");
+    if (chartContainer) chartContainer.style.display = "none";
+    const subcharts = document.querySelector(".analysis-subcharts");
+    if (subcharts) subcharts.style.display = "none";
+    const toolbar = document.querySelector(".analysis-toolbar");
+    if (toolbar) toolbar.style.display = "none";
+    const layers = document.querySelector(".analysis-layers");
+    if (layers) layers.style.display = "none";
+
+    // Store data and render
+    predictionCalendarState.rowsByDate = new Map(
+      (rows || []).map((r) => [r.date, r]),
+    );
+    if (rows.length > 0) {
+      // Default to the last month with data (usually most recent)
+      const lastDate = new Date(rows[rows.length - 1].date);
+      predictionCalendarState.year = lastDate.getFullYear();
+      predictionCalendarState.month = lastDate.getMonth();
+    }
+    renderPredictionCalendar();
+  } catch (e) {
+    console.error(e);
+    document.getElementById("analysis-status").innerText =
+      `Error loading predictions`;
+  }
+}
+
+function changePredictionMonth(delta) {
+  let { year, month } = predictionCalendarState;
+  month += delta;
+  if (month > 11) {
+    month = 0;
+    year++;
+  } else if (month < 0) {
+    month = 11;
+    year--;
+  }
+  predictionCalendarState.month = month;
+  predictionCalendarState.year = year;
+  renderPredictionCalendar();
+}
+
+function renderPredictionCalendar() {
+  const { rowsByDate, year, month } = predictionCalendarState;
+  const cc = document.getElementById("prediction-calendar-container");
+  if (!cc) return;
+  cc.style.display = "block";
+  cc.innerHTML = "";
+
+  if (rowsByDate.size === 0) {
+    cc.innerHTML =
+      '<div class="analysis-empty-subchart">No predictions available for this run.</div>';
+    return;
+  }
+
+  const cal = document.createElement("div");
+  cal.style.padding = "12px";
+
+  // Navigation Header
+  const navHeader = document.createElement("div");
+  navHeader.style.display = "flex";
+  navHeader.style.justifyContent = "space-between";
+  navHeader.style.alignItems = "center";
+  navHeader.style.marginBottom = "16px";
+  navHeader.style.background = "rgba(255,255,255,0.03)";
+  navHeader.style.padding = "8px 12px";
+  navHeader.style.borderRadius = "8px";
+  navHeader.style.border = "1px solid rgba(255,255,255,0.05)";
+
+  const leftPart = document.createElement("div");
+  leftPart.style.display = "flex";
+  leftPart.style.gap = "8px";
+  leftPart.style.alignItems = "center";
+
+  const prevBtn = document.createElement("button");
+  prevBtn.className = "outline-btn";
+  prevBtn.style.padding = "4px 10px";
+  prevBtn.innerHTML = "&larr;";
+  prevBtn.onclick = () => changePredictionMonth(-1);
+
+  const nextBtn = document.createElement("button");
+  nextBtn.className = "outline-btn";
+  nextBtn.style.padding = "4px 10px";
+  nextBtn.innerHTML = "&rarr;";
+  nextBtn.onclick = () => changePredictionMonth(1);
+
+  const titleH = document.createElement("div");
+  titleH.style.fontWeight = "700";
+  titleH.style.fontSize = "1.1rem";
+  titleH.style.color = "var(--accent-glow)";
+  titleH.style.marginLeft = "8px";
+  const d = new Date(year, month, 1);
+  titleH.innerText = d.toLocaleString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
+
+  leftPart.appendChild(prevBtn);
+  leftPart.appendChild(nextBtn);
+  leftPart.appendChild(titleH);
+
+  const rightPart = document.createElement("div");
+  rightPart.style.display = "flex";
+  rightPart.style.gap = "8px";
+  rightPart.style.alignItems = "center";
+
+  const monthInput = document.createElement("input");
+  monthInput.type = "number";
+  monthInput.className = "glass-input";
+  monthInput.style.width = "50px";
+  monthInput.style.textAlign = "center";
+  monthInput.value = month + 1;
+  monthInput.min = 1;
+  monthInput.max = 12;
+
+  const yearInput = document.createElement("input");
+  yearInput.type = "number";
+  yearInput.className = "glass-input";
+  yearInput.style.width = "70px";
+  yearInput.style.textAlign = "center";
+  yearInput.value = year;
+
+  const jumpBtn = document.createElement("button");
+  jumpBtn.className = "glow-btn";
+  jumpBtn.style.padding = "4px 12px";
+  jumpBtn.innerText = "Go";
+  jumpBtn.onclick = () => {
+    const m = parseInt(monthInput.value) - 1;
+    const y = parseInt(yearInput.value);
+    if (!isNaN(m) && !isNaN(y)) {
+      predictionCalendarState.month = Math.max(0, Math.min(11, m));
+      predictionCalendarState.year = y;
+      renderPredictionCalendar();
+    }
+  };
+
+  rightPart.appendChild(monthInput);
+  rightPart.appendChild(yearInput);
+  rightPart.appendChild(jumpBtn);
+
+  navHeader.appendChild(leftPart);
+  navHeader.appendChild(rightPart);
+  cal.appendChild(navHeader);
+
+  const table = document.createElement("table");
+  table.style.width = "100%";
+  table.style.borderCollapse = "collapse";
+
+  const thead = document.createElement("thead");
+  const trh = document.createElement("tr");
+  ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].forEach((day) => {
+    const th = document.createElement("th");
+    th.style.padding = "10px";
+    th.style.color = "#94a3b8";
+    th.style.fontSize = "0.8rem";
+    th.style.textTransform = "uppercase";
+    th.style.letterSpacing = "0.05em";
+    th.innerText = day;
+    trh.appendChild(th);
+  });
+  thead.appendChild(trh);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  let curDay = 1 - firstDay;
+
+  for (let w = 0; w < 6; w++) {
+    const tr = document.createElement("tr");
+    let hasDays = false;
+    for (let d = 0; d < 7; d++) {
+      const td = document.createElement("td");
+      td.style.padding = "4px";
+      td.style.width = "14.28%";
+      td.style.verticalAlign = "top";
+
+      if (curDay >= 1 && curDay <= daysInMonth) {
+        hasDays = true;
+        const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(curDay).padStart(2, "0")}`;
+        const dayDiv = document.createElement("div");
+        dayDiv.style.padding = "8px";
+        dayDiv.style.borderRadius = "8px";
+        dayDiv.style.minHeight = "65px";
+        dayDiv.style.border = "1px solid rgba(255,255,255,0.03)";
+        dayDiv.style.transition = "all 0.2s ease";
+
+        const label = document.createElement("div");
+        label.style.fontWeight = "700";
+        label.style.fontSize = "0.9rem";
+        label.style.marginBottom = "4px";
+        label.innerText = curDay;
+        dayDiv.appendChild(label);
+
+        const rowData = rowsByDate.get(dateStr);
+        if (rowData) {
+          const pLong = Math.max(
+            rowData.short?.P_long || 0,
+            rowData.medium?.P_long || 0,
+            rowData.long?.P_long || 0,
+          );
+          const pShort = Math.max(
+            rowData.short?.P_short || 0,
+            rowData.medium?.P_short || 0,
+            rowData.long?.P_short || 0,
+          );
+
+          if (pLong >= 0.6) {
+            dayDiv.style.background = "rgba(0,230,118,0.08)";
+            dayDiv.style.borderColor = "rgba(0,230,118,0.2)";
+          } else if (pShort >= 0.6) {
+            dayDiv.style.background = "rgba(255,23,68,0.08)";
+            dayDiv.style.borderColor = "rgba(255,23,68,0.2)";
+          } else {
+            dayDiv.style.background = "rgba(255,255,255,0.02)";
+          }
+
+          const mini = document.createElement("div");
+          mini.style.fontSize = "0.7rem";
+          mini.style.color = "#94a3b8";
+          mini.innerText = `L:${Math.round(pLong * 100)}% S:${Math.round(pShort * 100)}%`;
+          dayDiv.appendChild(mini);
+
+          dayDiv.style.cursor = "pointer";
+          dayDiv.addEventListener("mouseenter", (e) => {
+            dayDiv.style.transform = "translateY(-2px)";
+            dayDiv.style.boxShadow = "0 4px 12px rgba(0,0,0,0.3)";
+            showPredictionPopover(e, rowData);
+          });
+          dayDiv.addEventListener("mouseleave", (e) => {
+            dayDiv.style.transform = "";
+            dayDiv.style.boxShadow = "";
+            hidePredictionPopover();
+          });
+        } else {
+          dayDiv.style.opacity = "0.15";
+          dayDiv.style.background = "rgba(255,255,255,0.01)";
+        }
+        td.appendChild(dayDiv);
+      }
+      tr.appendChild(td);
+      curDay++;
+    }
+    if (hasDays) tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  cal.appendChild(table);
+  cc.appendChild(cal);
 }
 
 function showAggregatePanel(symbol) {
@@ -516,9 +950,24 @@ function showAggregatePanel(symbol) {
   if (isOpening) {
     const item = globalInventory.find((i) => i.symbol === symbol);
     if (item) {
-      const existing = item.aggregations.map(a => a.interval);
-      const possible = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w"];
-      possible.forEach(a => {
+      const existing = item.aggregations.map((a) => a.interval);
+      const possible = [
+        "1m",
+        "3m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "4h",
+        "6h",
+        "8h",
+        "12h",
+        "1d",
+        "3d",
+        "1w",
+      ];
+      possible.forEach((a) => {
         const cb = document.getElementById(`agg-inline-${a}-${symbol}`);
         if (cb) {
           if (existing.includes(a)) {
@@ -565,7 +1014,11 @@ function getCheckedAggregations(symbol) {
 function getInlineAggConfig(symbol, start, end) {
   const itemInfo = globalInventory.find((i) => i.symbol === symbol);
   // Note: 1m is required for any aggregation
-  if (!itemInfo.aggregations.some(a => a.interval === "1m" && a.status !== "incomplete")) {
+  if (
+    !itemInfo.aggregations.some(
+      (a) => a.interval === "1m" && a.status !== "incomplete",
+    )
+  ) {
     return {
       error:
         "Error: Valid 1m source data is missing! You must Backfill 1m data first.",
@@ -573,19 +1026,19 @@ function getInlineAggConfig(symbol, start, end) {
   }
   const aggs = getCheckedAggregations(symbol);
   if (aggs.length === 0) return { error: "Select at least one aggregation" };
-  
+
   const sMonth = start.substring(0, 7);
   const eMonth = end.substring(0, 7);
   const toArg = aggs.join(",");
   const rFlags = getResearchFlags("pipeline");
-  
+
   let cmd = `python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${sMonth} --end ${eMonth} --to ${toArg} --root ./data${rFlags}`;
-  
+
   const allIntervals = ["1m", ...aggs];
   for (const interval of allIntervals) {
-      // Use full dates for features, month format for aggregate
-      cmd += ` && python -m prosper.cli features build --symbol ${symbol} --base-interval ${interval} --start ${start} --end ${end} --root ./data${rFlags}`;
-      cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --base-interval ${interval} --root ./data${rFlags}`;
+    // Use full dates for features, month format for aggregate
+    cmd += ` && python -m prosper.cli features build --symbol ${symbol} --base-interval ${interval} --start ${start} --end ${end} --root ./data${rFlags}`;
+    cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --base-interval ${interval} --root ./data${rFlags}`;
   }
 
   const taskName = `Agg & Auto-Features [${symbol}] to [${aggs.join(",")}]`;
@@ -623,7 +1076,7 @@ function fmtMonth(val, isEnd) {
     if (isEnd) return val; // Use selected end day
     return val;
   }
-  
+
   let base = val + "-01";
   if (isEnd) {
     let [y, m] = val.split("-");
@@ -689,19 +1142,19 @@ function addToQueue() {
   if (aggs.length > 0) {
     const toArg = aggs.join(",");
     cmd += ` && python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${s} --end ${e} --to ${toArg} --root ./data${rFlags}`;
-    
+
     // Automatically build features for ALL selected intervals + 1m
     const allIntervals = ["1m", ...aggs];
     for (const interval of allIntervals) {
-        cmd += ` && python -m prosper.cli features build --symbol ${symbol} --base-interval ${interval} --start ${sFull} --end ${eFull} --root ./data${rFlags}`;
-        cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --base-interval ${interval} --root ./data${rFlags}`;
+      cmd += ` && python -m prosper.cli features build --symbol ${symbol} --base-interval ${interval} --start ${sFull} --end ${eFull} --root ./data${rFlags}`;
+      cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --base-interval ${interval} --root ./data${rFlags}`;
     }
   } else {
     // Only 1m if no aggregations selected
     cmd += ` && python -m prosper.cli features build --symbol ${symbol} --base-interval 1m --start ${sFull} --end ${eFull} --root ./data${rFlags}`;
     cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --base-interval 1m --root ./data${rFlags}`;
   }
-  
+
   console.log("Pipeline command generated:", cmd);
 
   const aggNamePart = aggs.length > 0 ? ` + [${aggs.join(",")}]` : "";
@@ -858,7 +1311,7 @@ async function checkTaskLogs() {
       taskDot.className = "status-dot active";
       taskTxt.innerText = `Task: RUNNING (Queue: ${pipelineQueue.length})`;
       taskTxt.style.color = "var(--accent-glow)";
-      
+
       // Ensure progress bar is shown if running
       if (data.progress && data.progress.visible) {
         updateProgress(data.progress);
@@ -872,7 +1325,7 @@ async function checkTaskLogs() {
       if (isPipelineRunning) {
         // Task just finished!
         isPipelineRunning = false;
-        
+
         // Ensure we show 100%
         updateProgress({ visible: true, percent: 100, label: "Complete" });
 
@@ -890,7 +1343,7 @@ async function checkTaskLogs() {
         // Hide immediately if truly idle
         const progContainer = document.getElementById("global-progress");
         if (progContainer && !isPipelineRunning) {
-            progContainer.style.display = "none";
+          progContainer.style.display = "none";
         }
       }
     }
@@ -931,7 +1384,8 @@ function initAnalysisDrawer() {
   });
 
   const intervalSelect = document.getElementById("analysis-interval");
-  if (intervalSelect) intervalSelect.addEventListener("change", loadAnalysisData);
+  if (intervalSelect)
+    intervalSelect.addEventListener("change", loadAnalysisData);
 }
 
 function openAnalysisDrawer(symbol) {
@@ -946,10 +1400,29 @@ function openAnalysisDrawer(symbol) {
   backdrop.classList.add("open");
 
   document.getElementById("analysis-title").innerText = symbol;
-  document.getElementById("analysis-subtitle").innerText = `${item.start_date} to ${item.end_date}`;
-  document.getElementById("analysis-start").value = item.start_date !== "N/A" ? item.start_date : "";
-  document.getElementById("analysis-end").value = item.end_date !== "N/A" ? item.end_date : "";
-  document.querySelectorAll(".indicator-checkbox").forEach((cb) => { cb.checked = false; });
+  document.getElementById("analysis-subtitle").innerText =
+    `${item.start_date} to ${item.end_date}`;
+
+  // Ensure we show the proper elements (might be hidden by prediction calendar)
+  const chartContainer = document.getElementById("chart-container");
+  if (chartContainer) chartContainer.style.display = "";
+  const predictionContainer = document.getElementById(
+    "prediction-calendar-container",
+  );
+  if (predictionContainer) predictionContainer.style.display = "none";
+  const subcharts = document.querySelector(".analysis-subcharts");
+  if (subcharts) subcharts.style.display = "";
+  const toolbar = document.querySelector(".analysis-toolbar");
+  if (toolbar) toolbar.style.display = "";
+  const layers = document.querySelector(".analysis-layers");
+  if (layers) layers.style.display = "";
+  document.getElementById("analysis-start").value =
+    item.start_date !== "N/A" ? item.start_date : "";
+  document.getElementById("analysis-end").value =
+    item.end_date !== "N/A" ? item.end_date : "";
+  document.querySelectorAll(".indicator-checkbox").forEach((cb) => {
+    cb.checked = false;
+  });
   document.getElementById("show-rsi").checked = true;
   document.getElementById("show-macd").checked = true;
   document.getElementById("show-atr").checked = true;
@@ -962,11 +1435,23 @@ function openAnalysisDrawer(symbol) {
 
 function closeAnalysisDrawer() {
   document.getElementById("analysis-drawer").classList.remove("open");
-  document.getElementById("analysis-drawer").setAttribute("aria-hidden", "true");
+  document
+    .getElementById("analysis-drawer")
+    .setAttribute("aria-hidden", "true");
   document.getElementById("analysis-backdrop").classList.remove("open");
   disposeAnalysisCharts();
   analysisState.symbol = null;
   analysisState.data = null;
+
+  // Clear any inline styles that might have been set by prediction calendar
+  const chartContainer = document.getElementById("chart-container");
+  if (chartContainer) chartContainer.style.display = "";
+  const subcharts = document.querySelector(".analysis-subcharts");
+  if (subcharts) subcharts.style.display = "";
+  const toolbar = document.querySelector(".analysis-toolbar");
+  if (toolbar) toolbar.style.display = "";
+  const layers = document.querySelector(".analysis-layers");
+  if (layers) layers.style.display = "";
 }
 
 function populateAnalysisIntervals(item) {
@@ -977,7 +1462,8 @@ function populateAnalysisIntervals(item) {
     .filter(Boolean)
     .sort(compareAnalysisIntervals);
 
-  const uniqueIntervals = intervals.length > 0 ? [...new Set(intervals)] : ["1m"];
+  const uniqueIntervals =
+    intervals.length > 0 ? [...new Set(intervals)] : ["1m"];
   uniqueIntervals.forEach((interval) => {
     const option = document.createElement("option");
     option.value = interval;
@@ -1040,7 +1526,9 @@ function renderAnalysisCharts() {
   if (candles.length === 0) return;
 
   disposeAnalysisCharts();
-  analysisState.rowsByTime = new Map(candles.map((row) => [String(row.time), row]));
+  analysisState.rowsByTime = new Map(
+    candles.map((row) => [String(row.time), row]),
+  );
 
   const showVolume = document.getElementById("analysis-show-volume").checked;
   const showMa10 = document.getElementById("show-ma10").checked;
@@ -1116,12 +1604,15 @@ function drawVolume(candles) {
     priceFormat: { type: "volume" },
     priceScaleId: "",
   });
-  analysisState.volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
+  analysisState.volumeSeries
+    .priceScale()
+    .applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
   analysisState.volumeSeries.setData(
     candles.map((row) => ({
       time: row.time,
       value: row.volume,
-      color: row.close >= row.open ? "rgba(0,230,118,0.28)" : "rgba(255,23,68,0.28)",
+      color:
+        row.close >= row.open ? "rgba(0,230,118,0.28)" : "rgba(255,23,68,0.28)",
     })),
   );
 }
@@ -1159,7 +1650,12 @@ function overlayIndicators(candles, options) {
     });
     analysisState.ma30Series.setData(ma30Data);
   }
-  if (options.showBb && bbUpperData.length > 0 && bbMidData.length > 0 && bbLowerData.length > 0) {
+  if (
+    options.showBb &&
+    bbUpperData.length > 0 &&
+    bbMidData.length > 0 &&
+    bbLowerData.length > 0
+  ) {
     analysisState.bbUpperSeries = analysisState.chart.addLineSeries({
       color: "rgba(186, 104, 255, 0.85)",
       lineWidth: 1,
@@ -1244,7 +1740,8 @@ function drawDataHealth() {
 function drawRsiChart(candles, container, visible) {
   container.innerHTML = "";
   if (!visible) {
-    container.innerHTML = '<div class="analysis-empty-subchart">Indicators disabled</div>';
+    container.innerHTML =
+      '<div class="analysis-empty-subchart">Indicators disabled</div>';
     return;
   }
 
@@ -1252,15 +1749,30 @@ function drawRsiChart(candles, container, visible) {
     .filter((row) => Number.isFinite(row.rsi_14))
     .map((row) => ({ time: row.time, value: row.rsi_14 }));
   if (data.length === 0) {
-    container.innerHTML = '<div class="analysis-empty-subchart">No RSI data</div>';
+    container.innerHTML =
+      '<div class="analysis-empty-subchart">No RSI data</div>';
     return;
   }
 
-  analysisState.rsiChart = LightweightCharts.createChart(container, buildSubChartOptions(container));
-  analysisState.rsiSeries = analysisState.rsiChart.addLineSeries({ color: "#7dd3fc", lineWidth: 2 });
+  analysisState.rsiChart = LightweightCharts.createChart(
+    container,
+    buildSubChartOptions(container),
+  );
+  analysisState.rsiSeries = analysisState.rsiChart.addLineSeries({
+    color: "#7dd3fc",
+    lineWidth: 2,
+  });
   analysisState.rsiSeries.setData(data);
-  analysisState.rsiSeries.createPriceLine({ price: 70, color: "rgba(255,23,68,0.55)", lineStyle: LightweightCharts.LineStyle.Dashed });
-  analysisState.rsiSeries.createPriceLine({ price: 30, color: "rgba(0,230,118,0.55)", lineStyle: LightweightCharts.LineStyle.Dashed });
+  analysisState.rsiSeries.createPriceLine({
+    price: 70,
+    color: "rgba(255,23,68,0.55)",
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+  });
+  analysisState.rsiSeries.createPriceLine({
+    price: 30,
+    color: "rgba(0,230,118,0.55)",
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+  });
   analysisState.rsiChart.timeScale().fitContent();
   attachSyncHandlers(analysisState.rsiChart);
 }
@@ -1268,7 +1780,8 @@ function drawRsiChart(candles, container, visible) {
 function drawMacdChart(candles, container, visible) {
   container.innerHTML = "";
   if (!visible) {
-    container.innerHTML = '<div class="analysis-empty-subchart">Indicators disabled</div>';
+    container.innerHTML =
+      '<div class="analysis-empty-subchart">Indicators disabled</div>';
     return;
   }
 
@@ -1277,15 +1790,22 @@ function drawMacdChart(candles, container, visible) {
     .map((row) => ({
       time: row.time,
       value: row.macd_hist,
-      color: row.macd_hist >= 0 ? "rgba(0,230,118,0.65)" : "rgba(255,23,68,0.65)",
+      color:
+        row.macd_hist >= 0 ? "rgba(0,230,118,0.65)" : "rgba(255,23,68,0.65)",
     }));
   if (data.length === 0) {
-    container.innerHTML = '<div class="analysis-empty-subchart">No MACD data</div>';
+    container.innerHTML =
+      '<div class="analysis-empty-subchart">No MACD data</div>';
     return;
   }
 
-  analysisState.macdChart = LightweightCharts.createChart(container, buildSubChartOptions(container));
-  analysisState.macdSeries = analysisState.macdChart.addHistogramSeries({ priceFormat: { type: "price", precision: 4, minMove: 0.0001 } });
+  analysisState.macdChart = LightweightCharts.createChart(
+    container,
+    buildSubChartOptions(container),
+  );
+  analysisState.macdSeries = analysisState.macdChart.addHistogramSeries({
+    priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
+  });
   analysisState.macdSeries.setData(data);
   analysisState.macdChart.timeScale().fitContent();
   attachSyncHandlers(analysisState.macdChart);
@@ -1294,7 +1814,8 @@ function drawMacdChart(candles, container, visible) {
 function drawAtrChart(candles, container, visible) {
   container.innerHTML = "";
   if (!visible) {
-    container.innerHTML = '<div class="analysis-empty-subchart">Indicator disabled</div>';
+    container.innerHTML =
+      '<div class="analysis-empty-subchart">Indicator disabled</div>';
     return;
   }
 
@@ -1302,12 +1823,19 @@ function drawAtrChart(candles, container, visible) {
     .filter((row) => Number.isFinite(row.atr_14))
     .map((row) => ({ time: row.time, value: row.atr_14 }));
   if (data.length === 0) {
-    container.innerHTML = '<div class="analysis-empty-subchart">No ATR data</div>';
+    container.innerHTML =
+      '<div class="analysis-empty-subchart">No ATR data</div>';
     return;
   }
 
-  analysisState.atrChart = LightweightCharts.createChart(container, buildSubChartOptions(container));
-  analysisState.atrSeries = analysisState.atrChart.addLineSeries({ color: "#fb7185", lineWidth: 2 });
+  analysisState.atrChart = LightweightCharts.createChart(
+    container,
+    buildSubChartOptions(container),
+  );
+  analysisState.atrSeries = analysisState.atrChart.addLineSeries({
+    color: "#fb7185",
+    lineWidth: 2,
+  });
   analysisState.atrSeries.setData(data);
   analysisState.atrChart.timeScale().fitContent();
   attachSyncHandlers(analysisState.atrChart);
@@ -1337,7 +1865,12 @@ function attachSyncHandlers(chart) {
   chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
     if (!range || analysisState.isSyncingRange) return;
     analysisState.isSyncingRange = true;
-    [analysisState.chart, analysisState.rsiChart, analysisState.macdChart, analysisState.atrChart].forEach((c) => {
+    [
+      analysisState.chart,
+      analysisState.rsiChart,
+      analysisState.macdChart,
+      analysisState.atrChart,
+    ].forEach((c) => {
       if (c && c !== chart) c.timeScale().setVisibleRange(range);
     });
     analysisState.isSyncingRange = false;
@@ -1350,16 +1883,46 @@ function attachSyncHandlers(chart) {
     updateAnalysisLegend(param);
 
     if (!param || !param.time) {
-      [analysisState.chart, analysisState.rsiChart, analysisState.macdChart, analysisState.atrChart].forEach((c) => {
-        if (c && c !== chart && typeof c.clearCrosshairPosition === "function") c.clearCrosshairPosition();
+      [
+        analysisState.chart,
+        analysisState.rsiChart,
+        analysisState.macdChart,
+        analysisState.atrChart,
+      ].forEach((c) => {
+        if (c && c !== chart && typeof c.clearCrosshairPosition === "function")
+          c.clearCrosshairPosition();
       });
     } else {
       const row = analysisState.rowsByTime.get(String(param.time));
       if (row) {
-        if (analysisState.chart && chart !== analysisState.chart) setSubchartCrosshair(analysisState.chart, analysisState.candleSeries, row.close, param.time);
-        if (analysisState.rsiChart && chart !== analysisState.rsiChart) setSubchartCrosshair(analysisState.rsiChart, analysisState.rsiSeries, row.rsi_14, param.time);
-        if (analysisState.macdChart && chart !== analysisState.macdChart) setSubchartCrosshair(analysisState.macdChart, analysisState.macdSeries, row.macd_hist, param.time);
-        if (analysisState.atrChart && chart !== analysisState.atrChart) setSubchartCrosshair(analysisState.atrChart, analysisState.atrSeries, row.atr_14, param.time);
+        if (analysisState.chart && chart !== analysisState.chart)
+          setSubchartCrosshair(
+            analysisState.chart,
+            analysisState.candleSeries,
+            row.close,
+            param.time,
+          );
+        if (analysisState.rsiChart && chart !== analysisState.rsiChart)
+          setSubchartCrosshair(
+            analysisState.rsiChart,
+            analysisState.rsiSeries,
+            row.rsi_14,
+            param.time,
+          );
+        if (analysisState.macdChart && chart !== analysisState.macdChart)
+          setSubchartCrosshair(
+            analysisState.macdChart,
+            analysisState.macdSeries,
+            row.macd_hist,
+            param.time,
+          );
+        if (analysisState.atrChart && chart !== analysisState.atrChart)
+          setSubchartCrosshair(
+            analysisState.atrChart,
+            analysisState.atrSeries,
+            row.atr_14,
+            param.time,
+          );
       }
     }
     analysisState.isSyncingCrosshair = false;
@@ -1367,7 +1930,12 @@ function attachSyncHandlers(chart) {
 }
 
 function setSubchartCrosshair(chart, series, value, time) {
-  if (!chart || !series || !Number.isFinite(value) || typeof chart.setCrosshairPosition !== "function") {
+  if (
+    !chart ||
+    !series ||
+    !Number.isFinite(value) ||
+    typeof chart.setCrosshairPosition !== "function"
+  ) {
     return;
   }
   try {
@@ -1393,7 +1961,10 @@ function updateAnalysisLegend(param) {
   const row = analysisState.rowsByTime.get(String(param.time));
   if (!row) return;
 
-  const date = new Date(row.time * 1000).toISOString().replace("T", " ").slice(0, 16);
+  const date = new Date(row.time * 1000)
+    .toISOString()
+    .replace("T", " ")
+    .slice(0, 16);
   const parts = [
     `${analysisState.symbol} ${analysisState.interval}`,
     date,
@@ -1406,11 +1977,16 @@ function updateAnalysisLegend(param) {
 
   if (Number.isFinite(row.ma_10)) parts.push(`MA10 ${formatNumber(row.ma_10)}`);
   if (Number.isFinite(row.ma_30)) parts.push(`MA30 ${formatNumber(row.ma_30)}`);
-  if (Number.isFinite(row.bb_upper)) parts.push(`BBU ${formatNumber(row.bb_upper)}`);
-  if (Number.isFinite(row.bb_lower)) parts.push(`BBL ${formatNumber(row.bb_lower)}`);
-  if (Number.isFinite(row.rsi_14)) parts.push(`RSI ${formatNumber(row.rsi_14)}`);
-  if (Number.isFinite(row.macd_hist)) parts.push(`MACD ${formatNumber(row.macd_hist)}`);
-  if (Number.isFinite(row.atr_14)) parts.push(`ATR ${formatNumber(row.atr_14)}`);
+  if (Number.isFinite(row.bb_upper))
+    parts.push(`BBU ${formatNumber(row.bb_upper)}`);
+  if (Number.isFinite(row.bb_lower))
+    parts.push(`BBL ${formatNumber(row.bb_lower)}`);
+  if (Number.isFinite(row.rsi_14))
+    parts.push(`RSI ${formatNumber(row.rsi_14)}`);
+  if (Number.isFinite(row.macd_hist))
+    parts.push(`MACD ${formatNumber(row.macd_hist)}`);
+  if (Number.isFinite(row.atr_14))
+    parts.push(`ATR ${formatNumber(row.atr_14)}`);
   if (Number.isFinite(row.obv)) parts.push(`OBV ${formatNumber(row.obv)}`);
   if (row.direction) parts.push(`Label ${row.direction}`);
   legend.innerText = parts.join(" | ");
@@ -1440,9 +2016,12 @@ function resizeAnalysisCharts() {
     analysisState.chart.applyOptions({ width: container.clientWidth });
     drawDataHealth();
   }
-  if (analysisState.rsiChart) analysisState.rsiChart.applyOptions({ width: rsiContainer.clientWidth });
-  if (analysisState.macdChart) analysisState.macdChart.applyOptions({ width: macdContainer.clientWidth });
-  if (analysisState.atrChart) analysisState.atrChart.applyOptions({ width: atrContainer.clientWidth });
+  if (analysisState.rsiChart)
+    analysisState.rsiChart.applyOptions({ width: rsiContainer.clientWidth });
+  if (analysisState.macdChart)
+    analysisState.macdChart.applyOptions({ width: macdContainer.clientWidth });
+  if (analysisState.atrChart)
+    analysisState.atrChart.applyOptions({ width: atrContainer.clientWidth });
 }
 
 function disposeAnalysisCharts() {
@@ -1451,7 +2030,9 @@ function disposeAnalysisCharts() {
     analysisState.resizeHandler = null;
   }
   if (analysisState.chart && analysisState.mainRangeHandler) {
-    analysisState.chart.timeScale().unsubscribeVisibleTimeRangeChange(analysisState.mainRangeHandler);
+    analysisState.chart
+      .timeScale()
+      .unsubscribeVisibleTimeRangeChange(analysisState.mainRangeHandler);
     analysisState.mainRangeHandler = null;
   }
   if (analysisState.chart) analysisState.chart.remove();
@@ -1624,4 +2205,132 @@ function drawChart(chartData) {
       },
     },
   });
+}
+
+// Small popover for prediction details
+function showPredictionPopover(e, row) {
+  let pop = document.getElementById("prediction-popover");
+  if (!pop) {
+    pop = document.createElement("div");
+    pop.id = "prediction-popover";
+    pop.style.position = "absolute";
+    pop.style.zIndex = "9999";
+    pop.style.background = "rgba(7,11,18,0.95)";
+    pop.style.border = "1px solid rgba(255,255,255,0.06)";
+    pop.style.padding = "10px";
+    pop.style.borderRadius = "8px";
+    pop.style.minWidth = "240px";
+    pop.style.color = "#e6eef8";
+    document.body.appendChild(pop);
+  }
+  try {
+    function _horizonHtml(label, obj, durationTxt) {
+      const P_long = (obj && obj.P_long) || 0;
+      const P_flat = (obj && obj.P_flat) || 0;
+      const P_short = (obj && obj.P_short) || 0;
+      const pL = Math.round(P_long * 100);
+      const pF = Math.round(P_flat * 100);
+      const pS = Math.round(P_short * 100);
+
+      // Depth bins visualization (vertical micro-bars + labels)
+      let depthHtml = "";
+      try {
+        const depthBins = obj && (obj.depth_long_bins || obj.depth_short_bins);
+        if (depthBins && typeof depthBins === "object") {
+          // Enforce canonical chronological order of depth bins
+          const entries = DEPTH_BIN_LABELS.map((lbl) => [
+            lbl,
+            depthBins[lbl] || 0,
+          ]);
+          const bars = entries
+            .map(([k, v]) => {
+              const h = Math.max(6, Math.round((v || 0) * 100));
+              return `<div title="${k}: ${Math.round((v || 0) * 100)}%" style="width:10px; background:linear-gradient(to top,#60ffb1,#0bbf53); height:${h}%; border-radius:3px;"></div>`;
+            })
+            .join("");
+          const labels = entries
+            .map(
+              ([k]) =>
+                `<div style="width:10px; font-size:0.62rem; color:#94a3b8; text-align:center; margin-top:4px;">${k}</div>`,
+            )
+            .join("");
+          depthHtml = `
+            <div style="display:flex; gap:6px; align-items:flex-end; height:30px; margin-top:6px;">${bars}</div>
+            <div style="display:flex; gap:6px; margin-top:6px;">${labels}</div>
+          `;
+        }
+      } catch (err) {
+        depthHtml = "";
+      }
+
+      const durationHtml = durationTxt
+        ? `<div style="font-size:0.78rem;color:#94a3b8;margin-top:4px;">${durationTxt}</div>`
+        : "";
+
+      return `
+        <div style="margin-bottom:6px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div style="font-weight:600; font-size:0.92rem;">${label}</div>
+            ${durationHtml}
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
+            <div style="flex:1; max-width:160px; background:rgba(255,255,255,0.06); height:8px; border-radius:6px; overflow:hidden; position:relative;">
+              <div style="position:absolute; left:0; top:0; height:8px; background:rgba(0,230,118,0.85); width:${pL}%;"></div>
+              <div style="position:absolute; left:${pL}%; top:0; height:8px; background:rgba(255,189,46,0.85); width:${pF}%;"></div>
+              <div style="position:absolute; left:${pL + pF}%; top:0; height:8px; background:rgba(255,23,68,0.85); width:${pS}%;"></div>
+            </div>
+            <div style="width:86px; font-size:0.82rem; color:#cbd5e1; text-align:right;">L:${pL}% F:${pF}% S:${pS}%</div>
+          </div>
+          ${depthHtml}
+        </div>`;
+    }
+
+    const content = `
+      <div style="font-weight:700;margin-bottom:6px;">${row.date}</div>
+      ${_horizonHtml("Short", row.short || {}, "≈4w (28d)")}
+      ${_horizonHtml("Medium", row.medium || {}, "≈26w (182d)")}
+      ${_horizonHtml("Long", row.long || {}, "≈52w (365d)")}
+    `;
+    pop.innerHTML = content;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const left = Math.min(window.innerWidth - 280, rect.right + 8);
+    const top = Math.max(8, rect.top + window.scrollY - 8);
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+    pop.style.display = "block";
+  } catch (err) {
+    console.error("Popover error", err);
+  }
+}
+
+function hidePredictionPopover() {
+  const pop = document.getElementById("prediction-popover");
+  if (pop) pop.style.display = "none";
+}
+
+async function downloadFeatureImportances() {
+  const ctx = analysisDrawerContext || {};
+  if (!ctx.symbol || !ctx.model_type || !ctx.timestamp)
+    return alert("No run selected");
+  try {
+    const res = await fetch(
+      `/api/ai/feature_importances?symbol=${encodeURIComponent(ctx.symbol)}&model_type=${encodeURIComponent(ctx.model_type)}&timestamp=${encodeURIComponent(ctx.timestamp)}`,
+    );
+    if (!res.ok) return alert("Feature importances not available for this run");
+    const data = await res.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${ctx.symbol}_${ctx.model_type}_${ctx.timestamp}_feature_importances.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error(err);
+    alert("Download failed");
+  }
 }

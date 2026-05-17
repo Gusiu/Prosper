@@ -17,6 +17,11 @@ from pydantic import BaseModel
 
 from prosper.config import get_settings
 from prosper.core import DataManager
+from prosper.storage.layout import (
+    get_prediction_report_path,
+    get_versioned_prediction_dir,
+    get_versioned_prediction_file,
+)
 
 # Resolve the absolute path dynamically based on this file's location.
 # This makes the project portable to any computer or directory.
@@ -271,6 +276,153 @@ def get_dates():
 @app.get("/api/data/inventory")
 def get_inventory(refresh: bool = False):
     return DataManager().get_inventory(refresh=refresh)
+
+
+class AITrainRequest(BaseModel):
+    symbol: str
+    model_type: str = "xgboost"
+    start: str
+    end: str
+    params: dict | None = None
+
+
+@app.get("/api/ai/models")
+def get_ai_models() -> dict[str, list[dict[str, Any]]]:
+    settings = get_settings()
+    base = settings.reports_predictions_dir
+    if not base.exists():
+        return {"models": []}
+
+    models: list[dict[str, Any]] = []
+    for symbol_dir in sorted(base.iterdir() if base.exists() else []):
+        if not symbol_dir.is_dir():
+            continue
+        for entry in sorted(symbol_dir.iterdir()):
+            # Expect versioned dirs like: xgboost_20240501123000
+            if entry.is_dir() and "_" in entry.name:
+                parts = entry.name.split("_", 1)
+                model_type = parts[0]
+                timestamp = parts[1] if len(parts) > 1 else ""
+                has_fi = (entry / "feature_importances.json").exists()
+                jsonl_count = sum(1 for _ in entry.rglob("*.jsonl"))
+                models.append(
+                    {
+                        "symbol": symbol_dir.name,
+                        "model_type": model_type,
+                        "timestamp": timestamp,
+                        "path": str(entry),
+                        "has_feature_importances": has_fi,
+                        "predictions_files": jsonl_count,
+                    }
+                )
+    return {"models": models}
+
+
+@app.get("/api/ai/predictions")
+def get_ai_predictions(
+    symbol: str,
+    year: int | None = None,
+    month: int | None = None,
+    model_type: str | None = None,
+    timestamp: str | None = None,
+):
+    settings = get_settings()
+    symbol = symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+
+    # If model_type+timestamp provided, prefer versioned folder
+    if model_type and timestamp:
+        p = get_versioned_prediction_file(symbol, model_type, timestamp, settings=settings)
+        if not p.exists():
+            raise HTTPException(status_code=404, detail="Versioned prediction file not found")
+        try:
+            rows = []
+            with open(p, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        rows.append(json.loads(line))
+                    except Exception:
+                        continue
+            return {"predictions": rows}
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # Fallback to monthly JSONL files
+    if year is None or month is None:
+        raise HTTPException(
+            status_code=400, detail="Require year and month unless requesting versioned run"
+        )
+    p = get_prediction_report_path(symbol, year, month, settings=settings)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Monthly prediction file not found")
+    try:
+        rows = []
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    continue
+        return {"predictions": rows}
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.get("/api/ai/feature_importances")
+def get_feature_importances(symbol: str, model_type: str, timestamp: str):
+    settings = get_settings()
+    symbol = symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+
+    p = (
+        get_versioned_prediction_dir(symbol, model_type, timestamp, settings=settings)
+        / "feature_importances.json"
+    )
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Feature importances not found for this run")
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+        return data
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/api/ai/train")
+def train_model(req: AITrainRequest):
+    # Build a safe CLI command and submit to TaskRunner
+    symbol = req.symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+
+    model_type = req.model_type.lower()
+    start = req.start
+    end = req.end
+    params = req.params or {}
+
+    # Basic mapping of params into CLI flags for known model types
+    flags = []
+    if model_type == "xgboost":
+        if "train_window_days" in params:
+            flags += ["--train-window-days", str(params["train_window_days"])]
+        if "n_estimators" in params:
+            flags += ["--n-estimators", str(params["n_estimators"])]
+        if "max_depth" in params:
+            flags += ["--max-depth", str(params["max_depth"])]
+        if "learning_rate" in params:
+            flags += ["--learning-rate", str(params["learning_rate"])]
+
+    cmd = f"python -m prosper.cli predict {model_type} --symbol {symbol} --start {start} --end {end} {' '.join(flags)} --root ./data"
+
+    try:
+        commands = parse_safe_command_chain(cmd)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    runner.start(cmd, commands)
+    return {"status": "started", "command": cmd}
 
 
 @app.get("/api/meta/symbols")

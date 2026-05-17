@@ -20,6 +20,7 @@ from prosper.planner.windows import plan_windows
 from prosper.predict.baseline import predict_baseline as predict_baseline_3horizons
 from prosper.predict.gru import predict_gru
 from prosper.predict.ml import predict_ml
+from prosper.predict.xgboost_model import predict_xgboost
 from prosper.qa.checks import run_qa_checks
 from prosper.storage.layout import get_eval_walkforward_summary_path
 
@@ -434,6 +435,62 @@ def predict_ml_cmd(
         raise typer.Exit(1)
 
 
+@predict_app.command("xgboost")
+def predict_xgboost_cmd(
+    symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
+    start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
+    end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
+    train_window_days: int = typer.Option(
+        150,
+        "--train-window-days",
+        "--train_window_days",
+        help="Training window size in days",
+    ),
+    n_estimators: int = typer.Option(100, "--n-estimators", help="XGBoost n_estimators"),
+    max_depth: int = typer.Option(6, "--max-depth", help="XGBoost max_depth"),
+    learning_rate: float = typer.Option(0.1, "--learning-rate", help="XGBoost learning rate"),
+    root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    deterministic: bool = typer.Option(
+        False, "--deterministic", help="Enable deterministic training"
+    ),
+    seed: int = typer.Option(42, "--seed", help="Random seed for reproducibility"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
+) -> None:
+    """Generate XGBoost probabilistic predictions for short/medium/long horizons."""
+    settings = get_settings(
+        data_root=root,
+        strict=strict,
+        deterministic=deterministic,
+        seed=seed,
+        save_metadata=save_metadata,
+    )
+
+    try:
+        results = predict_xgboost(
+            symbol=symbol,
+            start=start,
+            end=end,
+            settings=settings,
+            train_window_days=train_window_days,
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+        )
+        if "error" in results:
+            console.print(f"[red]Error: {results['error']}[/red]")
+            raise typer.Exit(1)
+
+        console.print(
+            f"[green][OK][/green] XGBoost Predictions generated: {results['predictions']}"
+        )
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
 @predict_app.command("gru")
 def predict_gru_cmd(
     symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
@@ -695,10 +752,13 @@ def start_ui(
     """
     try:
         import uvicorn
+
         console.print(f"[green]Starting Prosper UI on http://{host}:{port}[/green]")
         uvicorn.run("prosper.api.server:app", host=host, port=port, reload=False)
     except ImportError:
-        console.print("[red]Uvicorn is not installed. Please install it with: poetry add uvicorn[/red]")
+        console.print(
+            "[red]Uvicorn is not installed. Please install it with: poetry add uvicorn[/red]"
+        )
         raise typer.Exit(1)
 
 
