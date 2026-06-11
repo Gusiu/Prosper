@@ -562,19 +562,9 @@ class DataManager:
         )
 
     def _has_valid_features(self, f_path: Path) -> bool:
-        if not self._has_parquet_data(f_path):
-            return False
-        try:
-            import polars as pl
-
-            p_files = list(f_path.rglob("*.parquet"))
-            if p_files:
-                schema = pl.scan_parquet(p_files[-1]).schema
-                if "bb_upper" not in schema:
-                    return False
-        except Exception:
-            pass
-        return True
+        # For inventory purposes, treat features as valid if at least one parquet
+        # file is present. Detailed schema checks are not required here.
+        return self._has_parquet_data(f_path)
 
     @staticmethod
     def _scan_parquet_tree(path: Path) -> pl.LazyFrame | None:
@@ -642,11 +632,12 @@ class DataManager:
                 continue
             missing = max(1, int(diff // step_ms) - 1)
             first_missing = previous + step_ms
+            last_missing = current - step_ms
             gaps.append(
                 {
                     "time": first_missing // 1000,
-                    "from": previous // 1000,
-                    "to": current // 1000,
+                    "from": first_missing // 1000,
+                    "to": last_missing // 1000,
                     "missing": missing,
                 }
             )

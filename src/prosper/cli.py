@@ -11,6 +11,7 @@ from rich.logging import RichHandler
 from prosper.binance.rest import BinanceRESTClient
 from prosper.config import get_settings
 from prosper.eval.backtest import run_backtest
+from prosper.eval.predictions import evaluate_predictions
 from prosper.eval.walkforward import eval_walkforward
 from prosper.features.build import build_features
 from prosper.labels.build import build_labels
@@ -20,6 +21,7 @@ from prosper.planner.windows import plan_windows
 from prosper.predict.baseline import predict_baseline as predict_baseline_3horizons
 from prosper.predict.gru import predict_gru
 from prosper.predict.ml import predict_ml
+from prosper.predict.xgboost_model import predict_xgboost
 from prosper.qa.checks import run_qa_checks
 from prosper.storage.layout import get_eval_walkforward_summary_path
 
@@ -39,7 +41,7 @@ labels_app = typer.Typer(help="Label building")
 predict_app = typer.Typer(help="Prediction generation")
 planner_app = typer.Typer(help="Action window planning")
 features_app = typer.Typer(help="Feature engineering")
-eval_app = typer.Typer(help="Walk-forward evaluation")
+eval_app = typer.Typer(help="Prediction, walk-forward, and trading evaluation")
 
 app.add_typer(symbols_app, name="symbols")
 app.add_typer(qa_app, name="qa")
@@ -124,12 +126,13 @@ def backfill_cmd(
             settings=settings,
         )
 
-        total = summary.get("total", 0)
+        processed = summary.get("processed", 0)
         failed = summary.get("failed", 0)
+        total = summary.get("total_months", 0)
         if failed > 0:
             console.print(f"[yellow]Warning: {failed}/{total} months had errors[/yellow]")
-        if total > 0 and failed >= total:
-            # Only fail if ALL months failed — partial success should continue the chain
+        if processed == 0:
+            # Only fail when zero months succeeded — partial errors should continue the chain
             raise typer.Exit(1)
 
     except Exception as e:
@@ -391,6 +394,7 @@ def predict_ml_cmd(
     symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
+    interval: str = typer.Option("1d", "--interval", "-i", help="Feature interval (1m, 1h, 1d)"),
     train_window_days: int = typer.Option(
         150,
         "--train-window-days",
@@ -422,6 +426,7 @@ def predict_ml_cmd(
             start=start,
             end=end,
             settings=settings,
+            interval=interval,
             train_window_days=train_window_days,
         )
         if "error" in results:
@@ -434,11 +439,70 @@ def predict_ml_cmd(
         raise typer.Exit(1)
 
 
+@predict_app.command("xgboost")
+def predict_xgboost_cmd(
+    symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
+    start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
+    end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
+    interval: str = typer.Option("1d", "--interval", "-i", help="Feature interval (1m, 1h, 1d)"),
+    train_window_days: int = typer.Option(
+        150,
+        "--train-window-days",
+        "--train_window_days",
+        help="Training window size in days",
+    ),
+    n_estimators: int = typer.Option(100, "--n-estimators", help="XGBoost n_estimators"),
+    max_depth: int = typer.Option(6, "--max-depth", help="XGBoost max_depth"),
+    learning_rate: float = typer.Option(0.1, "--learning-rate", help="XGBoost learning rate"),
+    root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    deterministic: bool = typer.Option(
+        False, "--deterministic", help="Enable deterministic training"
+    ),
+    seed: int = typer.Option(42, "--seed", help="Random seed for reproducibility"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
+) -> None:
+    """Generate XGBoost probabilistic predictions for short/medium/long horizons."""
+    settings = get_settings(
+        data_root=root,
+        strict=strict,
+        deterministic=deterministic,
+        seed=seed,
+        save_metadata=save_metadata,
+    )
+
+    try:
+        results = predict_xgboost(
+            symbol=symbol,
+            start=start,
+            end=end,
+            settings=settings,
+            interval=interval,
+            train_window_days=train_window_days,
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+        )
+        if "error" in results:
+            console.print(f"[red]Error: {results['error']}[/red]")
+            raise typer.Exit(1)
+
+        console.print(
+            f"[green][OK][/green] XGBoost Predictions generated: {results['predictions']}"
+        )
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
 @predict_app.command("gru")
 def predict_gru_cmd(
     symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
+    interval: str = typer.Option("1d", "--interval", "-i", help="Feature interval (1m, 1h, 1d)"),
     train_window_days: int = typer.Option(
         365, "--train-window-days", help="Training window size in days"
     ),
@@ -469,6 +533,7 @@ def predict_gru_cmd(
             start=start,
             end=end,
             settings=settings,
+            interval=interval,
             seq_len=seq_len,
             train_window_days=train_window_days,
             epochs=epochs,
@@ -490,6 +555,7 @@ def predict_tft_cmd(
     symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
+    interval: str = typer.Option("1d", "--interval", "-i", help="Feature interval (1m, 1h, 1d)"),
     train_window_days: int = typer.Option(
         365, "--train-window-days", help="Training window size in days"
     ),
@@ -522,6 +588,7 @@ def predict_tft_cmd(
             start=start,
             end=end,
             settings=settings,
+            interval=interval,
             seq_len=seq_len,
             train_window_days=train_window_days,
             max_epochs=max_epochs,
@@ -685,6 +752,73 @@ def eval_backtest_cmd(
         raise typer.Exit(1)
 
 
+def _run_predictions_evaluation(
+    symbol: str,
+    model_type: str,
+    timestamp: str,
+    interval: str,
+    root: Path,
+    strict: bool,
+    save_metadata: bool,
+) -> None:
+    settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
+
+    try:
+        result = evaluate_predictions(
+            symbol=symbol,
+            model_type=model_type,
+            timestamp=timestamp,
+            interval=interval,
+            settings=settings,
+        )
+        metrics = result["metrics"]
+        artifacts = result["artifacts"]
+        score = metrics.get("overall", {}).get("model_score")
+        score_text = f"{score:.2f}" if isinstance(score, (int, float)) else "N/A"
+
+        console.print(f"[green][OK][/green] Prediction evaluation saved to: {metrics['artifacts_dir']}")
+        console.print(f"Model score: {score_text}")
+        console.print(f"Scored rows: {metrics.get('scored_rows', 0)}")
+        console.print(f"Metrics: {artifacts['metrics']}")
+        console.print(f"Quality rows: {artifacts['predictions_quality']}")
+        console.print(f"Recommendations: {artifacts['recommendations']}")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@eval_app.command("predictions")
+def eval_predictions_cmd(
+    symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
+    model_type: str = typer.Option(..., "--model-type", "--model_type", help="Model type"),
+    timestamp: str = typer.Option(..., "--timestamp", help="Versioned prediction timestamp"),
+    interval: str = typer.Option("1d", "--interval", help="Prediction/data interval"),
+    root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
+) -> None:
+    """Evaluate a versioned prediction run and generate quality/recommendation artifacts."""
+    _run_predictions_evaluation(symbol, model_type, timestamp, interval, root, strict, save_metadata)
+
+
+@eval_app.command("evaluate")
+def eval_predictions_alias_cmd(
+    symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
+    model_type: str = typer.Option(..., "--model-type", "--model_type", help="Model type"),
+    timestamp: str = typer.Option(..., "--timestamp", help="Versioned prediction timestamp"),
+    interval: str = typer.Option("1d", "--interval", help="Prediction/data interval"),
+    root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+    strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    save_metadata: bool = typer.Option(
+        False, "--save-metadata", help="Save meta.json alongside artifacts"
+    ),
+) -> None:
+    """Alias for ``prosper eval predictions``."""
+    _run_predictions_evaluation(symbol, model_type, timestamp, interval, root, strict, save_metadata)
+
+
 @app.command("ui")
 def start_ui(
     port: int = typer.Option(8000, "--port", "-p", help="Port to run the UI server on"),
@@ -695,10 +829,13 @@ def start_ui(
     """
     try:
         import uvicorn
+
         console.print(f"[green]Starting Prosper UI on http://{host}:{port}[/green]")
         uvicorn.run("prosper.api.server:app", host=host, port=port, reload=False)
     except ImportError:
-        console.print("[red]Uvicorn is not installed. Please install it with: poetry add uvicorn[/red]")
+        console.print(
+            "[red]Uvicorn is not installed. Please install it with: poetry add uvicorn[/red]"
+        )
         raise typer.Exit(1)
 
 

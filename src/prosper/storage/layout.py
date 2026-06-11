@@ -197,3 +197,144 @@ def get_eval_walkforward_summary_path(
     if settings is None:
         settings = get_settings()
     return settings.reports_eval_dir / symbol / "walkforward_summary.json"
+
+
+def get_evaluation_run_dir(
+    symbol: str,
+    model_type: str,
+    timestamp: str,
+    settings: Settings | None = None,
+) -> Path:
+    """
+    Get directory for a versioned prediction-evaluation run.
+
+    Layout:
+      data/reports/evaluations/{SYMBOL}/{model_type}_{timestamp}/
+    """
+    if settings is None:
+        settings = get_settings()
+    return settings.reports_dir / "evaluations" / symbol / f"{model_type}_{timestamp}"
+
+
+def parse_evaluation_folder(name: str) -> tuple[str, str] | None:
+    """Parse ``{model_type}_{timestamp}`` into ``(model_type, timestamp)``."""
+    if "_" not in name:
+        return None
+    parts = name.split("_")
+    timestamp = parts[-1]
+    if not timestamp.isdigit() or len(timestamp) < 12:
+        return None
+    model_type = "_".join(parts[:-1])
+    if not model_type:
+        return None
+    return model_type, timestamp
+
+
+def get_evaluation_metrics_path(
+    symbol: str,
+    model_type: str,
+    timestamp: str,
+    settings: Settings | None = None,
+) -> Path:
+    """Return path to ``metrics.json`` for a versioned evaluation run."""
+    return get_evaluation_run_dir(symbol, model_type, timestamp, settings=settings) / "metrics.json"
+
+
+KNOWN_PREDICTION_INTERVALS = frozenset({"1m", "1h", "1d", "1w"})
+
+
+def versioned_prediction_folder_name(
+    model_type: str, timestamp: str, interval: str | None = None
+) -> str:
+    """Build folder name: ``{model_type}_{interval}_{timestamp}`` or legacy ``{model_type}_{timestamp}``."""
+    if interval:
+        return f"{model_type}_{interval}_{timestamp}"
+    return f"{model_type}_{timestamp}"
+
+
+def parse_versioned_prediction_folder(name: str) -> tuple[str, str, str] | None:
+    """Parse versioned folder name into ``(model_type, interval, timestamp)``.
+
+    Supports:
+    - ``{model_type}_{interval}_{timestamp}`` e.g. ``ml_1d_20240501123000``
+    - legacy ``{model_type}_{timestamp}`` e.g. ``xgboost_20240501123000``
+    - legacy ``{model_type}_{interval}_{timestamp}`` with interval embedded in model_type
+      e.g. folder created via ``ml_1d`` model_type → still resolves to model ``ml``, interval ``1d``
+    """
+    if "_" not in name:
+        return None
+    parts = name.split("_")
+    if not parts[-1].isdigit() or len(parts[-1]) < 12:
+        return None
+
+    timestamp = parts[-1]
+    if len(parts) >= 3 and parts[-2] in KNOWN_PREDICTION_INTERVALS:
+        model_type = "_".join(parts[:-2])
+        interval = parts[-2]
+        # Normalize folders like ``ml_1d_2024...`` where model_type was passed as ``ml_1d``
+        if model_type.endswith(f"_{interval}"):
+            base = model_type[: -(len(interval) + 1)]
+            if base:
+                model_type = base
+        return model_type, interval, timestamp
+
+    model_type = parts[0]
+    legacy_timestamp = "_".join(parts[1:])
+    return model_type, "1d", legacy_timestamp
+
+
+def get_versioned_prediction_dir(
+    symbol: str,
+    model_type: str,
+    timestamp: str,
+    settings: Settings | None = None,
+    interval: str | None = None,
+) -> Path:
+    """
+    Get directory for a versioned prediction run.
+
+    Layout example:
+      data/reports/predictions/{symbol}/{model_type}_{interval}_{timestamp}/
+    """
+    if settings is None:
+        settings = get_settings()
+    folder = versioned_prediction_folder_name(model_type, timestamp, interval)
+    return settings.reports_predictions_dir / symbol / folder
+
+
+def resolve_versioned_prediction_dir(
+    symbol: str,
+    model_type: str,
+    timestamp: str,
+    settings: Settings | None = None,
+    interval: str | None = None,
+) -> Path:
+    """Resolve an existing versioned prediction directory (new or legacy layout)."""
+    if settings is None:
+        settings = get_settings()
+    candidates: list[Path] = []
+    if interval:
+        candidates.append(get_versioned_prediction_dir(symbol, model_type, timestamp, settings, interval))
+    candidates.append(get_versioned_prediction_dir(symbol, model_type, timestamp, settings, None))
+    if interval:
+        candidates.append(
+            get_versioned_prediction_dir(symbol, f"{model_type}_{interval}", timestamp, settings, None)
+        )
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
+
+
+def get_versioned_prediction_file(
+    symbol: str,
+    model_type: str,
+    timestamp: str,
+    filename: str = "predictions.jsonl",
+    settings: Settings | None = None,
+    interval: str | None = None,
+) -> Path:
+    """Return path to a file inside a versioned prediction directory."""
+    return (
+        resolve_versioned_prediction_dir(symbol, model_type, timestamp, settings, interval) / filename
+    )

@@ -16,7 +16,7 @@ from prosper.labels.depth import (
     direction_from_return,
 )
 from prosper.storage.layout import get_features_parquet_path
-from prosper.storage.predictions import write_predictions_jsonl
+from prosper.storage.predictions import write_predictions_jsonl, write_versioned_predictions
 from prosper.utils.time import parse_date
 
 
@@ -31,13 +31,16 @@ def predict_tft(
     start: str,
     end: str,
     settings: Settings | None = None,
+    interval: str = "1d",
     seq_len: int = 60,
     train_window_days: int = 365,
     max_epochs: int = 10,
     hidden_size: int = 32,
     attention_head_size: int = 2,
     flat_threshold: float = 0.01,
-    forward_days: int = 1,
+    short_forward_days: int = 28,
+    medium_forward_days: int = 182,
+    long_forward_days: int = 365,
     learning_rate: float = 1e-3,
 ) -> dict[str, Any]:
     """
@@ -79,7 +82,7 @@ def predict_tft(
     warnings.filterwarnings("ignore", category=FutureWarning)
 
     # ── 1. Load features ──────────────────────────────────────────────────────
-    feat_path = get_features_parquet_path(symbol, "1d", settings=settings)
+    feat_path = get_features_parquet_path(symbol, interval, settings=settings)
     if not feat_path.exists():
         return {"error": f"No features parquet for {symbol}. Run: features build", "symbol": symbol}
 
@@ -101,12 +104,20 @@ def predict_tft(
 
     # ── 2. Pre-compute forward labels ─────────────────────────────────────────
     dir_map = {"short": 0, "flat": 1, "long": 2}
-    y_dir = np.full(n, -1, dtype=np.int64)
-    for i in range(n - forward_days):
-        j = i + forward_days
-        if closes[i] and closes[j]:
-            r = closes[j] / closes[i] - 1.0
-            y_dir[i] = dir_map[direction_from_return(r, flat_threshold)]
+    horizons = {
+        "short": short_forward_days,
+        "medium": medium_forward_days,
+        "long": long_forward_days,
+    }
+    y_dir_all = {}
+    for h_name, f_days in horizons.items():
+        arr = np.full(n, -1, dtype=np.int64)
+        for i in range(n - f_days):
+            j = i + f_days
+            if closes[i] and closes[j]:
+                r = closes[j] / closes[i] - 1.0
+                arr[i] = dir_map[direction_from_return(r, flat_threshold)]
+        y_dir_all[h_name] = arr
 
     # ── 3. Rolling-month train + inference ───────────────────────────────────
     try:
@@ -122,7 +133,7 @@ def predict_tft(
 
     predictions: list[dict[str, Any]] = []
     current_train_month = None
-    tft_model = None
+    tft_model = {}
     norm_params: tuple[np.ndarray, np.ndarray] | None = None  # (med, iqr)
 
     uniform_depth = {lbl: 1.0 / N_DEPTH_BINS for lbl in DEPTH_BIN_LABELS}
@@ -139,7 +150,7 @@ def predict_tft(
         # ── Train once per calendar month ─────────────────────────────────
         if month_key != current_train_month and (train_end - train_start) >= seq_len + 20:
             current_train_month = month_key
-            tft_model = None
+            tft_model = {}
 
             # Normalise
             X_tr = X_raw[train_start : train_end + 1]
@@ -150,136 +161,155 @@ def predict_tft(
             norm_params = (med, iqr_arr)
             X_norm_all = _robust_normalize(X_raw, med, iqr_arr)
 
-            # Build pandas dataframe for TimeSeriesDataSet
-            valid_idx = [k for k in range(train_start, train_end + 1) if y_dir[k] >= 0]
-            if len(valid_idx) < seq_len + 10 or len(set(y_dir[valid_idx])) < 2:
-                continue
+            norm_params_cache = {}
 
-            dir_map_rev = {0: "short", 1: "flat", 2: "long"}
-            rows = []
-            for k in valid_idx:
-                row = {"time_idx": k, "group": "BTC", "target": dir_map_rev[y_dir[k]]}
-                for fi, fc in enumerate(feature_cols):
-                    row[fc] = float(X_norm_all[k, fi])
-                rows.append(row)
+            for h_name, f_days in horizons.items():
+                y_dir = y_dir_all[h_name]
+                # Prevent look-ahead leakage: label at k needs close[k + f_days]
+                safe_train_end = train_end - f_days
+                if safe_train_end <= train_start:
+                    tft_model[h_name] = None
+                    continue
+                # Build pandas dataframe for TimeSeriesDataSet
+                valid_idx = [k for k in range(train_start, safe_train_end + 1) if y_dir[k] >= 0]
+                if len(valid_idx) < seq_len + 10 or len(set(y_dir[valid_idx])) < 2:
+                    tft_model[h_name] = None
+                    continue
 
-            df_pd = pd.DataFrame(rows)
+                dir_map_rev = {0: "short", 1: "flat", 2: "long"}
+                rows = []
+                for k in valid_idx:
+                    row = {"time_idx": k, "group": symbol, "target": dir_map_rev[y_dir[k]]}
+                    for fi, fc in enumerate(feature_cols):
+                        row[fc] = float(X_norm_all[k, fi])
+                    rows.append(row)
 
-            max_enc = min(seq_len, len(df_pd) - seq_len)
-            if max_enc < 5:
-                continue
+                df_pd = pd.DataFrame(rows)
 
-            try:
-                ds = TimeSeriesDataSet(
-                    df_pd,
-                    time_idx="time_idx",
-                    target="target",
-                    group_ids=["group"],
-                    min_encoder_length=max_enc // 2,
-                    max_encoder_length=max_enc,
-                    min_prediction_length=1,
-                    max_prediction_length=1,
-                    time_varying_unknown_reals=feature_cols,
-                    target_normalizer=NaNLabelEncoder(),
-                    add_relative_time_idx=True,
-                    add_target_scales=False,
-                    add_encoder_length=True,
-                )
+                max_enc = min(seq_len, len(df_pd) - seq_len)
+                if max_enc < 5:
+                    tft_model[h_name] = None
+                    continue
 
-                loader = ds.to_dataloader(train=True, batch_size=32, num_workers=0)
+                try:
+                    ds = TimeSeriesDataSet(
+                        df_pd,
+                        time_idx="time_idx",
+                        target="target",
+                        group_ids=["group"],
+                        min_encoder_length=max_enc // 2,
+                        max_encoder_length=max_enc,
+                        min_prediction_length=1,
+                        max_prediction_length=1,
+                        time_varying_unknown_reals=feature_cols,
+                        target_normalizer=NaNLabelEncoder(),
+                        add_relative_time_idx=True,
+                        add_target_scales=False,
+                        add_encoder_length=True,
+                    )
 
-                tft = TemporalFusionTransformer.from_dataset(
-                    ds,
-                    learning_rate=learning_rate,
-                    hidden_size=hidden_size,
-                    attention_head_size=attention_head_size,
-                    dropout=0.1,
-                    hidden_continuous_size=16,
-                    loss=CrossEntropy(),
-                    log_interval=-1,
-                    reduce_on_plateau_patience=2,
-                )
+                    loader = ds.to_dataloader(train=True, batch_size=32, num_workers=0)
 
-                trainer_kwargs = dict(
-                    max_epochs=max_epochs,
-                    enable_progress_bar=False,
-                    enable_model_summary=False,
-                    logger=False,
-                    accelerator="cpu",
-                )
-                if settings.deterministic:
-                    trainer_kwargs["deterministic"] = True
-                trainer = L.Trainer(**trainer_kwargs)
-                trainer.fit(tft, train_dataloaders=loader)
-                tft_model = tft
-                # Store normalised matrix for inference
-                norm_params = (med, iqr_arr, X_norm_all, ds)
-            except Exception as e:
-                print(f"Training exception for month {current_train_month}: {e}")
-                tft_model = None
+                    tft = TemporalFusionTransformer.from_dataset(
+                        ds,
+                        learning_rate=learning_rate,
+                        hidden_size=hidden_size,
+                        attention_head_size=attention_head_size,
+                        dropout=0.1,
+                        hidden_continuous_size=16,
+                        loss=CrossEntropy(),
+                        log_interval=-1,
+                        reduce_on_plateau_patience=2,
+                    )
+
+                    trainer_kwargs = dict(
+                        max_epochs=max_epochs,
+                        enable_progress_bar=False,
+                        enable_model_summary=False,
+                        logger=False,
+                        accelerator="cpu",
+                    )
+                    if settings.deterministic:
+                        trainer_kwargs["deterministic"] = True
+                    trainer = L.Trainer(**trainer_kwargs)
+                    trainer.fit(tft, train_dataloaders=loader)
+                    tft_model[h_name] = tft
+                    norm_params_cache[h_name] = ds
+                except Exception as e:
+                    print(f"Training exception for month {current_train_month}: {e}")
+                    tft_model[h_name] = None
+            norm_params = (med, iqr_arr, X_norm_all, norm_params_cache)
 
         # ── Inference ─────────────────────────────────────────────────────
         date_str = row_date.isoformat()
         out: dict[str, Any] = {"date": date_str, "symbol": symbol}
 
-        if tft_model is None or norm_params is None or i < seq_len:
-            for h in ("short", "medium", "long"):
-                out[h] = {
+        for h_name in horizons.keys():
+            tft_h = tft_model.get(h_name)
+            if not tft_h or norm_params is None or i < seq_len:
+                out[h_name] = {
                     "P_long": 0.33,
                     "P_flat": 0.34,
                     "P_short": 0.33,
                     "depth_long_bins": uniform_depth.copy(),
                     "depth_short_bins": uniform_depth.copy(),
                 }
-        else:
-            try:
-                med, iqr_arr, X_norm_all, ds_ref = norm_params
-                enc_len = min(seq_len, i)
-                rows_inf = []
-                dir_map_rev = {0: "short", 1: "flat", 2: "long"}
-                for k in range(i - enc_len, i + 1):
-                    # For inference, the target of the last row doesn't matter for predictors,
-                    # but TimeSeriesDataSet expects valid vocabulary.
-                    fake_target = dir_map_rev[max(y_dir[k], 0)]
-                    row = {"time_idx": k, "group": "BTC", "target": fake_target}
-                    for fi, fc in enumerate(feature_cols):
-                        row[fc] = float(X_norm_all[k, fi])
-                    rows_inf.append(row)
+            else:
+                try:
+                    med, iqr_arr, X_norm_all, norm_params_cache = norm_params
+                    ds_ref = norm_params_cache.get(h_name)
+                    if not ds_ref:
+                        raise ValueError("No ds_ref")
+                    enc_len = min(seq_len, i)
+                    rows_inf = []
+                    dir_map_rev = {0: "short", 1: "flat", 2: "long"}
+                    y_dir = y_dir_all[h_name]
+                    for k in range(i - enc_len, i + 1):
+                        fake_target = dir_map_rev[max(y_dir[k], 0)]
+                        row = {"time_idx": k, "group": symbol, "target": fake_target}
+                        for fi, fc in enumerate(feature_cols):
+                            row[fc] = float(X_norm_all[k, fi])
+                        rows_inf.append(row)
 
-                df_inf = pd.DataFrame(rows_inf)
-                ds_inf = TimeSeriesDataSet.from_dataset(
-                    ds_ref, df_inf, predict=True, stop_randomization=True
-                )
-                inf_loader = ds_inf.to_dataloader(train=False, batch_size=1, num_workers=0)
-
-                raw_preds = tft_model.predict(inf_loader, mode="raw", return_x=False)
-                if isinstance(raw_preds, dict):
-                    logits = raw_preds["prediction"][0, 0].cpu().numpy()
-                elif isinstance(raw_preds, tuple):
-                    logits = (
-                        raw_preds[0]["prediction"][0, 0].cpu().numpy()
-                        if isinstance(raw_preds[0], dict)
-                        else raw_preds[0].prediction[0, 0].cpu().numpy()
+                    df_inf = pd.DataFrame(rows_inf)
+                    ds_inf = TimeSeriesDataSet.from_dataset(
+                        ds_ref, df_inf, predict=True, stop_randomization=True
                     )
-                elif hasattr(raw_preds, "output"):
-                    logits = raw_preds.output.prediction[0, 0].cpu().numpy()
-                else:
-                    logits = raw_preds.prediction[0, 0].cpu().numpy()
-                probs = np.exp(logits) / np.exp(logits).sum()
-                p_short, p_flat, p_long = float(probs[0]), float(probs[1]), float(probs[2])
-            except Exception as e:
-                print(f"Inference exception at {date_str}: {e}")
-                p_short, p_flat, p_long = 0.33, 0.34, 0.33
+                    inf_loader = ds_inf.to_dataloader(train=False, batch_size=1, num_workers=0)
 
-            horizon_out = {
-                "P_long": p_long,
-                "P_flat": p_flat,
-                "P_short": p_short,
-                "depth_long_bins": uniform_depth.copy(),
-                "depth_short_bins": uniform_depth.copy(),
-            }
-            for h in ("short", "medium", "long"):
-                out[h] = horizon_out.copy()
+                    raw_preds = tft_h.predict(inf_loader, mode="raw", return_x=False)
+                    if isinstance(raw_preds, dict):
+                        logits = raw_preds["prediction"][0, 0].cpu().numpy()
+                    elif isinstance(raw_preds, tuple):
+                        logits = (
+                            raw_preds[0]["prediction"][0, 0].cpu().numpy()
+                            if isinstance(raw_preds[0], dict)
+                            else raw_preds[0].prediction[0, 0].cpu().numpy()
+                        )
+                    elif hasattr(raw_preds, "output"):
+                        logits = raw_preds.output.prediction[0, 0].cpu().numpy()
+                    elif hasattr(raw_preds, "prediction"):
+                        logits = raw_preds.prediction[0, 0].cpu().numpy()
+                    else:
+                        # Fallback: raw_preds is a plain Tensor
+                        import torch
+                        if isinstance(raw_preds, torch.Tensor):
+                            logits = raw_preds[0, 0].cpu().numpy()
+                        else:
+                            logits = np.array(raw_preds)[0, 0]
+                    probs = np.exp(logits) / np.exp(logits).sum()
+                    p_short, p_flat, p_long = float(probs[0]), float(probs[1]), float(probs[2])
+                except Exception as e:
+                    print(f"Inference exception at {date_str}: {e}")
+                    p_short, p_flat, p_long = 0.33, 0.34, 0.33
+
+                out[h_name] = {
+                    "P_long": p_long,
+                    "P_flat": p_flat,
+                    "P_short": p_short,
+                    "depth_long_bins": uniform_depth.copy(),
+                    "depth_short_bins": uniform_depth.copy(),
+                }
 
         predictions.append(out)
 
@@ -287,5 +317,11 @@ def predict_tft(
         return {"error": "No predictions generated for the requested date range", "symbol": symbol}
 
     write_predictions_jsonl(predictions, symbol, settings)
+
+    # Also write versioned consolidated predictions.jsonl
+    try:
+        write_versioned_predictions(predictions, symbol, "tft", settings, interval=interval)
+    except Exception:
+        pass
 
     return {"symbol": symbol, "start": start, "end": end, "predictions": len(predictions)}
