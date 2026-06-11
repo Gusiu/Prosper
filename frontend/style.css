@@ -432,12 +432,10 @@ body {
   color: var(--accent-glow);
 }
 
-/* Progress Bar (Integrated into topbar) */
-#progress-container-stable {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  min-width: 0;
+/* Global Progress Bar (standalone strip below topbar) */
+.global-progress-strip {
+  width: 100%;
+  min-height: 0;
 }
 
 #global-progress {
@@ -447,6 +445,42 @@ body {
   padding: 8px 16px;
   border-radius: 8px;
   border: 1px solid rgba(0, 229, 255, 0.15);
+}
+
+.global-progress-inner {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  width: 100%;
+}
+
+.global-progress-label {
+  font-size: 0.6rem;
+  color: var(--accent-glow);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  min-width: 130px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.global-progress-track {
+  flex: 1;
+  height: 10px;
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+  border: 1px solid rgba(0, 229, 255, 0.1);
+}
+
+.global-progress-pct {
+  font-weight: 800;
+  font-size: 0.8rem;
+  min-width: 45px;
+  text-align: right;
+  font-family: monospace;
 }
 
 .table-container {
@@ -991,4 +1025,44 @@ progress::-moz-progress-bar {
   color: var(--accent-glow);
   border: 1px solid rgba(0, 229, 255, 0.25);
   text-transform: uppercase;
+}
+
+.action-btn.danger-btn {
+  color: #ff8a8a;
+  border-color: rgba(255, 100, 100, 0.35);
+}
+
+.action-btn.danger-btn:hover {
+  background: rgba(255, 80, 80, 0.15);
+  color: #ffb3b3;
+}
+
+.calendar-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: 280px;
+  color: var(--text-muted);
+}
+
+.calendar-spinner {
+  width: 42px;
+  height: 42px;
+  border: 3px solid rgba(255, 255, 255, 0.08);
+  border-top-color: var(--accent-glow);
+  border-radius: 50%;
+  animation: calendar-spin 0.9s linear infinite;
+}
+
+.calendar-loading-text {
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+}
+
+@keyframes calendar-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

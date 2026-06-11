@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any
 
 import numpy as np
@@ -10,7 +9,7 @@ import polars as pl
 from prosper.config import Settings, get_settings
 from prosper.labels.depth import HorizonSpec, direction_from_return, parse_depth_bins
 from prosper.storage.layout import get_features_parquet_path
-from prosper.storage.predictions import write_predictions_jsonl
+from prosper.storage.predictions import write_predictions_jsonl, write_versioned_predictions
 from prosper.utils.time import parse_date
 
 
@@ -19,6 +18,7 @@ def predict_xgboost(
     start: str,
     end: str,
     settings: Settings | None = None,
+    interval: str = "1d",
     train_window_days: int = 150,
     n_estimators: int = 100,
     max_depth: int = 6,
@@ -58,7 +58,7 @@ def predict_xgboost(
     start_dt = parse_date(start)
     end_dt = parse_date(end)
 
-    feat_path = get_features_parquet_path(symbol, "1d", settings=settings)
+    feat_path = get_features_parquet_path(symbol, interval, settings=settings)
     if not feat_path.exists():
         return {
             "error": f"No features parquet found for {symbol}. Run features build.",
@@ -105,6 +105,7 @@ def predict_xgboost(
     current_train_month = None
     models_cache: dict[str, Any] = {}
 
+    # Walk-forward: train and infer within the same loop
     for i in range(n):
         row_date = dates[i]
         if row_date < start_dt.date() or row_date > end_dt.date():
@@ -118,13 +119,16 @@ def predict_xgboost(
 
         train_month = row_date.replace(day=1)
 
+        # Retrain models once per calendar month
         if current_train_month != train_month:
             current_train_month = train_month
             models_cache = {}
 
             for h in horizons:
-                y_dirs = horizon_targets[h.name]["direction"][train_start_idx:train_end_idx]
-                X_train = X_all[train_start_idx:train_end_idx]
+                # Prevent look-ahead leakage: label at k needs close[k + h.forward_days]
+                safe_end = max(train_start_idx, train_end_idx - h.forward_days)
+                y_dirs = horizon_targets[h.name]["direction"][train_start_idx:safe_end]
+                X_train = X_all[train_start_idx:safe_end]
 
                 valid_idx = [k for k, d in enumerate(y_dirs) if d is not None]
 
@@ -152,12 +156,7 @@ def predict_xgboost(
 
                 models_cache[h.name] = {"clf": clf, "classes": clf.classes_ if clf else []}
 
-    # Inference: use latest trained models to produce probabilities per date
-    for i in range(n):
-        row_date = dates[i]
-        if row_date < start_dt.date() or row_date > end_dt.date():
-            continue
-
+        # ── Inference for current day ─────────────────────────────────────
         row_date_str = row_date.isoformat()
         out: dict[str, Any] = {"date": row_date_str, "symbol": symbol}
 
@@ -192,11 +191,10 @@ def predict_xgboost(
     # Persist predictions grouped by month
     write_predictions_jsonl(predictions, symbol, settings)
 
-    # Export feature importances for the last trained models (if available)
     try:
-        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        out_dir = settings.reports_predictions_dir / symbol / f"xgboost_{timestamp}"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = write_versioned_predictions(
+            predictions, symbol, "xgboost", settings, interval=interval
+        )
         fi: dict[str, dict[str, float]] = {}
         for h in horizons:
             cache = models_cache.get(h.name)
@@ -207,11 +205,6 @@ def predict_xgboost(
             (out_dir / "feature_importances.json").write_text(
                 json.dumps(fi, indent=2), encoding="utf-8"
             )
-        # Also write a consolidated predictions.jsonl inside the versioned folder for UI convenience
-        if predictions:
-            with open(out_dir / "predictions.jsonl", "w", encoding="utf-8") as f:
-                for r in predictions:
-                    f.write(json.dumps(r, sort_keys=True) + "\n")
     except Exception:
         pass
 

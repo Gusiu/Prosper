@@ -106,6 +106,7 @@ def predict_gru(
     start: str,
     end: str,
     settings: Settings | None = None,
+    interval: str = "1d",
     seq_len: int = 30,
     train_window_days: int = 365,
     hidden_size: int = 64,
@@ -152,7 +153,7 @@ def predict_gru(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # ── 1. Load features ──────────────────────────────────────────────────────
-    feat_path = get_features_parquet_path(symbol, "1d", settings=settings)
+    feat_path = get_features_parquet_path(symbol, interval, settings=settings)
     if not feat_path.exists():
         return {"error": f"No features parquet for {symbol}. Run: features build", "symbol": symbol}
 
@@ -203,24 +204,35 @@ def predict_gru(
         if row_date < start_dt or row_date > end_dt:
             continue
 
-        train_end = i - 1
         train_start = max(0, i - train_window_days)
 
         # Retrain once per month
         month_key = (row_date.year, row_date.month)
-        if month_key != current_train_month and train_end - train_start >= seq_len + 10:
+        if month_key != current_train_month and (i - 1) - train_start >= seq_len + 10:
             current_train_month = month_key
             models_cache = {}
 
-            X_train_raw = X_all_raw[train_start : train_end + 1]
+            # Normalise using only the training slice, but apply to full array
+            # so that inference indices stay valid
+            X_train_raw = X_all_raw[train_start : i]
             X_norm = _robust_normalise(X_train_raw, X_all_raw)
             scaler_params = X_norm
 
-            for h_name in horizons.keys():
-                y_norm = y_dir_all[h_name][train_start : train_end + 1]
-                valid = [k for k in range(len(y_norm)) if y_norm[k] >= 0]
-                if len(valid) >= seq_len + 5 and len(set(y_norm[valid])) > 1:
-                    ds = SequenceDataset(X_norm, y_norm, seq_len)
+            for h_name, f_days in horizons.items():
+                # Prevent look-ahead leakage: labels at index k require
+                # the close price at k + f_days.  At prediction day i we
+                # can only know labels for k where k + f_days < i.
+                safe_train_end = i - 1 - f_days
+                if safe_train_end <= train_start:
+                    models_cache[h_name] = None
+                    continue
+
+                y_slice = y_dir_all[h_name][train_start : safe_train_end + 1]
+                X_slice = X_norm[train_start : safe_train_end + 1]
+                valid = [k for k in range(len(y_slice)) if y_slice[k] >= 0]
+                if len(valid) >= seq_len + 5 and len(set(y_slice[valid])) > 1:
+                    # Pass the SLICED arrays so indices match
+                    ds = SequenceDataset(X_slice, y_slice, seq_len)
                     if len(ds) < 8:
                         models_cache[h_name] = None
                         continue
@@ -288,7 +300,7 @@ def predict_gru(
 
     # Also write a consolidated predictions.jsonl into a versioned folder
     try:
-        write_versioned_predictions(predictions, symbol, "gru", settings)
+        write_versioned_predictions(predictions, symbol, "gru", settings, interval=interval)
     except Exception:
         pass
 

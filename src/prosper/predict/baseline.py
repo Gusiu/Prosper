@@ -162,7 +162,7 @@ def predict_baseline(
 
     # Also emit a consolidated predictions.jsonl into a versioned folder
     try:
-        write_versioned_predictions(predictions, symbol, "baseline", settings)
+        write_versioned_predictions(predictions, symbol, "baseline", settings, interval="1d")
     except Exception:
         pass
 

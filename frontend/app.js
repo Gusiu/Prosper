@@ -4,6 +4,14 @@ let lastLogIdx = 0;
 let pipelineQueue = [];
 let isPipelineRunning = false;
 let globalInventory = [];
+let aiModelRuns = [];
+let evaluationState = {
+  evaluations: [],
+  selected: null,
+  qualityRows: [],
+  worstRows: [],
+  recommendations: [],
+};
 let researchMode = false;
 let symbolMetadata = { symbols: [], base_assets: [], quote_assets: [] };
 let analysisDrawerContext = { symbol: null, model_type: null, timestamp: null };
@@ -207,6 +215,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadSymbolMetadata();
   loadInventory();
   loadAIInventory();
+  loadEvaluations();
 
   // Initialize research mode from localStorage
   initResearchMode();
@@ -431,6 +440,17 @@ async function loadInventory(refresh = false) {
     // Restore selections if still valid
     if (currTrain) trainSelect.value = currTrain;
     if (currEval) evalSelect.value = currEval;
+    // Ensure dependent UI reflects restored selection: intervals and epochs visibility
+    try {
+      updateTrainDates();
+    } catch (e) {
+      /* ignore */
+    }
+    try {
+      updateTrainModelUI();
+    } catch (e) {
+      /* ignore */
+    }
   } catch (e) {
     console.error("Failed to load inventory", e);
   }
@@ -493,6 +513,18 @@ function updateTrainDates() {
     document.getElementById("train-start").value = item.start_date;
     document.getElementById("train-end").value = item.end_date;
   }
+  // Ensure interval select reflects available prepared aggregations
+  try {
+    populateTrainIntervals(sym);
+  } catch (e) {
+    console.warn("populateTrainIntervals failed", e);
+  }
+  // Update epochs visibility based on currently selected model
+  try {
+    updateTrainModelUI();
+  } catch (e) {
+    /* ignore */
+  }
 }
 
 function updateEvalDates() {
@@ -503,6 +535,58 @@ function updateEvalDates() {
     document.getElementById("eval-start").value = "2024-01-01";
     document.getElementById("eval-end").value = item.end_date;
   }
+}
+
+// Populate `#train-interval` based on prepared aggregations for the symbol
+function populateTrainIntervals(symbol) {
+  const sel = document.getElementById("train-interval");
+  if (!sel) return;
+  sel.innerHTML = "";
+  const item = globalInventory.find((i) => i.symbol === symbol);
+  if (
+    !item ||
+    !Array.isArray(item.aggregations) ||
+    item.aggregations.length === 0
+  ) {
+    ["1d", "1h", "1m"].forEach((v) => {
+      const opt = document.createElement("option");
+      opt.value = v;
+      opt.text = v;
+      sel.appendChild(opt);
+    });
+    sel.value = "1d";
+    return;
+  }
+
+  const available = item.aggregations
+    .filter((a) => a && a.interval && a.status !== "incomplete")
+    .map((a) => a.interval);
+
+  const ordered = ANALYSIS_INTERVALS.filter((i) => available.includes(i));
+  const toUse =
+    ordered.length > 0
+      ? ordered
+      : [...new Set(item.aggregations.map((a) => a.interval))];
+
+  toUse.forEach((iv) => {
+    if (!iv) return;
+    const opt = document.createElement("option");
+    opt.value = iv;
+    opt.text = iv;
+    sel.appendChild(opt);
+  });
+
+  if ([...sel.options].some((o) => o.value === "1d")) sel.value = "1d";
+  else if (sel.options.length > 0) sel.selectedIndex = 0;
+}
+
+// Show epochs input only for DL models (gru, tft)
+function updateTrainModelUI() {
+  const model = document.getElementById("model-select")?.value;
+  const wrapper = document.getElementById("train-epochs-wrapper");
+  if (!wrapper) return;
+  if (model === "gru" || model === "tft") wrapper.style.display = "flex";
+  else wrapper.style.display = "none";
 }
 
 async function deleteSymbol(symbol) {
@@ -611,7 +695,9 @@ async function loadAIInventory() {
   try {
     const res = await fetch("/api/ai/models");
     const data = await res.json();
-    renderAIInventory(data.models || []);
+    aiModelRuns = data.models || [];
+    renderAIInventory(aiModelRuns);
+    populateEvaluationModelSelect(aiModelRuns);
   } catch (e) {
     console.error("Failed to load AI inventory", e);
   }
@@ -631,27 +717,485 @@ function renderAIInventory(models) {
     tr.innerHTML = `
       <td>${m.symbol}</td>
       <td>${m.model_type}</td>
+      <td>${m.interval || "1d"}</td>
       <td>${m.timestamp}</td>
       <td>${m.predictions_files || 0}</td>
       <td></td>
     `;
     const btnCell = tr.querySelector("td:last-child");
-    const btn = document.createElement("button");
-    btn.className = "action-btn";
-    btn.textContent = "View";
-    btn.addEventListener("click", () =>
-      openPredictionCalendar(m.symbol, m.model_type, m.timestamp),
+    const viewBtn = document.createElement("button");
+    viewBtn.className = "action-btn";
+    viewBtn.textContent = "View";
+    viewBtn.addEventListener("click", () =>
+      openPredictionCalendar(
+        m.symbol,
+        m.model_type,
+        m.timestamp,
+        m.interval || "1d",
+      ),
     );
-    btnCell.appendChild(btn);
+    const delBtn = document.createElement("button");
+    delBtn.className = "action-btn danger-btn";
+    delBtn.style.marginLeft = "6px";
+    delBtn.textContent = "Delete";
+    delBtn.addEventListener("click", () =>
+      deleteModelRun(m.symbol, m.model_type, m.timestamp, m.interval || "1d"),
+    );
+    btnCell.appendChild(viewBtn);
+    btnCell.appendChild(delBtn);
     tbody.appendChild(tr);
   });
 }
 
-async function openPredictionCalendar(symbol, model_type, timestamp) {
+async function deleteModelRun(symbol, model_type, timestamp, interval = "1d") {
+  if (
+    !confirm(
+      `Delete model run ${model_type} (${interval}) for ${symbol} @ ${timestamp}?`,
+    )
+  ) {
+    return;
+  }
+  try {
+    const res = await fetch(
+      `/api/ai/models/${encodeURIComponent(symbol)}/${encodeURIComponent(
+        model_type,
+      )}/${encodeURIComponent(timestamp)}?interval=${encodeURIComponent(interval)}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      alert(`Delete failed: ${j.detail || res.statusText}`);
+      return;
+    }
+    loadAIInventory();
+  } catch (e) {
+    console.error(e);
+    alert("Delete failed.");
+  }
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function formatMetric(value, digits = 2) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num.toFixed(digits) : "--";
+}
+
+function formatPercentMetric(value, digits = 1) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `${(num * 100).toFixed(digits)}%` : "--%";
+}
+
+function populateEvaluationModelSelect(models) {
+  const select = document.getElementById("prediction-eval-run");
+  if (!select) return;
+
+  const current = select.value;
+  select.innerHTML = "";
+  if (!models || models.length === 0) {
+    select.innerHTML = '<option value="">No model runs found</option>';
+    return;
+  }
+
+  models
+    .slice()
+    .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))
+    .forEach((model) => {
+      const option = document.createElement("option");
+      option.value = JSON.stringify({
+        symbol: model.symbol,
+        model_type: model.model_type,
+        timestamp: model.timestamp,
+        interval: model.interval || "1d",
+      });
+      option.textContent = `${model.symbol} / ${model.model_type} / ${model.interval || "1d"} / ${model.timestamp}`;
+      select.appendChild(option);
+    });
+
+  if ([...select.options].some((option) => option.value === current)) {
+    select.value = current;
+  }
+}
+
+function getSelectedEvaluationRun() {
+  const select = document.getElementById("prediction-eval-run");
+  if (!select || !select.value) return null;
+  try {
+    return JSON.parse(select.value);
+  } catch (e) {
+    return null;
+  }
+}
+
+async function runPredictionEvaluation() {
+  const run = getSelectedEvaluationRun();
+  if (!run) return alert("Select a prediction run first.");
+
+  const status = document.getElementById("eval-run-status");
+  if (status) status.innerText = `Starting evaluation for ${run.symbol} ${run.model_type}...`;
+
+  const metadata = document.getElementById("research-metadata")?.checked || false;
+  const strict = document.getElementById("research-strict")?.checked || false;
+  try {
+    const res = await fetch("/api/ai/evaluate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...run,
+        params: { strict, save_metadata: metadata },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(`Evaluation failed to start: ${err.detail || res.statusText}`);
+      return;
+    }
+    const payload = await res.json();
+    isPipelineRunning = true;
+    lastLogIdx = 0;
+    updateProgress({
+      visible: true,
+      percent: 0,
+      label: `Evaluating ${run.model_type} ${run.symbol}`,
+    });
+    if (status) status.innerText = `Evaluation queued: ${payload.command}`;
+  } catch (e) {
+    console.error(e);
+    alert("Failed to start evaluation.");
+  }
+}
+
+async function loadEvaluations() {
+  try {
+    const res = await fetch("/api/ai/evaluations");
+    if (!res.ok) return;
+    const data = await res.json();
+    evaluationState.evaluations = data.evaluations || [];
+    renderEvaluationRanking();
+    if (!evaluationState.selected && evaluationState.evaluations.length > 0) {
+      openEvaluationDetails(evaluationState.evaluations[0]);
+    }
+  } catch (e) {
+    console.error("Failed to load evaluations", e);
+  }
+}
+
+function renderEvaluationRanking() {
+  const tbody = document.getElementById("eval-ranking-tbody");
+  const count = document.getElementById("eval-ranking-count");
+  if (!tbody) return;
+  if (count) count.innerText = `(${evaluationState.evaluations.length})`;
+  tbody.innerHTML = "";
+
+  if (evaluationState.evaluations.length === 0) {
+    tbody.innerHTML = `<tr><td class="text-muted">No evaluations yet</td></tr>`;
+    return;
+  }
+
+  evaluationState.evaluations.forEach((item, index) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>#${index + 1}</td>
+      <td>${escapeHtml(item.symbol)}</td>
+      <td>${escapeHtml(item.model_type)} <span class="text-muted">(${escapeHtml(item.interval || "1d")})</span></td>
+      <td><strong>${formatMetric(item.model_score, 1)}</strong></td>
+      <td>${formatPercentMetric(item.accuracy, 1)}</td>
+      <td>${formatMetric(item.ece, 3)}</td>
+      <td></td>
+    `;
+    const button = document.createElement("button");
+    button.className = "action-btn";
+    button.textContent = "Details";
+    button.addEventListener("click", () => openEvaluationDetails(item));
+    tr.querySelector("td:last-child").appendChild(button);
+    tbody.appendChild(tr);
+  });
+}
+
+async function openEvaluationDetails(summary) {
+  if (!summary || !summary.symbol || !summary.model_type || !summary.timestamp)
+    return;
+
+  const status = document.getElementById("eval-run-status");
+  if (status) status.innerText = `Loading evaluation ${summary.model_type} ${summary.timestamp}...`;
+
+  try {
+    const res = await fetch(
+      `/api/ai/evaluations/${encodeURIComponent(summary.symbol)}/${encodeURIComponent(
+        summary.model_type,
+      )}/${encodeURIComponent(summary.timestamp)}?limit=5000`,
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || res.statusText);
+    }
+    const detail = await res.json();
+    evaluationState.selected = detail;
+    evaluationState.qualityRows = detail.quality_rows || [];
+    evaluationState.worstRows = detail.worst_predictions || [];
+    evaluationState.recommendations = detail.recommendations || [];
+    renderEvaluationMetrics(detail.metrics || {});
+    renderCalibration(detail.calibration || {});
+    renderSharpness(detail.metrics || {});
+    populateEvaluationFlagFilter();
+    renderWorstPredictions();
+    renderRecommendations();
+    if (status) {
+      const score = detail.metrics?.overall?.model_score;
+      status.innerText = `Loaded ${summary.symbol} ${summary.model_type}; score ${formatMetric(score, 1)}.`;
+    }
+  } catch (e) {
+    console.error(e);
+    if (status) status.innerText = `Failed to load evaluation: ${e.message}`;
+  }
+}
+
+function renderEvaluationMetrics(metrics) {
+  const overall = metrics.overall || {};
+  const score = document.getElementById("eval-model-score");
+  const accuracy = document.getElementById("eval-accuracy");
+  const brier = document.getElementById("eval-brier");
+  const ece = document.getElementById("eval-ece");
+  if (score) score.innerText = formatMetric(overall.model_score, 1);
+  if (accuracy) accuracy.innerText = formatPercentMetric(overall.accuracy, 1);
+  if (brier) brier.innerText = formatMetric(overall.brier, 3);
+  if (ece) ece.innerText = formatMetric(overall.ece, 3);
+}
+
+function renderCalibration(calibration) {
+  const container = document.getElementById("eval-calibration-bars");
+  if (!container) return;
+  const bins = calibration?.overall?.bins || [];
+  if (bins.length === 0) {
+    container.innerHTML = `<div class="analysis-empty-subchart">No calibration data.</div>`;
+    return;
+  }
+
+  container.innerHTML = bins
+    .map((bin) => {
+      const conf = Math.max(0, Math.min(1, Number(bin.confidence || 0)));
+      const acc = Math.max(0, Math.min(1, Number(bin.accuracy || 0)));
+      return `
+        <div class="eval-bar-row">
+          <span>${Math.round((bin.lower || 0) * 100)}-${Math.round((bin.upper || 0) * 100)}%</span>
+          <div class="eval-bar-track">
+            <div class="eval-bar confidence" style="width:${conf * 100}%"></div>
+            <div class="eval-bar accuracy" style="width:${acc * 100}%"></div>
+          </div>
+          <strong>${bin.count || 0}</strong>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderSharpness(metrics) {
+  const container = document.getElementById("eval-sharpness-bars");
+  if (!container) return;
+  const byHorizon = metrics.by_horizon || {};
+  const entries = Object.entries(byHorizon);
+  if (entries.length === 0) {
+    container.innerHTML = `<div class="analysis-empty-subchart">No sharpness data.</div>`;
+    return;
+  }
+  const maxEntropy = Math.log(3);
+  container.innerHTML = entries
+    .map(([horizon, item]) => {
+      const entropy = Number(item.entropy || 0);
+      const sharpness = Math.max(0, Math.min(1, 1 - entropy / maxEntropy));
+      return `
+        <div class="eval-bar-row">
+          <span>${escapeHtml(horizon)}</span>
+          <div class="eval-bar-track single">
+            <div class="eval-bar sharpness" style="width:${sharpness * 100}%"></div>
+          </div>
+          <strong>${formatMetric(item.score, 1)}</strong>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function populateEvaluationFlagFilter() {
+  const select = document.getElementById("eval-flag-filter");
+  if (!select) return;
+  const current = select.value;
+  const flags = [
+    ...new Set(
+      evaluationState.worstRows.flatMap((row) => row.flags || []).filter(Boolean),
+    ),
+  ].sort();
+  select.innerHTML = '<option value="">All flags</option>';
+  flags.forEach((flag) => {
+    const option = document.createElement("option");
+    option.value = flag;
+    option.textContent = flag;
+    select.appendChild(option);
+  });
+  if (flags.includes(current)) select.value = current;
+}
+
+function renderWorstPredictions() {
+  const tbody = document.getElementById("eval-worst-tbody");
+  if (!tbody) return;
+  const flag = document.getElementById("eval-flag-filter")?.value || "";
+  const indexedRows = evaluationState.worstRows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => !flag || (row.flags || []).includes(flag));
+
+  tbody.innerHTML = "";
+  if (indexedRows.length === 0) {
+    tbody.innerHTML = `<tr><td class="text-muted">No worst prediction rows</td></tr>`;
+    return;
+  }
+
+  indexedRows.forEach(({ row, index }) => {
+    const tr = document.createElement("tr");
+    const actual = row.actual?.direction || "-";
+    const predicted = row.prediction?.direction || "-";
+    tr.innerHTML = `
+      <td>${escapeHtml(row.date)}</td>
+      <td>${escapeHtml(row.horizon)}</td>
+      <td>${escapeHtml(actual)}</td>
+      <td>${escapeHtml(predicted)} <span class="text-muted">${formatPercentMetric(row.prediction?.confidence, 0)}</span></td>
+      <td>${formatMetric(row.quality_score, 1)}</td>
+      <td><span class="eval-flag-list">${escapeHtml((row.flags || []).join(", ") || "none")}</span></td>
+      <td><button class="action-btn" onclick="inspectEvaluationPrediction(${index})">Inspect</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderRecommendations() {
+  const tbody = document.getElementById("eval-recommendations-tbody");
+  if (!tbody) return;
+  const rows = evaluationState.recommendations.slice(0, 50);
+  tbody.innerHTML = "";
+  if (rows.length === 0) {
+    tbody.innerHTML = `<tr><td class="text-muted">No recommendations loaded</td></tr>`;
+    return;
+  }
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(row.date)}</td>
+      <td>${escapeHtml(row.horizon)}</td>
+      <td><strong>${escapeHtml(row.recommendation)}</strong></td>
+      <td>${formatMetric(row.edge, 3)}</td>
+      <td>${formatMetric(row.quality_score, 1)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function exportWorstPredictionsCsv() {
+  const rows = evaluationState.worstRows || [];
+  if (rows.length === 0) return alert("No worst predictions to export.");
+  const headers = [
+    "date",
+    "horizon",
+    "target_date",
+    "actual_direction",
+    "predicted_direction",
+    "confidence",
+    "quality_score",
+    "error_score",
+    "flags",
+    "reason",
+  ];
+  const csvRows = [
+    headers.join(","),
+    ...rows.map((row) =>
+      headers
+        .map((header) => {
+          const value =
+            header === "actual_direction"
+              ? row.actual?.direction
+              : header === "predicted_direction"
+                ? row.prediction?.direction
+                : header === "confidence"
+                  ? row.prediction?.confidence
+                  : header === "flags"
+                    ? (row.flags || []).join("|")
+                    : row[header];
+          return `"${String(value ?? "").replace(/"/g, '""')}"`;
+        })
+        .join(","),
+    ),
+  ];
+  const blob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  const metrics = evaluationState.selected?.metrics || {};
+  link.download = `${metrics.symbol || "evaluation"}-${metrics.model_type || "model"}-${metrics.timestamp || "run"}-worst.csv`;
+  link.href = URL.createObjectURL(blob);
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function inspectEvaluationPrediction(index) {
+  const row = evaluationState.worstRows[index];
+  if (!row) return;
+  const item = globalInventory.find((entry) => entry.symbol === row.symbol);
+  if (!item) {
+    return alert("Symbol is not present in the data inventory. Refresh data inventory first.");
+  }
+  openAnalysisDrawer(row.symbol);
+  setTimeout(() => {
+    const intervalSelect = document.getElementById("analysis-interval");
+    if (intervalSelect && [...intervalSelect.options].some((option) => option.value === row.interval)) {
+      intervalSelect.value = row.interval;
+    }
+    const startInput = document.getElementById("analysis-start");
+    const endInput = document.getElementById("analysis-end");
+    const baseDate = new Date(row.date);
+    if (!Number.isNaN(baseDate.getTime())) {
+      const start = new Date(baseDate);
+      start.setDate(start.getDate() - 14);
+      startInput.value = start.toISOString().slice(0, 10);
+      endInput.value = row.target_date || row.date;
+    }
+    loadAnalysisData();
+  }, 80);
+}
+
+function showPredictionCalendarLoading() {
+  const chartContainer = document.getElementById("chart-container");
+  if (chartContainer) chartContainer.style.display = "none";
+  const subcharts = document.querySelector(".analysis-subcharts");
+  if (subcharts) subcharts.style.display = "none";
+  const toolbar = document.querySelector(".analysis-toolbar");
+  if (toolbar) toolbar.style.display = "none";
+  const layers = document.querySelector(".analysis-layers");
+  if (layers) layers.style.display = "none";
+
+  const cc = document.getElementById("prediction-calendar-container");
+  if (!cc) return;
+  cc.style.display = "block";
+  cc.innerHTML = `
+    <div class="calendar-loading">
+      <div class="calendar-spinner"></div>
+      <div class="calendar-loading-text">Loading predictions...</div>
+    </div>
+  `;
+}
+
+async function openPredictionCalendar(
+  symbol,
+  model_type,
+  timestamp,
+  interval = "1d",
+) {
   const title = document.getElementById("analysis-title");
   const subtitle = document.getElementById("analysis-subtitle");
   if (title) title.innerText = `${model_type.toUpperCase()} - ${symbol}`;
-  if (subtitle) subtitle.innerText = `Run: ${timestamp}`;
+  if (subtitle) subtitle.innerText = `Run: ${timestamp} (${interval})`;
   document.getElementById("analysis-backdrop").classList.add("open");
   const drawer = document.getElementById("analysis-drawer");
   if (drawer) {
@@ -659,11 +1203,16 @@ async function openPredictionCalendar(symbol, model_type, timestamp) {
     drawer.setAttribute("aria-hidden", "false");
   }
 
+  disposeAnalysisCharts();
+  showPredictionCalendarLoading();
+  document.getElementById("analysis-status").innerText =
+    "Loading predictions...";
+
   try {
     const res = await fetch(
       `/api/ai/predictions?symbol=${encodeURIComponent(symbol)}&model_type=${encodeURIComponent(
         model_type,
-      )}&timestamp=${encodeURIComponent(timestamp)}`,
+      )}&timestamp=${encodeURIComponent(timestamp)}&interval=${encodeURIComponent(interval)}`,
     );
     if (!res.ok) {
       const j = await res.json().catch(() => ({}));
@@ -677,12 +1226,12 @@ async function openPredictionCalendar(symbol, model_type, timestamp) {
       `Loaded ${rows.length} prediction rows`;
 
     // Save context for download action
-    analysisDrawerContext = { symbol, model_type, timestamp };
+    analysisDrawerContext = { symbol, model_type, timestamp, interval };
 
     // Check whether feature_importances.json exists for this run and toggle download button
     try {
       const fiRes = await fetch(
-        `/api/ai/feature_importances?symbol=${encodeURIComponent(symbol)}&model_type=${encodeURIComponent(model_type)}&timestamp=${encodeURIComponent(timestamp)}`,
+        `/api/ai/feature_importances?symbol=${encodeURIComponent(symbol)}&model_type=${encodeURIComponent(model_type)}&timestamp=${encodeURIComponent(timestamp)}&interval=${encodeURIComponent(interval)}`,
       );
       const btn = document.getElementById("download-feature-imp-btn");
       if (btn) btn.style.display = fiRes.ok ? "inline-block" : "none";
@@ -690,16 +1239,6 @@ async function openPredictionCalendar(symbol, model_type, timestamp) {
       const btn = document.getElementById("download-feature-imp-btn");
       if (btn) btn.style.display = "none";
     }
-
-    // Hide the original chart containers and toolbar
-    const chartContainer = document.getElementById("chart-container");
-    if (chartContainer) chartContainer.style.display = "none";
-    const subcharts = document.querySelector(".analysis-subcharts");
-    if (subcharts) subcharts.style.display = "none";
-    const toolbar = document.querySelector(".analysis-toolbar");
-    if (toolbar) toolbar.style.display = "none";
-    const layers = document.querySelector(".analysis-layers");
-    if (layers) layers.style.display = "none";
 
     // Store data and render
     predictionCalendarState.rowsByDate = new Map(
@@ -716,6 +1255,11 @@ async function openPredictionCalendar(symbol, model_type, timestamp) {
     console.error(e);
     document.getElementById("analysis-status").innerText =
       `Error loading predictions`;
+    const cc = document.getElementById("prediction-calendar-container");
+    if (cc) {
+      cc.innerHTML =
+        '<div class="analysis-empty-subchart">Failed to load predictions.</div>';
+    }
   }
 }
 
@@ -801,7 +1345,7 @@ function renderPredictionCalendar() {
   const monthInput = document.createElement("input");
   monthInput.type = "number";
   monthInput.className = "glass-input";
-  monthInput.style.width = "50px";
+  monthInput.style.width = "65px";
   monthInput.style.textAlign = "center";
   monthInput.value = month + 1;
   monthInput.min = 1;
@@ -810,7 +1354,7 @@ function renderPredictionCalendar() {
   const yearInput = document.createElement("input");
   yearInput.type = "number";
   yearInput.className = "glass-input";
-  yearInput.style.width = "70px";
+  yearInput.style.width = "85px";
   yearInput.style.textAlign = "center";
   yearInput.value = year;
 
@@ -1250,18 +1794,22 @@ function runTrain() {
   if (!symbol) return alert("Select symbol first");
 
   const model = document.getElementById("model-select").value;
+  const interval = document.getElementById("train-interval")?.value || "1d";
   const s = document.getElementById("train-start").value;
   const e = document.getElementById("train-end").value;
   const ep = document.getElementById("train-epochs").value;
 
   const rFlags = getResearchFlags("predict");
+  const intervalFlag = ` --interval ${interval}`;
   let cmd = "";
   if (model === "ml") {
-    cmd = `python -m prosper.cli predict ml --symbol ${symbol} --start ${s} --end ${e} --root ./data${rFlags}`;
+    cmd = `python -m prosper.cli predict ml --symbol ${symbol} --start ${s} --end ${e}${intervalFlag} --root ./data${rFlags}`;
   } else if (model === "gru") {
-    cmd = `python -m prosper.cli predict gru --symbol ${symbol} --start ${s} --end ${e} --epochs ${ep} --root ./data${rFlags}`;
+    cmd = `python -m prosper.cli predict gru --symbol ${symbol} --start ${s} --end ${e}${intervalFlag} --epochs ${ep} --root ./data${rFlags}`;
+  } else if (model === "xgboost") {
+    cmd = `python -m prosper.cli predict xgboost --symbol ${symbol} --start ${s} --end ${e}${intervalFlag} --root ./data${rFlags}`;
   } else {
-    cmd = `python -m prosper.cli predict ${model} --symbol ${symbol} --start ${s} --end ${e} --max-epochs ${ep} --root ./data${rFlags}`;
+    cmd = `python -m prosper.cli predict ${model} --symbol ${symbol} --start ${s} --end ${e}${intervalFlag} --max-epochs ${ep} --root ./data${rFlags}`;
   }
 
   pipelineQueue.push({
@@ -1338,6 +1886,8 @@ async function checkTaskLogs() {
         }, 3000);
 
         loadInventory(true);
+        loadAIInventory();
+        loadEvaluations();
         processQueue();
       } else {
         // Hide immediately if truly idle
@@ -1353,17 +1903,23 @@ async function checkTaskLogs() {
 }
 
 function updateProgress(progress) {
-  if (!progress || !progress.visible) return;
   const progContainer = document.getElementById("global-progress");
+  if (!progContainer) return;
+
+  if (!progress || progress.visible === false) {
+    progContainer.style.display = "none";
+    return;
+  }
+
   const progFill = document.getElementById("progress-bar-fill");
   const progText = document.getElementById("progress-text");
   const progPct = document.getElementById("progress-pct");
   const pct = Math.max(0, Math.min(100, Number(progress.percent || 0)));
 
   progContainer.style.display = "flex";
-  progFill.style.width = `${pct}%`;
-  progText.innerText = progress.label || "Processing";
-  progPct.innerText = `${pct.toFixed(1)}%`;
+  if (progFill) progFill.style.width = `${pct}%`;
+  if (progText) progText.innerText = progress.label || "Processing";
+  if (progPct) progPct.innerText = `${pct.toFixed(1)}%`;
 }
 
 // --- DATA ANALYSIS DRAWER ---
@@ -2313,8 +2869,9 @@ async function downloadFeatureImportances() {
   if (!ctx.symbol || !ctx.model_type || !ctx.timestamp)
     return alert("No run selected");
   try {
+    const interval = ctx.interval || "1d";
     const res = await fetch(
-      `/api/ai/feature_importances?symbol=${encodeURIComponent(ctx.symbol)}&model_type=${encodeURIComponent(ctx.model_type)}&timestamp=${encodeURIComponent(ctx.timestamp)}`,
+      `/api/ai/feature_importances?symbol=${encodeURIComponent(ctx.symbol)}&model_type=${encodeURIComponent(ctx.model_type)}&timestamp=${encodeURIComponent(ctx.timestamp)}&interval=${encodeURIComponent(interval)}`,
     );
     if (!res.ok) return alert("Feature importances not available for this run");
     const data = await res.json();

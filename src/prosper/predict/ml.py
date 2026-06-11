@@ -31,6 +31,7 @@ def predict_ml(
     start: str,
     end: str,
     settings: Settings | None = None,
+    interval: str = "1d",
     train_window_days: int = 150,
     flat_threshold: float = 0.01,
     depth_bins_str: str = "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34+",
@@ -64,7 +65,7 @@ def predict_ml(
     end_dt = parse_date(end)
 
     # 1. Load Features
-    feat_path = get_features_parquet_path(symbol, "1d", settings=settings)
+    feat_path = get_features_parquet_path(symbol, interval, settings=settings)
     if not feat_path.exists():
         return {
             "error": f"No features parquet found for {symbol}. Run features build.",
@@ -155,11 +156,12 @@ def predict_ml(
             current_train_month = train_month
             models_cache = {}
 
-            # Train model for each horizon
             for h in horizons:
-                y_dirs = horizon_targets[h.name]["direction"][train_start_idx:train_end_idx]
-                y_depths = horizon_targets[h.name]["depth"][train_start_idx:train_end_idx]
-                X_train = X_all[train_start_idx:train_end_idx]
+                # Prevent look-ahead leakage: label at k needs close[k + h.forward_days]
+                safe_end = max(train_start_idx, train_end_idx - h.forward_days)
+                y_dirs = horizon_targets[h.name]["direction"][train_start_idx:safe_end]
+                y_depths = horizon_targets[h.name]["depth"][train_start_idx:safe_end]
+                X_train = X_all[train_start_idx:safe_end]
 
                 # Filter valid labels (no None)
                 valid_idx = [k for k, d in enumerate(y_dirs) if d is not None]
@@ -277,7 +279,7 @@ def predict_ml(
 
     # Also write a consolidated predictions.jsonl into a versioned folder for UI convenience
     try:
-        write_versioned_predictions(predictions, symbol, "ml", settings)
+        write_versioned_predictions(predictions, symbol, "ml", settings, interval=interval)
     except Exception:
         pass
 

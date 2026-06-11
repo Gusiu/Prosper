@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -69,18 +70,23 @@ def write_versioned_predictions(
     symbol: str,
     model_type: str,
     settings: Settings | None = None,
-) -> None:
+    interval: str = "1d",
+) -> Path:
     """Write a consolidated `predictions.jsonl` into a versioned folder.
 
-    The folder structure is: `reports/predictions/{symbol}/{model_type}_{timestamp}/predictions.jsonl`.
+    The folder structure is:
+    `reports/predictions/{symbol}/{model_type}_{interval}_{timestamp}/predictions.jsonl`.
     """
     if settings is None:
         settings = get_settings()
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-    out_dir = get_versioned_prediction_dir(symbol, model_type, timestamp, settings=settings)
+    timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+    out_dir = get_versioned_prediction_dir(
+        symbol, model_type, timestamp, settings=settings, interval=interval
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "predictions.jsonl"
     with open(out_file, "w", encoding="utf-8") as f:
         for r in predictions:
             f.write(json.dumps(r, default=_json_converter, sort_keys=True) + "\n")
+    return out_dir

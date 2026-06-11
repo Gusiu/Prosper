@@ -31,6 +31,7 @@ def predict_tft(
     start: str,
     end: str,
     settings: Settings | None = None,
+    interval: str = "1d",
     seq_len: int = 60,
     train_window_days: int = 365,
     max_epochs: int = 10,
@@ -81,7 +82,7 @@ def predict_tft(
     warnings.filterwarnings("ignore", category=FutureWarning)
 
     # ── 1. Load features ──────────────────────────────────────────────────────
-    feat_path = get_features_parquet_path(symbol, "1d", settings=settings)
+    feat_path = get_features_parquet_path(symbol, interval, settings=settings)
     if not feat_path.exists():
         return {"error": f"No features parquet for {symbol}. Run: features build", "symbol": symbol}
 
@@ -162,10 +163,15 @@ def predict_tft(
 
             norm_params_cache = {}
 
-            for h_name in horizons.keys():
+            for h_name, f_days in horizons.items():
                 y_dir = y_dir_all[h_name]
+                # Prevent look-ahead leakage: label at k needs close[k + f_days]
+                safe_train_end = train_end - f_days
+                if safe_train_end <= train_start:
+                    tft_model[h_name] = None
+                    continue
                 # Build pandas dataframe for TimeSeriesDataSet
-                valid_idx = [k for k in range(train_start, train_end + 1) if y_dir[k] >= 0]
+                valid_idx = [k for k in range(train_start, safe_train_end + 1) if y_dir[k] >= 0]
                 if len(valid_idx) < seq_len + 10 or len(set(y_dir[valid_idx])) < 2:
                     tft_model[h_name] = None
                     continue
@@ -173,7 +179,7 @@ def predict_tft(
                 dir_map_rev = {0: "short", 1: "flat", 2: "long"}
                 rows = []
                 for k in valid_idx:
-                    row = {"time_idx": k, "group": "BTC", "target": dir_map_rev[y_dir[k]]}
+                    row = {"time_idx": k, "group": symbol, "target": dir_map_rev[y_dir[k]]}
                     for fi, fc in enumerate(feature_cols):
                         row[fc] = float(X_norm_all[k, fi])
                     rows.append(row)
@@ -260,7 +266,7 @@ def predict_tft(
                     y_dir = y_dir_all[h_name]
                     for k in range(i - enc_len, i + 1):
                         fake_target = dir_map_rev[max(y_dir[k], 0)]
-                        row = {"time_idx": k, "group": "BTC", "target": fake_target}
+                        row = {"time_idx": k, "group": symbol, "target": fake_target}
                         for fi, fc in enumerate(feature_cols):
                             row[fc] = float(X_norm_all[k, fi])
                         rows_inf.append(row)
@@ -282,8 +288,15 @@ def predict_tft(
                         )
                     elif hasattr(raw_preds, "output"):
                         logits = raw_preds.output.prediction[0, 0].cpu().numpy()
-                    else:
+                    elif hasattr(raw_preds, "prediction"):
                         logits = raw_preds.prediction[0, 0].cpu().numpy()
+                    else:
+                        # Fallback: raw_preds is a plain Tensor
+                        import torch
+                        if isinstance(raw_preds, torch.Tensor):
+                            logits = raw_preds[0, 0].cpu().numpy()
+                        else:
+                            logits = np.array(raw_preds)[0, 0]
                     probs = np.exp(logits) / np.exp(logits).sum()
                     p_short, p_flat, p_long = float(probs[0]), float(probs[1]), float(probs[2])
                 except Exception as e:
@@ -307,7 +320,7 @@ def predict_tft(
 
     # Also write versioned consolidated predictions.jsonl
     try:
-        write_versioned_predictions(predictions, symbol, "tft", settings)
+        write_versioned_predictions(predictions, symbol, "tft", settings, interval=interval)
     except Exception:
         pass
 

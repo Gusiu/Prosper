@@ -2,6 +2,7 @@ import datetime
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -18,9 +19,12 @@ from pydantic import BaseModel
 from prosper.config import get_settings
 from prosper.core import DataManager
 from prosper.storage.layout import (
+    get_evaluation_run_dir,
     get_prediction_report_path,
-    get_versioned_prediction_dir,
     get_versioned_prediction_file,
+    parse_evaluation_folder,
+    parse_versioned_prediction_folder,
+    resolve_versioned_prediction_dir,
 )
 
 # Resolve the absolute path dynamically based on this file's location.
@@ -283,6 +287,15 @@ class AITrainRequest(BaseModel):
     model_type: str = "xgboost"
     start: str
     end: str
+    interval: str = "1d"
+    params: dict | None = None
+
+
+class AIEvaluateRequest(BaseModel):
+    symbol: str
+    model_type: str
+    timestamp: str
+    interval: str = "1d"
     params: dict | None = None
 
 
@@ -298,23 +311,25 @@ def get_ai_models() -> dict[str, list[dict[str, Any]]]:
         if not symbol_dir.is_dir():
             continue
         for entry in sorted(symbol_dir.iterdir()):
-            # Expect versioned dirs like: xgboost_20240501123000
-            if entry.is_dir() and "_" in entry.name:
-                parts = entry.name.split("_", 1)
-                model_type = parts[0]
-                timestamp = parts[1] if len(parts) > 1 else ""
-                has_fi = (entry / "feature_importances.json").exists()
-                jsonl_count = sum(1 for _ in entry.rglob("*.jsonl"))
-                models.append(
-                    {
-                        "symbol": symbol_dir.name,
-                        "model_type": model_type,
-                        "timestamp": timestamp,
-                        "path": str(entry),
-                        "has_feature_importances": has_fi,
-                        "predictions_files": jsonl_count,
-                    }
-                )
+            if not entry.is_dir() or "_" not in entry.name:
+                continue
+            parsed = parse_versioned_prediction_folder(entry.name)
+            if not parsed:
+                continue
+            model_type, interval, timestamp = parsed
+            has_fi = (entry / "feature_importances.json").exists()
+            jsonl_count = sum(1 for _ in entry.rglob("*.jsonl"))
+            models.append(
+                {
+                    "symbol": symbol_dir.name,
+                    "model_type": model_type,
+                    "interval": interval,
+                    "timestamp": timestamp,
+                    "path": str(entry),
+                    "has_feature_importances": has_fi,
+                    "predictions_files": jsonl_count,
+                }
+            )
     return {"models": models}
 
 
@@ -325,6 +340,7 @@ def get_ai_predictions(
     month: int | None = None,
     model_type: str | None = None,
     timestamp: str | None = None,
+    interval: str = "1d",
 ):
     settings = get_settings()
     symbol = symbol.upper()
@@ -333,7 +349,9 @@ def get_ai_predictions(
 
     # If model_type+timestamp provided, prefer versioned folder
     if model_type and timestamp:
-        p = get_versioned_prediction_file(symbol, model_type, timestamp, settings=settings)
+        p = get_versioned_prediction_file(
+            symbol, model_type, timestamp, settings=settings, interval=interval
+        )
         if not p.exists():
             raise HTTPException(status_code=404, detail="Versioned prediction file not found")
         try:
@@ -370,14 +388,18 @@ def get_ai_predictions(
 
 
 @app.get("/api/ai/feature_importances")
-def get_feature_importances(symbol: str, model_type: str, timestamp: str):
+def get_feature_importances(
+    symbol: str, model_type: str, timestamp: str, interval: str = "1d"
+):
     settings = get_settings()
     symbol = symbol.upper()
     if not _is_valid_symbol(symbol):
         raise HTTPException(status_code=400, detail="Invalid symbol")
 
     p = (
-        get_versioned_prediction_dir(symbol, model_type, timestamp, settings=settings)
+        resolve_versioned_prediction_dir(
+            symbol, model_type, timestamp, settings=settings, interval=interval
+        )
         / "feature_importances.json"
     )
     if not p.exists():
@@ -388,6 +410,29 @@ def get_feature_importances(symbol: str, model_type: str, timestamp: str):
         return data
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.delete("/api/ai/models/{symbol}/{model_type}/{timestamp}")
+def delete_ai_model(
+    symbol: str, model_type: str, timestamp: str, interval: str = "1d"
+) -> dict[str, Any]:
+    settings = get_settings()
+    symbol = symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+
+    run_dir = resolve_versioned_prediction_dir(
+        symbol, model_type.lower(), timestamp, settings=settings, interval=interval
+    )
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Model run not found")
+
+    try:
+        shutil.rmtree(run_dir)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    return {"status": "deleted", "path": str(run_dir)}
 
 
 @app.post("/api/ai/train")
@@ -414,7 +459,11 @@ def train_model(req: AITrainRequest):
         if "learning_rate" in params:
             flags += ["--learning-rate", str(params["learning_rate"])]
 
-    cmd = f"python -m prosper.cli predict {model_type} --symbol {symbol} --start {start} --end {end} {' '.join(flags)} --root ./data"
+    interval = req.interval or "1d"
+    cmd = (
+        f"python -m prosper.cli predict {model_type} --symbol {symbol} "
+        f"--start {start} --end {end} --interval {interval} {' '.join(flags)} --root ./data"
+    )
 
     try:
         commands = parse_safe_command_chain(cmd)
@@ -423,6 +472,163 @@ def train_model(req: AITrainRequest):
 
     runner.start(cmd, commands)
     return {"status": "started", "command": cmd}
+
+
+def _read_json_file(path: Path, default: Any = None) -> Any:
+    try:
+        if not path.exists():
+            return default
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def _read_jsonl_file(path: Path, limit: int = 500) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not path.exists():
+        return rows
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+                if len(rows) >= limit:
+                    break
+    except OSError:
+        return []
+    return rows
+
+
+def _evaluation_summary_from_metrics(metrics: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    overall = metrics.get("overall", {}) if isinstance(metrics, dict) else {}
+    return {
+        "symbol": metrics.get("symbol"),
+        "model_type": metrics.get("model_type"),
+        "timestamp": metrics.get("timestamp"),
+        "interval": metrics.get("interval", "1d"),
+        "created_at": metrics.get("created_at"),
+        "path": str(run_dir),
+        "samples": overall.get("samples", metrics.get("scored_rows", 0)),
+        "missing_targets": overall.get("missing_targets"),
+        "model_score": overall.get("model_score"),
+        "accuracy": overall.get("accuracy"),
+        "brier": overall.get("brier"),
+        "nll": overall.get("nll"),
+        "ece": overall.get("ece"),
+        "artifacts": metrics.get("artifacts", {}),
+    }
+
+
+@app.post("/api/ai/evaluate")
+def evaluate_model_predictions(req: AIEvaluateRequest):
+    symbol = req.symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+
+    model_type = req.model_type.lower()
+    interval = req.interval or "1d"
+    cmd = (
+        f"python -m prosper.cli eval predictions --symbol {symbol} "
+        f"--model-type {model_type} --timestamp {req.timestamp} "
+        f"--interval {interval} --root ./data"
+    )
+
+    try:
+        commands = parse_safe_command_chain(cmd)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    runner.start(cmd, commands)
+    return {"status": "started", "command": cmd}
+
+
+@app.get("/api/ai/evaluations")
+def list_ai_evaluations(
+    symbol: str | None = None,
+    model_type: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    settings = get_settings()
+    base = settings.reports_dir / "evaluations"
+    if not base.exists():
+        return {"evaluations": []}
+
+    symbol_filter = symbol.upper() if symbol else None
+    model_filter = model_type.lower() if model_type else None
+    evaluations: list[dict[str, Any]] = []
+    for symbol_dir in sorted(base.iterdir()):
+        if not symbol_dir.is_dir():
+            continue
+        if symbol_filter and symbol_dir.name.upper() != symbol_filter:
+            continue
+        for run_dir in sorted(symbol_dir.iterdir()):
+            if not run_dir.is_dir():
+                continue
+            parsed = parse_evaluation_folder(run_dir.name)
+            if not parsed:
+                continue
+            parsed_model_type, parsed_timestamp = parsed
+            if model_filter and parsed_model_type.lower() != model_filter:
+                continue
+            metrics = _read_json_file(run_dir / "metrics.json", {})
+            if not metrics:
+                metrics = {
+                    "symbol": symbol_dir.name,
+                    "model_type": parsed_model_type,
+                    "timestamp": parsed_timestamp,
+                }
+            evaluations.append(_evaluation_summary_from_metrics(metrics, run_dir))
+
+    evaluations.sort(
+        key=lambda item: (
+            item.get("model_score") is not None,
+            item.get("model_score") or -1,
+            item.get("created_at") or "",
+        ),
+        reverse=True,
+    )
+    return {"evaluations": evaluations}
+
+
+@app.get("/api/ai/evaluations/{symbol}/{model_type}/{timestamp}")
+def get_ai_evaluation_detail(
+    symbol: str,
+    model_type: str,
+    timestamp: str,
+    limit: int = 500,
+) -> dict[str, Any]:
+    settings = get_settings()
+    symbol = symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+    if limit < 1 or limit > 5000:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 5000")
+
+    run_dir = get_evaluation_run_dir(symbol, model_type.lower(), timestamp, settings=settings)
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Evaluation not found")
+
+    metrics = _read_json_file(run_dir / "metrics.json", {})
+    calibration = _read_json_file(run_dir / "calibration.json", {})
+    quality_rows = _read_jsonl_file(run_dir / "predictions_quality.jsonl", limit=limit)
+    worst_rows = sorted(
+        [row for row in quality_rows if row.get("status") == "scored"],
+        key=lambda row: row.get("error_score", 0.0),
+        reverse=True,
+    )[:100]
+    recommendations = _read_json_file(run_dir / "recommendations.json", {"items": []})
+    return {
+        "metrics": metrics,
+        "summary": _evaluation_summary_from_metrics(metrics, run_dir),
+        "calibration": calibration,
+        "quality_rows": quality_rows,
+        "worst_predictions": worst_rows,
+        "recommendations": recommendations.get("items", []),
+        "artifacts": metrics.get("artifacts", {}),
+    }
 
 
 @app.get("/api/meta/symbols")

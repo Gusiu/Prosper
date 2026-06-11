@@ -104,75 +104,23 @@
       <!-- Main Content Area -->
       <main class="main-content">
         <header class="topbar">
-          <h2 id="topbar-title" style="margin-right: 30px; white-space: nowrap">
-            Data Manager
-          </h2>
+          <h2 id="topbar-title" style="white-space: nowrap">Data Manager</h2>
+        </header>
 
-          <!-- Global Progress Bar integrated into topbar -->
-          <div
-            id="progress-container-stable"
-            style="
-              flex: 1;
-              height: 100%;
-              display: flex;
-              align-items: center;
-              min-width: 0;
-            "
-          >
-            <div id="global-progress" style="width: 100%">
-              <div
-                style="
-                  display: flex;
-                  align-items: center;
-                  gap: 15px;
-                  width: 100%;
-                "
-              >
-                <div
-                  id="progress-text"
-                  style="
-                    font-size: 0.6rem;
-                    color: var(--accent-glow);
-                    font-weight: 800;
-                    text-transform: uppercase;
-                    letter-spacing: 1px;
-                    min-width: 130px;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                  "
-                >
-                  Ready
-                </div>
-                <div
-                  class="progress-container glass-input"
-                  style="
-                    flex: 1;
-                    height: 10px;
-                    padding: 0;
-                    overflow: hidden;
-                    position: relative;
-                    border: 1px solid rgba(0, 229, 255, 0.1);
-                  "
-                >
-                  <div id="progress-bar-fill"></div>
-                </div>
-                <span
-                  id="progress-pct"
-                  class="text-green"
-                  style="
-                    font-weight: 800;
-                    font-size: 0.8rem;
-                    min-width: 45px;
-                    text-align: right;
-                    font-family: monospace;
-                  "
-                  >0%</span
-                >
+        <!-- Global Progress Bar (below topbar, above tab content) -->
+        <div id="progress-container-stable" class="global-progress-strip">
+          <div id="global-progress">
+            <div class="global-progress-inner">
+              <div id="progress-text" class="global-progress-label">Ready</div>
+              <div class="progress-container glass-input global-progress-track">
+                <div id="progress-bar-fill"></div>
               </div>
+              <span id="progress-pct" class="text-green global-progress-pct"
+                >0%</span
+              >
             </div>
           </div>
-        </header>
+        </div>
 
         <!-- TAB 1: DATA MANAGER -->
         <div id="tab-data" class="tab-content active fade-in">
@@ -474,11 +422,33 @@
                     id="model-select"
                     class="glass-input"
                     style="width: 100%; min-width: 0"
+                    onchange="updateTrainModelUI()"
                   >
                     <option value="ml">Trad. ML (GradientBoost)</option>
                     <option value="xgboost">ML (XGBoost)</option>
                     <option value="gru">DL (GRU Recurrent)</option>
                     <option value="tft">DL (Temporal Fusion Trans.)</option>
+                  </select>
+                </label>
+                <label
+                  style="
+                    display: flex;
+                    flex-direction: column;
+                    gap: 4px;
+                    font-size: 0.75rem;
+                    color: var(--text-muted);
+                  "
+                >
+                  <span>Interval</span>
+                  <select
+                    id="train-interval"
+                    class="glass-input"
+                    style="width: 100%; min-width: 0"
+                  >
+                    <option value="1d" selected>1d (Daily)</option>
+                    <option value="1h">1h (Hourly)</option>
+                    <option value="1m">1m (Minute)</option>
+                    <option value="1w">1w (Weekly)</option>
                   </select>
                 </label>
                 <div style="display: flex; gap: 8px">
@@ -526,6 +496,7 @@
                   </label>
                 </div>
                 <label
+                  id="train-epochs-wrapper"
                   style="
                     display: flex;
                     flex-direction: column;
@@ -583,13 +554,26 @@
 
             <!-- RIGHT: Model Inventory -->
             <div class="ops-card glass-panel" style="flex-grow: 1">
-              <h3>Model Inventory</h3>
+              <div
+                style="
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                  gap: 10px;
+                "
+              >
+                <h3>Model Inventory</h3>
+                <button class="outline-btn" onclick="loadAIInventory()">
+                  ⟳ Refresh
+                </button>
+              </div>
               <div class="table-container mt-2">
                 <table class="inventory-table">
                   <thead>
                     <tr>
                       <th>Symbol</th>
                       <th>Model</th>
+                      <th>Interval</th>
                       <th>Timestamp</th>
                       <th>Files</th>
                       <th>Actions</th>
@@ -606,62 +590,192 @@
 
         <!-- TAB 3: EVALUATION -->
         <div id="tab-eval" class="tab-content fade-in">
-          <div
-            class="ops-card glass-panel mb-2"
-            style="
-              display: flex;
-              flex-direction: row;
-              gap: 16px;
-              align-items: center;
-            "
-          >
-            <label
-              style="
-                display: flex;
-                flex-direction: column;
-                gap: 6px;
-                font-size: 0.75rem;
-                color: var(--text-muted);
-                min-width: 0;
-              "
-            >
-              <span>Symbol</span>
-              <select
-                id="eval-symbol"
-                class="glass-input"
-                onchange="updateEvalDates()"
-                style="min-width: 0"
-              >
-                <option value="">Select Symbol...</option>
-              </select>
-            </label>
-            <label
-              style="
-                display: flex;
-                flex-direction: column;
-                gap: 6px;
-                font-size: 0.75rem;
-                color: var(--text-muted);
-              "
-            >
-              <span>Start date</span>
-              <input type="date" id="eval-start" class="glass-input" />
-            </label>
-            <label
-              style="
-                display: flex;
-                flex-direction: column;
-                gap: 6px;
-                font-size: 0.75rem;
-                color: var(--text-muted);
-              "
-            >
-              <span>End date</span>
-              <input type="date" id="eval-end" class="glass-input" />
-            </label>
-            <button class="glow-btn accent-green" onclick="runBacktest()">
-              Execute Backtest
-            </button>
+          <div class="evaluation-workbench mb-2">
+            <div class="ops-card glass-panel evaluation-card">
+              <h3>Prediction Evaluation</h3>
+              <p class="metric-desc">
+                Select a saved prediction run, score it against realized market
+                data and generate ranked recommendations.
+              </p>
+              <label class="evaluation-label">
+                <span>Prediction run</span>
+                <select id="prediction-eval-run" class="glass-input">
+                  <option value="">No model runs loaded...</option>
+                </select>
+              </label>
+              <div class="evaluation-actions">
+                <button class="glow-btn accent-green" onclick="runPredictionEvaluation()">
+                  Evaluate Run
+                </button>
+                <button class="outline-btn" onclick="loadEvaluations()">
+                  Refresh Ranking
+                </button>
+              </div>
+              <div id="eval-run-status" class="analysis-status">
+                Choose a model run to begin.
+              </div>
+            </div>
+
+            <div class="ops-card glass-panel evaluation-card evaluation-ranking-card">
+              <div class="table-title-row">
+                <h3>Model Ranking</h3>
+                <span class="text-muted" id="eval-ranking-count">(0)</span>
+              </div>
+              <div class="table-container mt-2">
+                <table class="inventory-table">
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Symbol</th>
+                      <th>Model</th>
+                      <th>Score</th>
+                      <th>Acc.</th>
+                      <th>ECE</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="eval-ranking-tbody">
+                    <tr>
+                      <td class="text-muted">No evaluations yet</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="metrics-grid mb-2">
+            <div class="metric-card glass-panel">
+              <h3>Model Score</h3>
+              <div class="metric-value fade-in" id="eval-model-score">--</div>
+              <p class="metric-desc">Composite 0-100 quality score.</p>
+            </div>
+            <div class="metric-card glass-panel">
+              <h3>Accuracy</h3>
+              <div class="metric-value fade-in" id="eval-accuracy">--%</div>
+              <p class="metric-desc">Correct direction calls.</p>
+            </div>
+            <div class="metric-card glass-panel">
+              <h3>Brier</h3>
+              <div class="metric-value fade-in" id="eval-brier">--</div>
+              <p class="metric-desc">Lower probability error is better.</p>
+            </div>
+            <div class="metric-card glass-panel">
+              <h3>ECE</h3>
+              <div class="metric-value fade-in" id="eval-ece">--</div>
+              <p class="metric-desc">Calibration gap, lower is better.</p>
+            </div>
+          </div>
+
+          <div class="evaluation-detail-grid mb-2">
+            <div class="chart-container glass-panel evaluation-panel">
+              <div class="table-title-row">
+                <h3>Calibration</h3>
+                <span class="text-muted">Confidence vs accuracy</span>
+              </div>
+              <div id="eval-calibration-bars" class="eval-bars">
+                <div class="analysis-empty-subchart">Select an evaluation.</div>
+              </div>
+            </div>
+            <div class="chart-container glass-panel evaluation-panel">
+              <div class="table-title-row">
+                <h3>Sharpness</h3>
+                <span class="text-muted">Entropy per horizon</span>
+              </div>
+              <div id="eval-sharpness-bars" class="eval-bars">
+                <div class="analysis-empty-subchart">Select an evaluation.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="evaluation-detail-grid mb-2">
+            <div class="chart-container glass-panel evaluation-panel">
+              <div class="table-title-row">
+                <h3>Worst Predictions</h3>
+                <div class="evaluation-actions compact">
+                  <select id="eval-flag-filter" class="glass-input" onchange="renderWorstPredictions()">
+                    <option value="">All flags</option>
+                  </select>
+                  <button class="outline-btn" onclick="exportWorstPredictionsCsv()">
+                    Export CSV
+                  </button>
+                </div>
+              </div>
+              <div class="table-container mt-2">
+                <table class="inventory-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Horizon</th>
+                      <th>Actual</th>
+                      <th>Pred.</th>
+                      <th>Score</th>
+                      <th>Flags</th>
+                      <th>Inspect</th>
+                    </tr>
+                  </thead>
+                  <tbody id="eval-worst-tbody">
+                    <tr>
+                      <td class="text-muted">No rows loaded</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="chart-container glass-panel evaluation-panel">
+              <div class="table-title-row">
+                <h3>Recommendation Set</h3>
+                <span class="text-muted">Best-ranked actionable rows</span>
+              </div>
+              <div class="table-container mt-2">
+                <table class="inventory-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Horizon</th>
+                      <th>Recommendation</th>
+                      <th>Edge</th>
+                      <th>Score</th>
+                    </tr>
+                  </thead>
+                  <tbody id="eval-recommendations-tbody">
+                    <tr>
+                      <td class="text-muted">No recommendations loaded</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="ops-card glass-panel mb-2 evaluation-backtest-card">
+            <div class="table-title-row">
+              <h3>Trading Backtest</h3>
+              <span class="text-muted">Legacy simulation view</span>
+            </div>
+            <div class="evaluation-backtest-controls">
+              <label class="evaluation-label">
+                <span>Symbol</span>
+                <select
+                  id="eval-symbol"
+                  class="glass-input"
+                  onchange="updateEvalDates()"
+                >
+                  <option value="">Select Symbol...</option>
+                </select>
+              </label>
+              <label class="evaluation-label">
+                <span>Start date</span>
+                <input type="date" id="eval-start" class="glass-input" />
+              </label>
+              <label class="evaluation-label">
+                <span>End date</span>
+                <input type="date" id="eval-end" class="glass-input" />
+              </label>
+              <button class="glow-btn accent-green" onclick="runBacktest()">
+                Execute Backtest
+              </button>
+            </div>
           </div>
 
           <div class="metrics-grid mb-2">
