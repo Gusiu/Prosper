@@ -1,12 +1,9 @@
 ﻿import datetime
 import json
 import re
-import shlex
 import shutil
 import subprocess
 import threading
-import time
-import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -30,8 +27,9 @@ from prosper.storage.layout import (
 from prosper.storage.runs import list_runs
 
 # ============================================================
-# NEW SAFE PYDANTIC MODELS (Phase 1.1 - REST API Refactor)
-# Frontend sends structured JSON instead of CLI command strings.
+# REQUEST MODELS
+# The frontend posts structured JSON; the server is the only place that
+# knows how to turn an intent into a CLI invocation.
 # ============================================================
 
 class ResearchFlags(BaseModel):
@@ -81,10 +79,25 @@ class BatchEvalRequest(BaseModel):
     flags: ResearchFlags = Field(default_factory=ResearchFlags)
 
 
+class AggregateRequest(BaseModel):
+    """Aggregate 1m into the chosen intervals, then rebuild features and labels."""
+    symbol: str
+    start: str
+    end: str
+    intervals: list[str] = Field(default_factory=list)
+    flags: ResearchFlags = Field(default_factory=ResearchFlags)
+
+
+class RepairRequest(BaseModel):
+    """Repair a symbol's data. The server derives the steps from the inventory."""
+    symbol: str
+    flags: ResearchFlags = Field(default_factory=ResearchFlags)
+
+
 # ============================================================
-# SAFE COMMAND BUILDERS
-# These functions build CLI command lists from structured data,
-# eliminating the need for the frontend to construct command strings.
+# COMMAND BUILDERS
+# Structured request -> argv list. Subprocesses run with shell=False, so no
+# input ever reaches a shell.
 # ============================================================
 
 def _build_research_flags(flags: ResearchFlags, command_type: str = "generic") -> list[str]:
@@ -279,9 +292,145 @@ def build_batch_eval_command(req: BatchEvalRequest) -> list[list[str]]:
     return [cmd]
 
 
-# ============================================================
-# END NEW SAFE MODELS
-# ============================================================
+def _features_and_labels_commands(
+    symbol: str, intervals: list[str], start: str, end: str, r_flags: list[str]
+) -> list[list[str]]:
+    commands: list[list[str]] = []
+    for interval in intervals:
+        commands.append(
+            [
+                "python", "-m", "prosper.cli", "features", "build",
+                "--symbol", symbol,
+                "--base-interval", interval,
+                "--start", start,
+                "--end", end,
+                "--root", "./data",
+                *r_flags,
+            ]
+        )
+        commands.append(
+            [
+                "python", "-m", "prosper.cli", "labels", "build",
+                "--symbol", symbol,
+                "--base-interval", interval,
+                "--root", "./data",
+                *r_flags,
+            ]
+        )
+    return commands
+
+
+def build_aggregate_command(req: AggregateRequest) -> list[list[str]]:
+    """Aggregate the requested intervals, then rebuild features and labels."""
+    symbol = req.symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise ValueError(f"Invalid symbol: {symbol}")
+    if not req.intervals:
+        raise ValueError("Select at least one interval to aggregate")
+
+    r_flags = _build_research_flags(req.flags, "pipeline")
+    commands = [
+        [
+            "python", "-m", "prosper.cli", "aggregate",
+            "--symbol", symbol,
+            "--from", "1m",
+            "--start", req.start[:7],
+            "--end", req.end[:7],
+            "--to", ",".join(req.intervals),
+            "--root", "./data",
+            *r_flags,
+        ]
+    ]
+    commands.extend(
+        _features_and_labels_commands(
+            symbol, ["1m", *req.intervals], req.start, req.end, r_flags
+        )
+    )
+    return commands
+
+
+def build_repair_commands(
+    req: RepairRequest, inventory: list[dict[str, Any]]
+) -> tuple[list[list[str]], list[str]]:
+    """Derive the repair chain for a symbol from its inventory entry.
+
+    Lives here rather than in the browser because it is a decision about the
+    data lake: the frontend used to reconstruct it by regex-matching the
+    human-readable quality message, which broke the moment that text changed.
+
+    Returns the commands plus a human-readable explanation of each step.
+    """
+    symbol = req.symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise ValueError(f"Invalid symbol: {symbol}")
+
+    entry = next((item for item in inventory if item.get("symbol") == symbol), None)
+    if entry is None:
+        raise ValueError(f"{symbol} is not present in the data inventory")
+
+    start_date = str(entry.get("start_date", ""))
+    end_date = str(entry.get("end_date", ""))
+    if start_date == "N/A" or end_date == "N/A" or not start_date or not end_date:
+        raise ValueError(f"{symbol} has no usable date range to repair")
+
+    r_flags = _build_research_flags(req.flags, "pipeline")
+    aggregations = entry.get("aggregations", []) or []
+    commands: list[list[str]] = []
+    steps: list[str] = []
+
+    # 1. Gaps in the 1m base require re-downloading; everything else derives from it.
+    base = next((a for a in aggregations if a.get("interval") == "1m"), None)
+    if base and base.get("gaps", 0) > 0:
+        commands.append(
+            [
+                "python", "-m", "prosper.cli", "backfill",
+                "--symbol", symbol,
+                "--start", start_date[:7],
+                "--end", end_date[:7],
+                "--root", "./data",
+                *r_flags,
+            ]
+        )
+        steps.append(f"re-download 1m ({base['gaps']} gap(s))")
+
+    # 2. Any other interval that is gapped or missing parquet is re-aggregated.
+    broken = sorted(
+        {
+            a["interval"]
+            for a in aggregations
+            if a.get("interval") != "1m"
+            and (a.get("gaps", 0) > 0 or a.get("status") == "incomplete")
+        }
+    )
+    if broken:
+        commands.append(
+            [
+                "python", "-m", "prosper.cli", "aggregate",
+                "--symbol", symbol,
+                "--from", "1m",
+                "--start", start_date[:7],
+                "--end", end_date[:7],
+                "--to", ",".join(broken),
+                "--root", "./data",
+                *r_flags,
+            ]
+        )
+        steps.append(f"re-aggregate {', '.join(broken)}")
+
+    # 3. Intervals flagged only for missing features/labels, plus anything rebuilt above.
+    needs_features = sorted(
+        {a["interval"] for a in aggregations if a.get("status") == "warning"} | set(broken)
+    )
+    if needs_features:
+        commands.extend(
+            _features_and_labels_commands(
+                symbol, needs_features, start_date, end_date, r_flags
+            )
+        )
+        steps.append(f"rebuild features and labels for {', '.join(needs_features)}")
+
+    return commands, steps
+
 
 # Resolve the absolute path dynamically based on this file's location.
 # This makes the project portable to any computer or directory.
@@ -305,50 +454,12 @@ def _is_valid_symbol(symbol: str) -> bool:
     return bool(SYMBOL_RE.fullmatch(symbol))
 
 
-def parse_safe_command_chain(command: str) -> list[list[str]]:
-    """
-    Parse a UI command chain into argv segments without allowing shell execution.
-
-    The frontend may chain Prosper CLI commands with `&&`. Each segment must be
-    `poetry run prosper ...`; shell metacharacters are rejected and subprocesses
-    are later started with shell=False.
-    """
-    if any(ch in command for ch in FORBIDDEN_COMMAND_CHARS):
-        raise ValueError("Command contains unsupported shell metacharacters")
-
-    segments: list[list[str]] = []
-    for raw_segment in command.split("&&"):
-        segment = raw_segment.strip()
-        if not segment:
-            continue
-        try:
-            args = shlex.split(segment)
-        except ValueError as e:
-            raise ValueError(f"Invalid command quoting: {e}") from e
-
-        if len(args) < 4 or args[:3] != ["python", "-m", "prosper.cli"]:
-            raise ValueError("Each segment must start with 'python -m prosper.cli'")
-        if args[3] not in ALLOWED_PROSPER_COMMANDS:
-            raise ValueError(f"Unsupported Prosper command: {args[3]}")
-        if any(any(ch in token for ch in FORBIDDEN_COMMAND_CHARS) for token in args):
-            raise ValueError("Command token contains unsupported characters")
-        segments.append(args)
-
-    if not segments:
-        raise ValueError("Command is empty")
-    return segments
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Importing this module must not have side effects beyond serving: opening
+    # a browser belongs to the `prosper ui` command, not to the ASGI app, which
+    # also runs under tests, uvicorn --reload and any external process manager.
     frontend_dir.mkdir(parents=True, exist_ok=True)
-
-    # Auto-open browser via Python
-    def open_browser():
-        time.sleep(1.5)
-        webbrowser.open("http://localhost:8000")
-
-    threading.Thread(target=open_browser, daemon=True).start()
     yield
 
 
@@ -520,20 +631,6 @@ def get_status() -> dict[str, str]:
     return {"status": "online", "message": "Prosper Engine is operational"}
 
 
-class RunRequest(BaseModel):
-    command: str
-
-
-@app.post("/api/task/run")
-def run_task(req: RunRequest):
-    try:
-        commands = parse_safe_command_chain(req.command)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-    runner.start(req.command, commands)
-    return {"status": "started", "command": req.command}
-
-
 @app.get("/api/task/logs")
 def get_task_logs(start_idx: int = 0):
     lines, next_idx = runner.read_logs(start_idx)
@@ -567,14 +664,6 @@ def get_dates():
 @app.get("/api/data/inventory")
 def get_inventory(refresh: bool = False):
     return DataManager().get_inventory(refresh=refresh)
-
-
-class AIEvaluateRequest(BaseModel):
-    symbol: str
-    model_type: str
-    timestamp: str
-    interval: str = "1d"
-    params: dict | None = None
 
 
 @app.get("/api/ai/models")
@@ -763,16 +852,10 @@ def delete_ai_model(
     return {"status": "deleted", "path": str(run_dir)}
 
 
-# ============================================================
-# NEW SAFE ENDPOINTS (Phase 1.1)
-# Frontend sends structured JSON - no command string construction.
-# ============================================================
-
 @app.post("/api/pipeline/run")
 def run_pipeline(req: PipelineRequest):
     """
     Start a data pipeline (backfill -> aggregate -> features -> labels).
-    Accepts structured JSON - SAFE: no command string parsing needed.
     """
     try:
         commands = build_pipeline_command(req)
@@ -792,7 +875,6 @@ def run_pipeline(req: PipelineRequest):
 def run_training(req: TrainRequest):
     """
     Start model training.
-    Accepts structured JSON - SAFE: no command string parsing needed.
     """
     try:
         commands = build_train_command(req)
@@ -811,7 +893,6 @@ def run_training(req: TrainRequest):
 def run_evaluation(req: EvalRequest):
     """
     Start prediction evaluation.
-    Accepts structured JSON - SAFE: no command string parsing needed.
     """
     try:
         commands = build_eval_command(req)
@@ -826,11 +907,47 @@ def run_evaluation(req: EvalRequest):
     }
 
 
+@app.post("/api/pipeline/aggregate")
+def run_aggregate(req: AggregateRequest):
+    """Aggregate 1m into the chosen intervals and rebuild features and labels."""
+    try:
+        commands = build_aggregate_command(req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    cmd_display = " && ".join(" ".join(cmd) for cmd in commands)
+    runner.start(cmd_display, commands)
+    return {"status": "started", "command": cmd_display, "steps": len(commands)}
+
+
+@app.post("/api/pipeline/repair")
+def run_repair(req: RepairRequest):
+    """Repair a symbol; the server derives the steps from the current inventory."""
+    inventory = DataManager().get_inventory()
+    try:
+        commands, steps = build_repair_commands(req, inventory)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if not commands:
+        raise HTTPException(
+            status_code=400, detail=f"Nothing to repair for {req.symbol.upper()}"
+        )
+
+    cmd_display = " && ".join(" ".join(cmd) for cmd in commands)
+    runner.start(cmd_display, commands)
+    return {
+        "status": "started",
+        "command": cmd_display,
+        "steps": steps,
+        "step_count": len(commands),
+    }
+
+
 @app.post("/api/eval/batch")
 def run_batch_evaluation(req: BatchEvalRequest):
     """
     Start batch evaluation of model runs.
-    Accepts structured JSON - SAFE: no command string parsing needed.
     """
     try:
         commands = build_batch_eval_command(req)
@@ -844,11 +961,6 @@ def run_batch_evaluation(req: BatchEvalRequest):
         "command": cmd_display,
     }
 
-
-# ============================================================
-# LEGACY ENDPOINTS (still used by the current frontend)
-# Removed after the frontend migrates to the structured API above.
-# ============================================================
 
 def _read_json_file(path: Path, default: Any = None) -> Any:
     try:
@@ -898,35 +1010,6 @@ def _evaluation_summary_from_metrics(metrics: dict[str, Any], run_dir: Path) -> 
         "ece": overall.get("ece"),
         "artifacts": metrics.get("artifacts", {}),
     }
-
-
-@app.post("/api/ai/evaluate")
-def evaluate_model_predictions(req: AIEvaluateRequest):
-    symbol = req.symbol.upper()
-    if not _is_valid_symbol(symbol):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
-
-    model_type = req.model_type.lower()
-    interval = req.interval or "1d"
-    params = req.params or {}
-    flags = []
-    if params.get("strict"):
-        flags.append("--strict")
-    if params.get("save_metadata"):
-        flags.append("--save-metadata")
-    cmd = (
-        f"python -m prosper.cli eval predictions --symbol {symbol} "
-        f"--model-type {model_type} --timestamp {req.timestamp} "
-        f"--interval {interval} --root ./data {' '.join(flags)}"
-    )
-
-    try:
-        commands = parse_safe_command_chain(cmd)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    runner.start(cmd, commands)
-    return {"status": "started", "command": cmd}
 
 
 @app.get("/api/ai/evaluations")

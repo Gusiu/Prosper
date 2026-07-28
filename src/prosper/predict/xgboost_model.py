@@ -147,8 +147,15 @@ def predict_xgboost(
                 X_train_valid = X_train[valid_idx]
                 y_train_valid = [dir_map[y_dirs[k]] for k in valid_idx]
 
+                # XGBClassifier requires labels 0..k-1. A window where only
+                # short and long occur yields {0, 2}, which it rejects — and
+                # the resulting failure used to disable the horizon entirely.
+                # Remap to a dense range and keep the original class order to
+                # map the probabilities back.
+                present_classes = sorted(set(y_train_valid))
                 clf = None
-                if len(set(y_train_valid)) > 1:
+                if len(present_classes) > 1:
+                    dense = {label: idx for idx, label in enumerate(present_classes)}
                     try:
                         clf = xgb.XGBClassifier(
                             n_estimators=n_estimators,
@@ -157,7 +164,7 @@ def predict_xgboost(
                             random_state=effective_seed,
                             eval_metric="mlogloss",
                         )
-                        clf.fit(X_train_valid, y_train_valid)
+                        clf.fit(X_train_valid, [dense[y] for y in y_train_valid])
                     except Exception as e:
                         print(f"[xgboost] {h.name} training failed at {row_date}: {e}")
                         clf = None
@@ -175,7 +182,8 @@ def predict_xgboost(
 
                 models_cache[h.name] = {
                     "clf": clf,
-                    "classes": clf.classes_ if clf is not None else [],
+                    # Column j of predict_proba corresponds to present_classes[j].
+                    "classes": present_classes if clf is not None else [],
                     "depth_long": _to_prob_dict(emp_long, depth_labels),
                     "depth_short": _to_prob_dict(emp_short, depth_labels),
                 }

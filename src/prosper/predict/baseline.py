@@ -18,10 +18,9 @@ from prosper.predict.window import (
     untrained_horizon_payload,
     validate_train_window,
 )
-from prosper.storage.layout import get_parquet_file_path
 from prosper.storage.parquet import load_parquet
 from prosper.storage.predictions import write_versioned_predictions
-from prosper.utils.time import generate_month_range, parse_date
+from prosper.utils.time import parse_date
 
 
 def _laplace_prob(count: int, total: int, k: int, alpha: float) -> float:
@@ -65,26 +64,26 @@ def predict_baseline(
     start_dt = parse_date(start)
     end_dt = parse_date(end)
 
-    # Load daily klines across months in [start, end]
-    months = generate_month_range(start_dt.date(), end_dt.date())
-
-    daily_parts: list[pl.DataFrame] = []
-    for yy, mm in months:
-        path = get_parquet_file_path(symbol, interval, yy, month=mm, settings=settings)
-        if path.exists():
-            daily_parts.append(load_parquet(path))
+    # Load every available month, not just the requested range: the rolling
+    # window looks *back* from the first predicted bar. Loading only [start,
+    # end] left the early rows with almost no history, so the benchmark got
+    # weaker the narrower the range you asked for — while the ML models, which
+    # read all features and filter on output, did not.
+    base_path = settings.processed_binance_spot_klines_dir / interval / f"symbol={symbol}"
+    daily_parts = [
+        load_parquet(path)
+        for path in sorted(base_path.glob("**/*.parquet"))
+        if path.is_file() and path.stat().st_size > 0
+    ]
 
     if not daily_parts:
         return {"error": f"No daily parquet found for {symbol} at {interval}", "symbol": symbol}
 
     df_daily = pl.concat(daily_parts).sort("open_time").unique(subset=["open_time"], keep="first")
     df_daily = df_daily.with_columns(pl.col("open_time").dt.date().alias("_date"))
-    df_daily = df_daily.filter(pl.col("_date") >= start_dt.date()).filter(
-        pl.col("_date") <= end_dt.date()
-    )
 
     if df_daily.is_empty():
-        return {"error": "No daily rows for requested date range", "symbol": symbol}
+        return {"error": f"No daily rows found for {symbol}", "symbol": symbol}
 
     open_times = df_daily["open_time"].to_list()
     dates = df_daily["_date"].to_list()
@@ -111,6 +110,9 @@ def predict_baseline(
     untrained_counts: dict[str, int] = {h.name: 0 for h in horizons}
 
     for i in range(n):
+        if dates[i] < start_dt.date() or dates[i] > end_dt.date():
+            continue
+
         out: dict[str, Any] = {
             "open_time": open_times[i].isoformat(),
             "date": dates[i].isoformat(),

@@ -4,8 +4,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_UNSET = Path()
 
 
 class Settings(BaseSettings):
@@ -17,12 +19,31 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Data paths (a single root that can be overridden by CLI `--root`)
+    # Data paths (a single root that can be overridden by CLI `--root`).
+    # The four sub-directories are derived from `data_root` unless explicitly
+    # set. They are non-optional so callers never have to narrow away a `None`
+    # that cannot occur once construction has finished.
     data_root: Path = Field(default=Path("./data"), description="Root directory for all data")
-    raw_data_dir: Path | None = None
-    processed_data_dir: Path | None = None
-    reports_dir: Path | None = None
-    meta_dir: Path | None = None
+    raw_data_dir: Path = _UNSET
+    processed_data_dir: Path = _UNSET
+    reports_dir: Path = _UNSET
+    meta_dir: Path = _UNSET
+
+    @model_validator(mode="after")
+    def _derive_and_create_directories(self) -> "Settings":
+        defaults = {
+            "raw_data_dir": self.data_root / "raw",
+            "processed_data_dir": self.data_root / "processed",
+            "reports_dir": self.data_root / "reports",
+            "meta_dir": self.data_root / "meta",
+        }
+        for name, default in defaults.items():
+            if getattr(self, name) == _UNSET:
+                object.__setattr__(self, name, default)
+
+        for directory in (self.data_root, *(getattr(self, name) for name in defaults)):
+            directory.mkdir(parents=True, exist_ok=True)
+        return self
 
     # Binance API
     binance_public_data_base: str = "https://data.binance.vision"
@@ -102,23 +123,6 @@ class Settings(BaseSettings):
             kwargs = {**yaml_config, **kwargs}
 
         super().__init__(**kwargs)
-
-        # Derive directory layout from data_root (so CLI can isolate smoke runs).
-        if self.raw_data_dir is None:
-            self.raw_data_dir = self.data_root / "raw"
-        if self.processed_data_dir is None:
-            self.processed_data_dir = self.data_root / "processed"
-        if self.reports_dir is None:
-            self.reports_dir = self.data_root / "reports"
-        if self.meta_dir is None:
-            self.meta_dir = self.data_root / "meta"
-
-        # Ensure directories exist
-        self.data_root.mkdir(parents=True, exist_ok=True)
-        self.raw_data_dir.mkdir(parents=True, exist_ok=True)
-        self.processed_data_dir.mkdir(parents=True, exist_ok=True)
-        self.reports_dir.mkdir(parents=True, exist_ok=True)
-        self.meta_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def raw_binance_spot_klines_1m_dir(self) -> Path:

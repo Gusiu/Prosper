@@ -1,7 +1,7 @@
 """Aggregation pipeline for resampling klines."""
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 
@@ -36,8 +36,8 @@ def normalize_target_intervals(intervals: str | Iterable[str]) -> list[str]:
             if interval:
                 normalized.append(interval)
 
-    seen: set[str] = set()
-    return [interval for interval in normalized if not (interval in seen or seen.add(interval))]
+    # dict preserves insertion order and de-duplicates in one step
+    return list(dict.fromkeys(normalized))
 
 
 def aggregate_klines(df: pl.DataFrame, interval: str) -> pl.DataFrame:
@@ -200,9 +200,10 @@ def _save_aggregated_partitions(
             pl.col("open_time").dt.iso_year().alias("_year"),
             pl.col("open_time").dt.week().alias("_week"),
         )
-        for (year, week), group_df in partitioned.group_by(["_year", "_week"]):
+        for key, group_df in partitioned.group_by(["_year", "_week"]):
+            year, week = (int(part) for part in cast(tuple[Any, Any], key))
             output_path = get_parquet_file_path(
-                symbol, interval, int(year), week=int(week), settings=settings
+                symbol, interval, year, week=week, settings=settings
             )
             save_parquet(group_df.drop(["_year", "_week"]).sort("open_time"), output_path)
             written_paths.append(str(output_path))
@@ -212,9 +213,10 @@ def _save_aggregated_partitions(
         pl.col("open_time").dt.year().alias("_year"),
         pl.col("open_time").dt.month().alias("_month"),
     )
-    for (year, month), group_df in partitioned.group_by(["_year", "_month"]):
+    for key, group_df in partitioned.group_by(["_year", "_month"]):
+        year, month = (int(part) for part in cast(tuple[Any, Any], key))
         output_path = get_parquet_file_path(
-            symbol, interval, int(year), month=int(month), settings=settings
+            symbol, interval, year, month=month, settings=settings
         )
         save_parquet(group_df.drop(["_year", "_month"]).sort("open_time"), output_path)
         written_paths.append(str(output_path))

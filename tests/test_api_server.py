@@ -1,4 +1,4 @@
-"""Tests for local API command safety helpers."""
+"""Tests for the structured API: command builders and data endpoints."""
 
 import json
 from datetime import UTC, datetime
@@ -6,10 +6,17 @@ from datetime import UTC, datetime
 import polars as pl
 import pytest
 from prosper.api.server import (
+    AggregateRequest,
+    PipelineRequest,
+    RepairRequest,
+    TrainRequest,
+    build_aggregate_command,
+    build_pipeline_command,
+    build_repair_commands,
+    build_train_command,
     delete_symbol_data,
     get_kline_chart_data,
     get_symbol_metadata,
-    parse_safe_command_chain,
 )
 from prosper.config import Settings
 from prosper.inventory import DataManager
@@ -17,23 +24,133 @@ from prosper.storage.layout import get_parquet_file_path
 from prosper.storage.parquet import save_parquet
 
 
-def test_parse_safe_command_chain_accepts_prosper_segments() -> None:
-    commands = parse_safe_command_chain(
-        "python -m prosper.cli backfill --symbol BTCUSDT --start 2024-01 --end 2024-01"
-        " && python -m prosper.cli labels build --symbol BTCUSDT"
+def _argv_value(argv: list[str], flag: str) -> str:
+    return argv[argv.index(flag) + 1]
+
+
+def test_build_pipeline_command_covers_every_selected_interval() -> None:
+    commands = build_pipeline_command(
+        PipelineRequest(
+            symbol="btcusdt", start="2024-01-01", end="2024-03-31", intervals=["1h", "1d"]
+        )
     )
 
-    assert len(commands) == 2
-    assert commands[0][:4] == ["python", "-m", "prosper.cli", "backfill"]
-    assert commands[1][:5] == ["python", "-m", "prosper.cli", "labels", "build"]
+    verbs = [cmd[3] for cmd in commands]
+    assert verbs[0] == "backfill"
+    assert verbs[1] == "aggregate"
+    # features + labels for 1m and each requested interval
+    assert verbs.count("features") == 3
+    assert verbs.count("labels") == 3
+    assert all(_argv_value(cmd, "--symbol") == "BTCUSDT" for cmd in commands)
 
 
-def test_parse_safe_command_chain_rejects_shell_injection() -> None:
-    with pytest.raises(ValueError):
-        parse_safe_command_chain("python -m prosper.cli backfill --symbol BTCUSDT --start 2024-01 --end 2024-01; whoami")
+def test_build_train_command_passes_interval_and_research_flags() -> None:
+    argv = build_train_command(
+        TrainRequest(
+            symbol="BTCUSDT",
+            model_type="gru",
+            interval="1h",
+            start="2024-01-01",
+            end="2024-06-01",
+            epochs=7,
+            flags={"strict": True, "deterministic": True, "seed": 7},
+        )
+    )[0]
 
-    with pytest.raises(ValueError):
-        parse_safe_command_chain("python -m prosper.cli backfill --symbol BTCUSDT && echo hacked")
+    assert argv[:5] == ["python", "-m", "prosper.cli", "predict", "gru"]
+    assert _argv_value(argv, "--interval") == "1h"
+    assert _argv_value(argv, "--epochs") == "7"
+    assert _argv_value(argv, "--seed") == "7"
+    assert "--deterministic" in argv and "--strict" in argv
+
+
+def test_command_builders_reject_a_bad_symbol() -> None:
+    with pytest.raises(ValueError, match="Invalid symbol"):
+        build_train_command(
+            TrainRequest(symbol="not a symbol!", start="2024-01-01", end="2024-06-01")
+        )
+    with pytest.raises(ValueError, match="Invalid symbol"):
+        build_aggregate_command(
+            AggregateRequest(
+                symbol="../etc", start="2024-01-01", end="2024-03-31", intervals=["1d"]
+            )
+        )
+
+
+def test_build_aggregate_command_requires_an_interval() -> None:
+    with pytest.raises(ValueError, match="at least one interval"):
+        build_aggregate_command(
+            AggregateRequest(symbol="BTCUSDT", start="2024-01-01", end="2024-03-31")
+        )
+
+
+def test_repair_redownloads_when_the_1m_base_has_gaps() -> None:
+    inventory = [
+        {
+            "symbol": "BTCUSDT",
+            "start_date": "2024-01-01",
+            "end_date": "2024-06-30",
+            "aggregations": [
+                {"interval": "1m", "status": "incomplete", "gaps": 3},
+                {"interval": "1d", "status": "complete", "gaps": 0},
+            ],
+        }
+    ]
+
+    commands, steps = build_repair_commands(RepairRequest(symbol="BTCUSDT"), inventory)
+
+    assert commands[0][3] == "backfill"
+    assert any("re-download 1m" in step for step in steps)
+
+
+def test_repair_reaggregates_and_rebuilds_only_the_broken_intervals() -> None:
+    inventory = [
+        {
+            "symbol": "BTCUSDT",
+            "start_date": "2024-01-01",
+            "end_date": "2024-06-30",
+            "aggregations": [
+                {"interval": "1m", "status": "complete", "gaps": 0},
+                {"interval": "1h", "status": "incomplete", "gaps": 2},
+                {"interval": "1d", "status": "warning", "gaps": 0},
+                {"interval": "1w", "status": "complete", "gaps": 0},
+            ],
+        }
+    ]
+
+    commands, steps = build_repair_commands(RepairRequest(symbol="BTCUSDT"), inventory)
+
+    assert all(cmd[3] != "backfill" for cmd in commands), "1m is intact, do not re-download"
+    aggregate = next(cmd for cmd in commands if cmd[3] == "aggregate")
+    assert _argv_value(aggregate, "--to") == "1h"
+
+    rebuilt = {
+        _argv_value(cmd, "--base-interval") for cmd in commands if cmd[3] == "features"
+    }
+    # The gapped interval and the one missing features; not the healthy 1w.
+    assert rebuilt == {"1h", "1d"}
+    assert len(steps) == 2
+
+
+def test_repair_returns_nothing_for_a_healthy_symbol() -> None:
+    inventory = [
+        {
+            "symbol": "BTCUSDT",
+            "start_date": "2024-01-01",
+            "end_date": "2024-06-30",
+            "aggregations": [{"interval": "1m", "status": "complete", "gaps": 0}],
+        }
+    ]
+
+    commands, steps = build_repair_commands(RepairRequest(symbol="BTCUSDT"), inventory)
+
+    assert commands == []
+    assert steps == []
+
+
+def test_repair_rejects_an_unknown_symbol() -> None:
+    with pytest.raises(ValueError, match="not present in the data inventory"):
+        build_repair_commands(RepairRequest(symbol="NOPEUSDT"), [])
 
 
 def test_delete_symbol_data_removes_feature_and_label_partitions(tmp_path, monkeypatch) -> None:

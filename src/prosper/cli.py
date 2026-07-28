@@ -3,15 +3,22 @@
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
+import polars as pl
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.table import Table
 
 from prosper.binance.rest import BinanceRESTClient
 from prosper.config import get_settings
 from prosper.eval.backtest import run_backtest
-from prosper.eval.predictions import evaluate_available_model_runs, evaluate_predictions
+from prosper.eval.predictions import (
+    collect_evaluation_summaries,
+    evaluate_available_model_runs,
+    evaluate_predictions,
+)
 from prosper.eval.walkforward import eval_walkforward
 from prosper.features.build import build_features
 from prosper.labels.build import build_labels
@@ -849,6 +856,62 @@ def eval_predictions_cmd(
     _run_predictions_evaluation(symbol, model_type, timestamp, interval, root, strict, save_metadata)
 
 
+@eval_app.command("compare")
+def eval_compare_cmd(
+    symbol: str | None = typer.Option(None, "--symbol", help="Optional symbol filter"),
+    interval: str | None = typer.Option(None, "--interval", help="Optional interval filter"),
+    output: Path = typer.Option(None, "--output", "-o", help="Write the table as CSV"),
+    root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
+) -> None:
+    """Rank every evaluated run side by side."""
+    settings = get_settings(data_root=root)
+    rows = collect_evaluation_summaries(symbol=symbol, interval=interval, settings=settings)
+
+    if not rows:
+        console.print("[yellow]No evaluations found. Run `prosper eval predictions` first.[/yellow]")
+        raise typer.Exit(1)
+
+    table = Table(title="Model comparison", header_style="bold")
+    for column in ("#", "Symbol", "Model", "Int.", "Run", "Score", "Acc", "Brier", "ECE"):
+        table.add_column(column)
+    table.add_column("Untrained", justify="right")
+    for column in ("short", "medium", "long"):
+        table.add_column(f"acc {column}", justify="right")
+
+    def fmt(value: Any, digits: int = 3) -> str:
+        return f"{value:.{digits}f}" if isinstance(value, int | float) else "--"
+
+    for rank, row in enumerate(rows, start=1):
+        untrained = int(row.get("untrained_rows") or 0)
+        table.add_row(
+            str(rank),
+            str(row["symbol"]),
+            str(row["model_type"]),
+            str(row["interval"]),
+            str(row["timestamp"]),
+            fmt(row["model_score"], 1),
+            fmt(row["accuracy"]),
+            fmt(row["brier"]),
+            fmt(row["ece"]),
+            f"[red]{untrained}[/red]" if untrained else "0",
+            fmt(row.get("acc_short")),
+            fmt(row.get("acc_medium")),
+            fmt(row.get("acc_long")),
+        )
+
+    console.print(table)
+    if any(int(row.get("untrained_rows") or 0) for row in rows):
+        console.print(
+            "[yellow]Runs with untrained rows are not comparable: those horizons "
+            "produced no forecast and contribute no samples.[/yellow]"
+        )
+
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(rows).write_csv(output)
+        console.print(f"[green][OK][/green] Table written to: {output}")
+
+
 @eval_app.command("batch")
 def eval_batch_cmd(
     symbol: str | None = typer.Option(None, "--symbol", help="Optional symbol filter"),
@@ -886,20 +949,32 @@ def eval_batch_cmd(
 def start_ui(
     port: int = typer.Option(8000, "--port", "-p", help="Port to run the UI server on"),
     host: str = typer.Option("127.0.0.1", "--host", help="Host IP to bind to"),
+    open_browser: bool = typer.Option(
+        True, "--open-browser/--no-open-browser", help="Open the dashboard on startup"
+    ),
 ) -> None:
     """
     Start the Prosper Data Manager Web UI (Dashboard).
     """
     try:
         import uvicorn
-
-        console.print(f"[green]Starting Prosper UI on http://{host}:{port}[/green]")
-        uvicorn.run("prosper.api.server:app", host=host, port=port, reload=False)
     except ImportError:
         console.print(
             "[red]Uvicorn is not installed. Please install it with: poetry add uvicorn[/red]"
         )
         raise typer.Exit(1)
+
+    url = f"http://{host}:{port}"
+    if open_browser:
+        # Launching a browser is a property of this command, not of the ASGI
+        # app, which also runs under tests and process managers.
+        import threading
+        import webbrowser
+
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+
+    console.print(f"[green]Starting Prosper UI on {url}[/green]")
+    uvicorn.run("prosper.api.server:app", host=host, port=port, reload=False)
 
 
 if __name__ == "__main__":

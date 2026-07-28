@@ -5,13 +5,13 @@ import json
 import pytest
 from fastapi import HTTPException
 from prosper.api.server import (
-    AIEvaluateRequest,
+    EvalRequest,
     TrainRequest,
     delete_ai_model,
-    evaluate_model_predictions,
     get_ai_models,
     get_ai_predictions,
     get_feature_importances,
+    run_evaluation,
     run_training,
     runner,
 )
@@ -177,8 +177,8 @@ def test_evaluate_model_predictions_builds_safe_command(monkeypatch) -> None:
 
     monkeypatch.setattr(runner, "start", fake_start)
 
-    result = evaluate_model_predictions(
-        AIEvaluateRequest(
+    result = run_evaluation(
+        EvalRequest(
             symbol="BTCUSDT",
             model_type="xgboost",
             timestamp="20240501123000",

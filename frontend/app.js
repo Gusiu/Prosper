@@ -161,36 +161,22 @@ function saveResearchFlags() {
 });
 
 /**
- * Build research flag string to append to a CLI command.
- * Only appends flags relevant to the given command type.
- * commandType: 'pipeline' | 'predict' | 'eval' | 'generic'
+ * Research flags as a structured object. The server turns these into CLI
+ * flags; the browser no longer assembles command strings.
  */
-function getResearchFlags(commandType) {
-  if (!researchMode) return "";
+function getResearchFlags() {
+  if (!researchMode) {
+    return { strict: false, deterministic: false, seed: null, save_metadata: false };
+  }
   saveResearchFlags();
 
-  const strict = document.getElementById("research-strict").checked;
-  const deterministic = document.getElementById(
-    "research-deterministic",
-  ).checked;
   const seed = document.getElementById("research-seed").value;
-  const metadata = document.getElementById("research-metadata").checked;
-
-  let flags = "";
-
-  // --strict applies to most commands
-  if (strict) flags += " --strict";
-
-  // --deterministic and --seed only for predict commands
-  if (commandType === "predict") {
-    if (deterministic) flags += " --deterministic";
-    if (seed) flags += ` --seed ${seed}`;
-  }
-
-  // --save-metadata applies to all artifact-producing commands
-  if (metadata) flags += " --save-metadata";
-
-  return flags;
+  return {
+    strict: document.getElementById("research-strict").checked,
+    deterministic: document.getElementById("research-deterministic").checked,
+    seed: seed === "" ? null : Number(seed),
+    save_metadata: document.getElementById("research-metadata").checked,
+  };
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -599,86 +585,14 @@ function fixQuality(symbol) {
   const item = globalInventory.find((i) => i.symbol === symbol);
   if (!item) return alert("Symbol not found in inventory");
 
-  const quality = item.quality;
-  const rFlags = getResearchFlags("pipeline");
-  let cmds = [];
-  const sMonth = item.start_date.substring(0, 7);
-  const eMonth = item.end_date.substring(0, 7);
-
-  // 1. Fix gaps in 1m data (re-backfill the entire range)
-  const agg1m = item.aggregations.find((a) => a.interval === "1m");
-  if (agg1m && agg1m.gaps > 0) {
-    cmds.push(
-      `python -m prosper.cli backfill --symbol ${symbol} --start ${sMonth} --end ${eMonth} --root ./data${rFlags}`,
-    );
-  }
-
-  // 2. Fix gaps in other intervals (re-aggregate from 1m)
-  const gappedOther = item.aggregations
-    .filter((a) => a.interval !== "1m" && a.gaps > 0)
-    .map((a) => a.interval);
-
-  if (gappedOther.length > 0) {
-    const toArg = gappedOther.join(",");
-    cmds.push(
-      `python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${sMonth} --end ${eMonth} --to ${toArg} --root ./data${rFlags}`,
-    );
-  }
-
-  // 3. Fix broken parquet data (empty folders — re-aggregate)
-  const brokenIntervals = item.aggregations
-    .filter(
-      (a) =>
-        a.status === "incomplete" && a.interval !== "1m" && (a.gaps || 0) === 0,
-    )
-    .map((a) => a.interval);
-
-  if (brokenIntervals.length > 0) {
-    const toArg = brokenIntervals.join(",");
-    cmds.push(
-      `python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${sMonth} --end ${eMonth} --to ${toArg} --root ./data${rFlags}`,
-    );
-  }
-
-  // 4. Fix missing features/labels
-  const needsFeatures = new Set();
-
-  // From per-interval status
-  item.aggregations.forEach((a) => {
-    if (a.status === "warning") needsFeatures.add(a.interval);
+  // The server derives the repair chain from the inventory. This used to be
+  // reconstructed here by regex-matching the human-readable quality message,
+  // which silently stopped working whenever that wording changed.
+  pipelineQueue.push({
+    name: `Fix Quality [${symbol}]`,
+    endpoint: "/api/pipeline/repair",
+    body: { symbol, flags: getResearchFlags() },
   });
-
-  // From quality message
-  if (quality.message && quality.message.includes("Features/Labels missing")) {
-    const match = quality.message.match(/for: (.+)/);
-    if (match) {
-      match[1]
-        .split(",")
-        .map((s) => s.trim())
-        .forEach((i) => needsFeatures.add(i));
-    }
-  }
-
-  for (const interval of needsFeatures) {
-    cmds.push(
-      `python -m prosper.cli features build --symbol ${symbol} --base-interval ${interval} --start ${item.start_date} --end ${item.end_date} --root ./data${rFlags}`,
-    );
-    cmds.push(
-      `python -m prosper.cli labels build --symbol ${symbol} --base-interval ${interval} --root ./data${rFlags}`,
-    );
-  }
-
-  if (cmds.length === 0) {
-    return alert(
-      `No automatic fix available for: ${quality.label} — ${quality.message}`,
-    );
-  }
-
-  const fullCmd = cmds.join(" && ");
-  const taskName = `Fix Quality [${symbol}]`;
-
-  console.log("Fix command:", fullCmd);
-  pipelineQueue.push({ name: taskName, cmd: fullCmd });
   updateQueueUI();
   processQueue();
 }
@@ -835,16 +749,11 @@ async function runPredictionEvaluation() {
   const status = document.getElementById("eval-run-status");
   if (status) status.innerText = `Starting evaluation for ${run.symbol} ${run.model_type}...`;
 
-  const metadata = document.getElementById("research-metadata")?.checked || false;
-  const strict = document.getElementById("research-strict")?.checked || false;
   try {
-    const res = await fetch("/api/ai/evaluate", {
+    const res = await fetch("/api/eval/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...run,
-        params: { strict, save_metadata: metadata },
-      }),
+      body: JSON.stringify({ ...run, flags: getResearchFlags() }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -1578,32 +1487,30 @@ function getInlineAggConfig(symbol, start, end) {
   const aggs = getCheckedAggregations(symbol);
   if (aggs.length === 0) return { error: "Select at least one aggregation" };
 
-  const sMonth = start.substring(0, 7);
-  const eMonth = end.substring(0, 7);
-  const toArg = aggs.join(",");
-  const rFlags = getResearchFlags("pipeline");
-
-  let cmd = `python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${sMonth} --end ${eMonth} --to ${toArg} --root ./data${rFlags}`;
-
-  const allIntervals = ["1m", ...aggs];
-  for (const interval of allIntervals) {
-    // Use full dates for features, month format for aggregate
-    cmd += ` && python -m prosper.cli features build --symbol ${symbol} --base-interval ${interval} --start ${start} --end ${end} --root ./data${rFlags}`;
-    cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --base-interval ${interval} --root ./data${rFlags}`;
-  }
-
-  const taskName = `Agg & Auto-Features [${symbol}] to [${aggs.join(",")}]`;
-  console.log("Full Generated Command:", cmd);
-  return { cmd, taskName };
+  return {
+    taskName: `Agg & Auto-Features [${symbol}] to [${aggs.join(",")}]`,
+    endpoint: "/api/pipeline/aggregate",
+    body: {
+      symbol,
+      start,
+      end,
+      intervals: aggs,
+      flags: getResearchFlags(),
+    },
+  };
 }
 
 function queueInlineAggregation(symbol, start, end) {
-  const { cmd, taskName, error } = getInlineAggConfig(symbol, start, end);
+  const { taskName, endpoint, body, error } = getInlineAggConfig(
+    symbol,
+    start,
+    end,
+  );
   if (error) return alert(error);
   if (pipelineQueue.some((i) => i.name === taskName)) {
     if (!confirm(`${taskName} is already in the queue. Add again?`)) return;
   }
-  pipelineQueue.push({ name: taskName, cmd });
+  pipelineQueue.push({ name: taskName, endpoint, body });
   document.getElementById(`agg-panel-${symbol}`).style.display = "none";
   updateQueueUI();
   const taskTxt = document.getElementById("task-status");
@@ -1613,29 +1520,17 @@ function queueInlineAggregation(symbol, start, end) {
 }
 
 function runInlineAggregation(symbol, start, end) {
-  const { cmd, taskName, error } = getInlineAggConfig(symbol, start, end);
+  const { taskName, endpoint, body, error } = getInlineAggConfig(
+    symbol,
+    start,
+    end,
+  );
   if (error) return alert(error);
   document.getElementById(`agg-panel-${symbol}`).style.display = "none";
-  pipelineQueue.unshift({ name: taskName, cmd });
+  pipelineQueue.unshift({ name: taskName, endpoint, body });
   processQueue();
 }
 
-function fmtMonth(val, isEnd) {
-  if (!val) return "";
-  // If we already have a full date (YYYY-MM-DD), use it or truncate to month if needed
-  if (val.length === 10) {
-    if (isEnd) return val; // Use selected end day
-    return val;
-  }
-
-  let base = val + "-01";
-  if (isEnd) {
-    let [y, m] = val.split("-");
-    const lastDay = new Date(Number(y), Number(m), 0).getDate();
-    base = `${y}-${m}-${String(lastDay).padStart(2, "0")}`;
-  }
-  return base;
-}
 
 function addToQueue() {
   const base = document.getElementById("base-coin").value.trim().toUpperCase();
@@ -1653,7 +1548,9 @@ function addToQueue() {
   }
 
   const symbol = base + quote;
-  const s = document.getElementById("pipe-start").value.substring(0, 7); // CLI expects YYYY-MM
+  // Month-precision copies, used only for the queue label. The server
+  // truncates the full dates itself for the commands that need YYYY-MM.
+  const s = document.getElementById("pipe-start").value.substring(0, 7);
   const e = document.getElementById("pipe-end").value.substring(0, 7);
   if (!s || !e) {
     alert("Please select both start and end dates.");
@@ -1687,27 +1584,6 @@ function addToQueue() {
       aggs.push(a);
   });
 
-  const rFlags = getResearchFlags("pipeline");
-  let cmd = `python -m prosper.cli backfill --symbol ${symbol} --start ${s} --end ${e} --root ./data${rFlags}`;
-
-  if (aggs.length > 0) {
-    const toArg = aggs.join(",");
-    cmd += ` && python -m prosper.cli aggregate --symbol ${symbol} --from 1m --start ${s} --end ${e} --to ${toArg} --root ./data${rFlags}`;
-
-    // Automatically build features for ALL selected intervals + 1m
-    const allIntervals = ["1m", ...aggs];
-    for (const interval of allIntervals) {
-      cmd += ` && python -m prosper.cli features build --symbol ${symbol} --base-interval ${interval} --start ${sFull} --end ${eFull} --root ./data${rFlags}`;
-      cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --base-interval ${interval} --root ./data${rFlags}`;
-    }
-  } else {
-    // Only 1m if no aggregations selected
-    cmd += ` && python -m prosper.cli features build --symbol ${symbol} --base-interval 1m --start ${sFull} --end ${eFull} --root ./data${rFlags}`;
-    cmd += ` && python -m prosper.cli labels build --symbol ${symbol} --base-interval 1m --root ./data${rFlags}`;
-  }
-
-  console.log("Pipeline command generated:", cmd);
-
   const aggNamePart = aggs.length > 0 ? ` + [${aggs.join(",")}]` : "";
   const taskName = `Pipeline [${symbol}] ${s} to ${e} (Auto-Features)${aggNamePart}`;
 
@@ -1715,7 +1591,17 @@ function addToQueue() {
     if (!confirm(`${taskName} is already in the queue. Add again?`)) return;
   }
 
-  pipelineQueue.push({ name: taskName, cmd: cmd });
+  pipelineQueue.push({
+    name: taskName,
+    endpoint: "/api/pipeline/run",
+    body: {
+      symbol,
+      start: sFull,
+      end: eFull,
+      intervals: aggs,
+      flags: getResearchFlags(),
+    },
+  });
 
   // Clear input for next
   document.getElementById("base-coin").value = "";
@@ -1762,35 +1648,38 @@ async function processQueue() {
   term.scrollTop = term.scrollHeight;
 
   try {
-    const res = await fetch("/api/task/run", {
+    // Queue items carry an endpoint and a JSON body. The browser no longer
+    // assembles CLI strings for the server to parse back apart.
+    const res = await fetch(item.endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command: item.cmd }),
+      body: JSON.stringify(item.body),
     });
 
     if (!res.ok) {
-      const data = await res.json();
-      alert("Error: " + data.detail);
+      const data = await res.json().catch(() => ({}));
+      alert(`Task failed to start: ${data.detail || res.statusText}`);
       isPipelineRunning = false;
-    } else {
-      lastLogIdx = 0;
-      const progText = document.getElementById("progress-text");
-      const symMatch = item.name.match(/\[([A-Z0-9]+)\]/);
-      const symName = symMatch
-        ? symMatch[1]
-        : item.name.split(" ")[0] || "Task";
-
-      if (item.name.toLowerCase().includes("pipeline")) {
-        progText.innerText = `Full Pipeline: ${symName}...`;
-      } else if (item.name.toLowerCase().includes("agg")) {
-        progText.innerText = `Aggregating: ${symName}...`;
-      } else {
-        progText.innerText = `Processing: ${symName}...`;
-      }
-      updateProgress({ visible: true, percent: 0, label: progText.innerText });
+      processQueue();
+      return;
     }
+
+    lastLogIdx = 0;
+    const progText = document.getElementById("progress-text");
+    const symMatch = item.name.match(/\[([A-Z0-9]+)\]/);
+    const symName = symMatch ? symMatch[1] : item.name.split(" ")[0] || "Task";
+
+    if (item.name.toLowerCase().includes("pipeline")) {
+      progText.innerText = `Full Pipeline: ${symName}...`;
+    } else if (item.name.toLowerCase().includes("agg")) {
+      progText.innerText = `Aggregating: ${symName}...`;
+    } else {
+      progText.innerText = `Processing: ${symName}...`;
+    }
+    updateProgress({ visible: true, percent: 0, label: progText.innerText });
   } catch (e) {
-    alert("Failed to execute command.");
+    console.error(e);
+    alert("Failed to reach the task API.");
     isPipelineRunning = false;
   }
 }
@@ -1802,26 +1691,19 @@ function runTrain() {
 
   const model = document.getElementById("model-select").value;
   const interval = document.getElementById("train-interval")?.value || "1d";
-  const s = document.getElementById("train-start").value;
-  const e = document.getElementById("train-end").value;
-  const ep = document.getElementById("train-epochs").value;
-
-  const rFlags = getResearchFlags("predict");
-  const intervalFlag = ` --interval ${interval}`;
-  let cmd = "";
-  if (model === "ml") {
-    cmd = `python -m prosper.cli predict ml --symbol ${symbol} --start ${s} --end ${e}${intervalFlag} --root ./data${rFlags}`;
-  } else if (model === "gru") {
-    cmd = `python -m prosper.cli predict gru --symbol ${symbol} --start ${s} --end ${e}${intervalFlag} --epochs ${ep} --root ./data${rFlags}`;
-  } else if (model === "xgboost") {
-    cmd = `python -m prosper.cli predict xgboost --symbol ${symbol} --start ${s} --end ${e}${intervalFlag} --root ./data${rFlags}`;
-  } else {
-    cmd = `python -m prosper.cli predict ${model} --symbol ${symbol} --start ${s} --end ${e}${intervalFlag} --max-epochs ${ep} --root ./data${rFlags}`;
-  }
 
   pipelineQueue.push({
     name: `Train ${model.toUpperCase()} on ${symbol}`,
-    cmd: cmd,
+    endpoint: "/api/train/run",
+    body: {
+      symbol,
+      model_type: model,
+      interval,
+      start: document.getElementById("train-start").value,
+      end: document.getElementById("train-end").value,
+      epochs: Number(document.getElementById("train-epochs").value) || 5,
+      flags: getResearchFlags(),
+    },
   });
   updateQueueUI();
   processQueue();
@@ -2558,11 +2440,6 @@ function setSubchartCrosshair(chart, series, value, time) {
   }
 }
 
-function clearSubchartCrosshair(chart) {
-  if (chart && typeof chart.clearCrosshairPosition === "function") {
-    chart.clearCrosshairPosition();
-  }
-}
 
 function updateAnalysisLegend(param) {
   const legend = document.getElementById("chart-legend");

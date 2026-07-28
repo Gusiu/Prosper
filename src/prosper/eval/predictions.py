@@ -1075,3 +1075,64 @@ def evaluate_available_model_runs(
     _write_json(status_path, payload)
     payload["status_path"] = str(status_path)
     return payload
+
+
+def collect_evaluation_summaries(
+    symbol: str | None = None,
+    interval: str | None = None,
+    settings: Settings | None = None,
+) -> list[dict[str, Any]]:
+    """Read every evaluation's metrics.json into a flat comparison table.
+
+    Sorted by composite score, best first. `untrained_rows` is carried through
+    deliberately: a horizon the model could not train contributes no samples,
+    so a score is only comparable once you know that column is zero.
+    """
+    settings = settings or get_settings()
+    base = settings.reports_dir / "evaluations"
+    if not base.exists():
+        return []
+
+    symbol_filter = symbol.upper() if symbol else None
+    rows: list[dict[str, Any]] = []
+    for symbol_dir in sorted(base.iterdir()):
+        if not symbol_dir.is_dir() or symbol_dir.name.startswith("."):
+            continue
+        if symbol_filter and symbol_dir.name.upper() != symbol_filter:
+            continue
+        for run_dir in sorted(symbol_dir.iterdir()):
+            metrics_path = run_dir / "metrics.json"
+            if not metrics_path.is_file():
+                continue
+            try:
+                metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if interval and metrics.get("interval") != interval:
+                continue
+
+            overall = metrics.get("overall", {})
+            by_horizon = metrics.get("by_horizon", {})
+            rows.append(
+                {
+                    "symbol": metrics.get("symbol", symbol_dir.name),
+                    "model_type": metrics.get("model_type"),
+                    "interval": metrics.get("interval"),
+                    "timestamp": metrics.get("timestamp"),
+                    "samples": overall.get("samples"),
+                    "untrained_rows": overall.get("untrained_rows", 0),
+                    "model_score": overall.get("model_score"),
+                    "accuracy": overall.get("accuracy"),
+                    "brier": overall.get("brier"),
+                    "nll": overall.get("nll"),
+                    "ece": overall.get("ece"),
+                    "entropy": overall.get("entropy"),
+                    **{
+                        f"acc_{name}": by_horizon.get(name, {}).get("accuracy")
+                        for name in ("short", "medium", "long")
+                    },
+                }
+            )
+
+    rows.sort(key=lambda row: (row["model_score"] is not None, row["model_score"] or 0.0), reverse=True)
+    return rows

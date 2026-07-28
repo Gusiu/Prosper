@@ -30,6 +30,8 @@ pytest = "^7.4.0"
 pytest-cov = "^4.1.0"
 ruff = "^0.1.0"
 mypy = "^1.7.0"
+types-PyYAML = "^6.0"
+types-requests = "^2.32"
 
 [tool.poetry.scripts]
 prosper = "prosper.cli:app"
@@ -51,3 +53,18 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/prosper"]
+# Third-party analytics and ML packages ship without type information; their
+# absence is not a defect in this project.
+[[tool.mypy.overrides]]
+module = [
+    "yaml",
+    "pytorch_forecasting.*",
+    "lightning.*",
+    "xgboost.*",
+    "sklearn.*",
+]
+ignore_missing_imports = true

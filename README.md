@@ -69,31 +69,24 @@ Notes:
 
 ## 🖥️ Starting the API & Web UI (Data Manager)
 
-Start the API server (uvicorn):
-
-```powershell
-# using poetry
-poetry run uvicorn src.prosper.api.server:app --reload --host 127.0.0.1 --port 8000
-
-# or from a venv where the package is installed
-uvicorn src.prosper.api.server:app --reload --host 127.0.0.1 --port 8000
-```
-
-Frontend (static SPA) can be opened directly in the browser or served with a tiny static server. Quick options:
-
-```powershell
-# open file directly (development only)
-start frontend\index.html
-
-# or serve via a simple HTTP server and open http://127.0.0.1:8001
-python -m http.server --directory frontend 8001
-```
-
-Alternatively run the packaged UI entry if available:
+The simplest route opens the dashboard for you:
 
 ```powershell
 poetry run prosper ui
 ```
+
+Add `--no-open-browser` to keep it headless, or `--port` to move it off 8000.
+Under the hood it serves the ASGI app, which you can also run directly:
+
+```powershell
+poetry run uvicorn prosper.api.server:app --host 127.0.0.1 --port 8000
+```
+
+Then open <http://127.0.0.1:8000>.
+
+> The SPA must be served by the API — opening `frontend/index.html` from disk
+> leaves every `/api/...` call pointing at the wrong origin, so the dashboard
+> loads but stays empty.
 
 ---
 
@@ -110,6 +103,29 @@ poetry run prosper backfill --symbol BTCUSDT --start 2020-01 --end 2020-01 --wor
 # or in a venv with editable install
 prosper backfill --symbol BTCUSDT --start 2020-01 --end 2020-01 --workers 2
 ```
+
+### Predict, evaluate, compare
+
+A prediction run is identified by `{model}_{interval}_{timestamp}`, and every
+artifact derived from it — action windows, walk-forward metrics, backtests —
+is stored under that identity. Nothing shares a "latest" directory, so a result
+can always be traced back to the model that produced it.
+
+```powershell
+prosper predict xgboost --symbol BTCUSDT --start 2020-09-01 --end 2025-06-30 --interval 1d
+prosper eval predictions --symbol BTCUSDT --model-type xgboost --timestamp 20260728224925
+prosper eval compare
+```
+
+`eval compare` ranks every evaluated run side by side. Check the `Untrained`
+column first: a nonzero value means that horizon had no trainable data, so its
+metrics cover fewer samples and the scores are not directly comparable.
+
+Horizons (`short` 28d, `medium` 182d, `long` 365d) are **calendar spans**. They
+are converted to bar counts per interval, so `long` means one year whether the
+run is 1d or 1h. The training window must be wider than the longest horizon;
+`--train-window-days` defaults to 730 and the run fails loudly rather than
+emitting a placeholder if you set it too low.
 
 ### Research Mode Flags
 
@@ -136,9 +152,21 @@ data/
 │       ├── klines/        # Processed OHLCV data partitioned by interval
 │       │   ├── 1m/symbol={SYMBOL}/year=YYYY/month=MM/part.parquet
 │       │   └── 1d/symbol={SYMBOL}/year=YYYY/month=MM/part.parquet
+│       ├── features/      # Technical indicators per interval
 │       └── labels/        # Ground-truth targets for ML
-└── reports/               # QA reports, predictions, and recommendations
+└── reports/
+    ├── predictions/{SYMBOL}/{model}_{interval}_{timestamp}/predictions.jsonl
+    ├── evaluations/{SYMBOL}/{model}_{interval}_{timestamp}/
+    │       metrics.json, calibration.json, predictions_quality.parquet,
+    │       recommendations.json, worst_predictions.csv
+    ├── recommendations/{SYMBOL}/{run_slug}/{YYYY-MM}.json
+    ├── eval/{SYMBOL}/{run_slug}/walkforward_summary.json
+    ├── backtests/{SYMBOL}/{run_slug}/backtest.json
+    └── qa/{SYMBOL}/{interval}/{YYYY-MM}.json
 ```
+
+`{run_slug}` is the `{model}_{interval}_{timestamp}` of the prediction run the
+artifact was derived from.
 
 ---
 
