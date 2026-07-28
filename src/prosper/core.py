@@ -9,7 +9,7 @@ import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -196,6 +196,9 @@ class DataManager:
             size_bytes = self._symbol_size(symbol)
             start_date, end_date, present, gaps = self._symbol_date_range(symbol)
 
+            # Get base 1m partitions for lagging detection
+            base_partitions = self._get_base_partitions(symbol)
+
             # Detailed check for each interval
             detailed_aggs = []
             for interval in raw_intervals:
@@ -217,6 +220,12 @@ class DataManager:
                 elif interval_gaps > 0:
                     status = "incomplete"
                     msg = f"{interval_gaps} gap(s) in data continuity"
+                elif interval != "1m":
+                    # Check if this interval is lagging behind 1m data
+                    missing_partitions = self._get_missing_partitions(symbol, interval, base_partitions)
+                    if missing_partitions:
+                        status = "incomplete"
+                        msg = f"Outdated data (missing {len(missing_partitions)} month(s) compared to 1m)"
                 elif not self._has_valid_features(f_path):
                     status = "warning"
                     msg = "Missing or Outdated Features"
@@ -344,11 +353,11 @@ class DataManager:
             expected = (ey - sy) * 12 + (em - sm + 1)
             return max(0, expected - len(set(partitions)))
 
-    def _symbol_date_range(self, symbol: str) -> tuple[str, str, int, int]:
-        """Returns (start_date, end_date, months_present, months_gap_count)."""
+    def _get_base_partitions(self, symbol: str) -> list[tuple[int, int]]:
+        """Returns sorted list of (year, month) partitions present in 1m base data."""
         klines_1m_path = self.settings.processed_binance_spot_klines_dir / "1m" / f"symbol={symbol}"
         if not klines_1m_path.exists():
-            return ("N/A", "N/A", 0, 0)
+            return []
 
         partitions: list[tuple[int, int]] = []
         for year_dir in klines_1m_path.glob("year=*"):
@@ -365,11 +374,76 @@ class DataManager:
                     continue
                 if self._has_parquet_data(month_dir):
                     partitions.append((year, month))
+        return sorted(partitions)
 
+    def _get_missing_partitions(self, symbol: str, interval: str, base_partitions: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """
+        Check if an interval is missing any partitions that are present in the base 1m data.
+        Returns a list of missing (year, month) partitions.
+        """
+        base_path = self.settings.processed_binance_spot_klines_dir / interval / f"symbol={symbol}"
+        if not base_path.exists():
+            return base_partitions
+
+        if interval == "1w":
+            # Collect all weeks in 1w
+            weeks: set[tuple[int, int]] = set()
+            for year_dir in base_path.glob("year=*"):
+                if not year_dir.is_dir():
+                    continue
+                try:
+                    yr = int(year_dir.name.split("=", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                for week_dir in year_dir.glob("week=*"):
+                    try:
+                        wk = int(week_dir.name.split("=", 1)[1])
+                    except (ValueError, IndexError):
+                        continue
+                    if self._has_parquet_data(week_dir):
+                        weeks.add((yr, wk))
+
+            # Check which base months are not covered by any 1w weeks
+            missing = []
+            for yr, mo in base_partitions:
+                start_date = date(yr, mo, 1)
+                end_date = date(yr, mo, calendar.monthrange(yr, mo)[1])
+                month_weeks = set()
+                curr = start_date
+                while curr <= end_date:
+                    iso_yr, iso_wk, _ = curr.isocalendar()
+                    month_weeks.add((iso_yr, iso_wk))
+                    curr += timedelta(days=1)
+
+                if not month_weeks.intersection(weeks):
+                    missing.append((yr, mo))
+            return missing
+        else:
+            # Collect all months in interval
+            months: set[tuple[int, int]] = set()
+            for year_dir in base_path.glob("year=*"):
+                if not year_dir.is_dir():
+                    continue
+                try:
+                    yr = int(year_dir.name.split("=", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                for month_dir in year_dir.glob("month=*"):
+                    try:
+                        mo = int(month_dir.name.split("=", 1)[1])
+                    except (ValueError, IndexError):
+                        continue
+                    if self._has_parquet_data(month_dir):
+                        months.add((yr, mo))
+
+            return [p for p in base_partitions if p not in months]
+
+    def _symbol_date_range(self, symbol: str) -> tuple[str, str, int, int]:
+        """Returns (start_date, end_date, months_present, months_gap_count)."""
+        partitions = self._get_base_partitions(symbol)
         if not partitions:
             return ("N/A", "N/A", 0, 0)
 
-        partitions.sort()
         start_year, start_month = partitions[0]
         end_year, end_month = partitions[-1]
 
@@ -399,12 +473,16 @@ class DataManager:
                 f"Data continuity gaps: {gap_details}",
             )
 
-        # Collect all intervals to verify Features/Labels
-        # We MUST check 1m as it is the foundation
-        check_intervals = set([a["interval"] for a in aggregations])
-        check_intervals.add("1m")
+        # 2. Check for lagging intervals (outdated compared to 1m)
+        lagging = [a["interval"] for a in aggregations if a["status"] == "incomplete" and "Outdated data" in a.get("message", "")]
+        if lagging:
+            return InventoryQuality(
+                "incomplete",
+                "Outdated Data",
+                f"Intervals lagging behind 1m: {', '.join(sorted(lagging))}",
+            )
 
-        # 2. Check if any aggregation is broken (missing parquet)
+        # 3. Check if any aggregation is broken (missing parquet)
         incomplete = [a["interval"] for a in aggregations if a["status"] == "incomplete"]
         if incomplete:
             return InventoryQuality(
@@ -413,7 +491,7 @@ class DataManager:
                 f"Intervals with missing parquet data: {', '.join(incomplete)}",
             )
 
-        # 3. Check for warnings (Features/Labels)
+        # 4. Check for warnings (Features/Labels)
         warnings = [a["interval"] for a in aggregations if a["status"] == "warning"]
         if warnings:
             return InventoryQuality(

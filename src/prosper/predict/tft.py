@@ -202,7 +202,7 @@ def predict_tft(
                         min_prediction_length=1,
                         max_prediction_length=1,
                         time_varying_unknown_reals=feature_cols,
-                        target_normalizer=NaNLabelEncoder(),
+                        target_normalizer=NaNLabelEncoder(add_nan=True),
                         add_relative_time_idx=True,
                         add_target_scales=False,
                         add_encoder_length=True,
@@ -278,25 +278,40 @@ def predict_tft(
                     inf_loader = ds_inf.to_dataloader(train=False, batch_size=1, num_workers=0)
 
                     raw_preds = tft_h.predict(inf_loader, mode="raw", return_x=False)
+                    import torch
+
+                    # Handle various output formats from pytorch-forecasting
                     if isinstance(raw_preds, dict):
                         logits = raw_preds["prediction"][0, 0].cpu().numpy()
                     elif isinstance(raw_preds, tuple):
-                        logits = (
-                            raw_preds[0]["prediction"][0, 0].cpu().numpy()
-                            if isinstance(raw_preds[0], dict)
-                            else raw_preds[0].prediction[0, 0].cpu().numpy()
-                        )
+                        if isinstance(raw_preds[0], dict):
+                            logits = raw_preds[0]["prediction"][0, 0].cpu().numpy()
+                        else:
+                            logits = raw_preds[0][0, 0].cpu().numpy() if isinstance(raw_preds[0], torch.Tensor) else raw_preds[0].prediction[0, 0].cpu().numpy()
                     elif hasattr(raw_preds, "output"):
                         logits = raw_preds.output.prediction[0, 0].cpu().numpy()
                     elif hasattr(raw_preds, "prediction"):
                         logits = raw_preds.prediction[0, 0].cpu().numpy()
-                    else:
-                        # Fallback: raw_preds is a plain Tensor
-                        import torch
-                        if isinstance(raw_preds, torch.Tensor):
+                    elif isinstance(raw_preds, torch.Tensor):
+                        # Handle plain tensor - ensure correct shape
+                        if raw_preds.ndim == 3:
                             logits = raw_preds[0, 0].cpu().numpy()
+                        elif raw_preds.ndim == 2:
+                            logits = raw_preds[0].cpu().numpy()
                         else:
-                            logits = np.array(raw_preds)[0, 0]
+                            logits = raw_preds.cpu().numpy()
+                    else:
+                        # Last resort fallback
+                        logits = np.array(raw_preds)
+                        if logits.ndim == 3:
+                            logits = logits[0, 0]
+                        elif logits.ndim == 2:
+                            logits = logits[0]
+
+                    # Ensure logits is 1D array of class probabilities
+                    if logits.ndim > 1:
+                        logits = logits.flatten()
+
                     probs = np.exp(logits) / np.exp(logits).sum()
                     p_short, p_flat, p_long = float(probs[0]), float(probs[1]), float(probs[2])
                 except Exception as e:

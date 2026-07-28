@@ -22,14 +22,6 @@ from prosper.storage.predictions import write_predictions_jsonl, write_versioned
 from prosper.utils.time import parse_date
 
 
-def _depth_bin(abs_pct: float) -> int:
-    edges = [1, 2, 3, 5, 8, 13, 21, 34]
-    for i, e in enumerate(edges):
-        if abs_pct < e:
-            return i
-    return len(edges)
-
-
 # ── dataset ──────────────────────────────────────────────────────────────────
 class SequenceDataset(Dataset):
     """Sliding-window sequences of feature rows with direction target."""

@@ -6,14 +6,14 @@ import pytest
 from fastapi import HTTPException
 from prosper.api.server import (
     AIEvaluateRequest,
-    AITrainRequest,
+    TrainRequest,
     delete_ai_model,
     evaluate_model_predictions,
     get_ai_models,
     get_ai_predictions,
     get_feature_importances,
+    run_training,
     runner,
-    train_model,
 )
 from prosper.config import Settings
 from prosper.storage.layout import (
@@ -143,16 +143,16 @@ def test_get_feature_importances_returns_json(tmp_path, monkeypatch) -> None:
     assert payload["short"]["feat_a"] == 0.8
 
 
-def test_train_model_includes_interval_in_command(monkeypatch) -> None:
-    started: list[str] = []
+def test_run_training_includes_interval_in_command(monkeypatch) -> None:
+    started: list[list[list[str]]] = []
 
     def fake_start(cmd: str, commands: list[list[str]]) -> None:
-        started.append(cmd)
+        started.append(commands)
 
     monkeypatch.setattr(runner, "start", fake_start)
 
-    result = train_model(
-        AITrainRequest(
+    result = run_training(
+        TrainRequest(
             symbol="BTCUSDT",
             model_type="ml",
             start="2024-01-01",
@@ -163,7 +163,9 @@ def test_train_model_includes_interval_in_command(monkeypatch) -> None:
 
     assert result["status"] == "started"
     assert len(started) == 1
-    assert "--interval 1h" in started[0]
+    argv = started[0][0]
+    assert argv[:5] == ["python", "-m", "prosper.cli", "predict", "ml"]
+    assert argv[argv.index("--interval") + 1] == "1h"
 
 
 def test_evaluate_model_predictions_builds_safe_command(monkeypatch) -> None:

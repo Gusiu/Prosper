@@ -1,4 +1,4 @@
-import datetime
+﻿import datetime
 import json
 import re
 import shlex
@@ -9,23 +9,277 @@ import time
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from prosper.config import get_settings
 from prosper.core import DataManager
 from prosper.storage.layout import (
-    get_evaluation_run_dir,
     get_prediction_report_path,
     get_versioned_prediction_file,
     parse_evaluation_folder,
     parse_versioned_prediction_folder,
+    resolve_evaluation_run_dir,
     resolve_versioned_prediction_dir,
 )
+
+# ============================================================
+# NEW SAFE PYDANTIC MODELS (Phase 1.1 - REST API Refactor)
+# Frontend sends structured JSON instead of CLI command strings.
+# ============================================================
+
+class ResearchFlags(BaseModel):
+    """Research mode flags for reproducibility."""
+    strict: bool = False
+    deterministic: bool = False
+    seed: int | None = 42
+    save_metadata: bool = False
+
+
+class PipelineRequest(BaseModel):
+    """Safe structured request for data pipeline operations."""
+    symbol: str
+    start: str
+    end: str
+    intervals: list[str] = Field(default_factory=list)
+    flags: ResearchFlags = Field(default_factory=ResearchFlags)
+
+
+class TrainRequest(BaseModel):
+    """Safe structured request for model training."""
+    symbol: str
+    model_type: Literal["ml", "xgboost", "gru", "tft", "baseline"] = "xgboost"
+    interval: str = "1d"
+    start: str
+    end: str
+    epochs: int = 5
+    params: dict[str, Any] = Field(default_factory=dict)
+    flags: ResearchFlags = Field(default_factory=ResearchFlags)
+
+
+class EvalRequest(BaseModel):
+    """Safe structured request for prediction evaluation."""
+    symbol: str
+    model_type: str
+    timestamp: str
+    interval: str = "1d"
+    flags: ResearchFlags = Field(default_factory=ResearchFlags)
+
+
+class BatchEvalRequest(BaseModel):
+    """Safe structured request for batch evaluation."""
+    symbol: str | None = None
+    model_type: str | None = None
+    interval: str | None = None
+    limit: int | None = None
+    flags: ResearchFlags = Field(default_factory=ResearchFlags)
+
+
+# ============================================================
+# SAFE COMMAND BUILDERS
+# These functions build CLI command lists from structured data,
+# eliminating the need for the frontend to construct command strings.
+# ============================================================
+
+def _build_research_flags(flags: ResearchFlags, command_type: str = "generic") -> list[str]:
+    """Build CLI research flags from structured ResearchFlags object."""
+    result: list[str] = []
+    if flags.strict:
+        result.append("--strict")
+    if command_type == "predict":
+        if flags.deterministic:
+            result.append("--deterministic")
+        if flags.seed is not None:
+            result.extend(["--seed", str(flags.seed)])
+    if flags.save_metadata:
+        result.append("--save-metadata")
+    return result
+
+
+def build_pipeline_command(req: PipelineRequest) -> list[list[str]]:
+    """
+    Build a safe pipeline command chain from structured request.
+    Returns list of argv lists (one per chained command).
+    """
+    symbol = req.symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise ValueError(f"Invalid symbol: {symbol}")
+
+    s_month = req.start[:7] if len(req.start) >= 7 else req.start
+    e_month = req.end[:7] if len(req.end) >= 7 else req.end
+    r_flags = _build_research_flags(req.flags, "pipeline")
+
+    commands: list[list[str]] = []
+
+    # 1. Backfill
+    backfill_cmd = [
+        "python", "-m", "prosper.cli", "backfill",
+        "--symbol", symbol,
+        "--start", s_month,
+        "--end", e_month,
+        "--root", "./data",
+        *r_flags,
+    ]
+    commands.append(backfill_cmd)
+
+    # 2. Aggregate (if intervals selected)
+    if req.intervals:
+        to_arg = ",".join(req.intervals)
+        agg_cmd = [
+            "python", "-m", "prosper.cli", "aggregate",
+            "--symbol", symbol,
+            "--from", "1m",
+            "--start", s_month,
+            "--end", e_month,
+            "--to", to_arg,
+            "--root", "./data",
+            *r_flags,
+        ]
+        commands.append(agg_cmd)
+
+        # 3. Features + Labels for all intervals
+        all_intervals = ["1m", *req.intervals]
+        for interval in all_intervals:
+            features_cmd = [
+                "python", "-m", "prosper.cli", "features", "build",
+                "--symbol", symbol,
+                "--base-interval", interval,
+                "--start", req.start,
+                "--end", req.end,
+                "--root", "./data",
+                *r_flags,
+            ]
+            commands.append(features_cmd)
+
+            labels_cmd = [
+                "python", "-m", "prosper.cli", "labels", "build",
+                "--symbol", symbol,
+                "--base-interval", interval,
+                "--root", "./data",
+                *r_flags,
+            ]
+            commands.append(labels_cmd)
+    else:
+        # Only 1m features + labels
+        features_cmd = [
+            "python", "-m", "prosper.cli", "features", "build",
+            "--symbol", symbol,
+            "--base-interval", "1m",
+            "--start", req.start,
+            "--end", req.end,
+            "--root", "./data",
+            *r_flags,
+        ]
+        commands.append(features_cmd)
+
+        labels_cmd = [
+            "python", "-m", "prosper.cli", "labels", "build",
+            "--symbol", symbol,
+            "--base-interval", "1m",
+            "--root", "./data",
+            *r_flags,
+        ]
+        commands.append(labels_cmd)
+
+    return commands
+
+
+def build_train_command(req: TrainRequest) -> list[list[str]]:
+    """
+    Build a safe training command from structured request.
+    """
+    symbol = req.symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise ValueError(f"Invalid symbol: {symbol}")
+
+    r_flags = _build_research_flags(req.flags, "predict")
+    model_type = req.model_type.lower()
+
+    cmd = [
+        "python", "-m", "prosper.cli", "predict", model_type,
+        "--symbol", symbol,
+        "--start", req.start,
+        "--end", req.end,
+        "--interval", req.interval,
+        "--root", "./data",
+        *r_flags,
+    ]
+
+    # Add model-specific params
+    if model_type in ("gru", "tft"):
+        cmd.extend(["--epochs" if model_type == "gru" else "--max-epochs", str(req.epochs)])
+        if "seq_len" in req.params:
+            cmd.extend(["--seq-len", str(req.params["seq_len"])])
+        if "hidden_size" in req.params:
+            cmd.extend(["--hidden-size", str(req.params["hidden_size"])])
+    elif model_type == "xgboost":
+        if "train_window_days" in req.params:
+            cmd.extend(["--train-window-days", str(req.params["train_window_days"])])
+        if "n_estimators" in req.params:
+            cmd.extend(["--n-estimators", str(req.params["n_estimators"])])
+        if "max_depth" in req.params:
+            cmd.extend(["--max-depth", str(req.params["max_depth"])])
+        if "learning_rate" in req.params:
+            cmd.extend(["--learning-rate", str(req.params["learning_rate"])])
+    elif model_type == "ml":
+        if "train_window_days" in req.params:
+            cmd.extend(["--train-window-days", str(req.params["train_window_days"])])
+
+    return [cmd]
+
+
+def build_eval_command(req: EvalRequest) -> list[list[str]]:
+    """
+    Build a safe evaluation command from structured request.
+    """
+    symbol = req.symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise ValueError(f"Invalid symbol: {symbol}")
+
+    r_flags = _build_research_flags(req.flags, "generic")
+
+    cmd = [
+        "python", "-m", "prosper.cli", "eval", "predictions",
+        "--symbol", symbol,
+        "--model-type", req.model_type.lower(),
+        "--timestamp", req.timestamp,
+        "--interval", req.interval,
+        "--root", "./data",
+        *r_flags,
+    ]
+    return [cmd]
+
+
+def build_batch_eval_command(req: BatchEvalRequest) -> list[list[str]]:
+    """
+    Build a safe batch evaluation command from structured request.
+    """
+    r_flags = _build_research_flags(req.flags, "generic")
+
+    cmd = [
+        "python", "-m", "prosper.cli", "eval", "batch",
+        "--root", "./data",
+        *r_flags,
+    ]
+    if req.symbol:
+        cmd.extend(["--symbol", req.symbol.upper()])
+    if req.model_type:
+        cmd.extend(["--model-type", req.model_type.lower()])
+    if req.interval:
+        cmd.extend(["--interval", req.interval])
+    if req.limit is not None:
+        cmd.extend(["--limit", str(req.limit)])
+
+    return [cmd]
+
+
+# ============================================================
+# END NEW SAFE MODELS
+# ============================================================
 
 # Resolve the absolute path dynamically based on this file's location.
 # This makes the project portable to any computer or directory.
@@ -159,7 +413,7 @@ class TaskRunner:
                                 )
                     self.process.wait()
                     self.logs.append(f"Task finished with exit code {self.process.returncode}")
-                    # Płynny skok postępu po zakończeniu sub-komendy
+                    # PĹ‚ynny skok postÄ™pu po zakoĹ„czeniu sub-komendy
                     self._set_command_progress(
                         command_index, total_commands, original_args, finished=True
                     )
@@ -280,15 +534,6 @@ def get_dates():
 @app.get("/api/data/inventory")
 def get_inventory(refresh: bool = False):
     return DataManager().get_inventory(refresh=refresh)
-
-
-class AITrainRequest(BaseModel):
-    symbol: str
-    model_type: str = "xgboost"
-    start: str
-    end: str
-    interval: str = "1d"
-    params: dict | None = None
 
 
 class AIEvaluateRequest(BaseModel):
@@ -435,44 +680,92 @@ def delete_ai_model(
     return {"status": "deleted", "path": str(run_dir)}
 
 
-@app.post("/api/ai/train")
-def train_model(req: AITrainRequest):
-    # Build a safe CLI command and submit to TaskRunner
-    symbol = req.symbol.upper()
-    if not _is_valid_symbol(symbol):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+# ============================================================
+# NEW SAFE ENDPOINTS (Phase 1.1)
+# Frontend sends structured JSON - no command string construction.
+# ============================================================
 
-    model_type = req.model_type.lower()
-    start = req.start
-    end = req.end
-    params = req.params or {}
-
-    # Basic mapping of params into CLI flags for known model types
-    flags = []
-    if model_type == "xgboost":
-        if "train_window_days" in params:
-            flags += ["--train-window-days", str(params["train_window_days"])]
-        if "n_estimators" in params:
-            flags += ["--n-estimators", str(params["n_estimators"])]
-        if "max_depth" in params:
-            flags += ["--max-depth", str(params["max_depth"])]
-        if "learning_rate" in params:
-            flags += ["--learning-rate", str(params["learning_rate"])]
-
-    interval = req.interval or "1d"
-    cmd = (
-        f"python -m prosper.cli predict {model_type} --symbol {symbol} "
-        f"--start {start} --end {end} --interval {interval} {' '.join(flags)} --root ./data"
-    )
-
+@app.post("/api/pipeline/run")
+def run_pipeline(req: PipelineRequest):
+    """
+    Start a data pipeline (backfill -> aggregate -> features -> labels).
+    Accepts structured JSON - SAFE: no command string parsing needed.
+    """
     try:
-        commands = parse_safe_command_chain(cmd)
+        commands = build_pipeline_command(req)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=str(e))
 
-    runner.start(cmd, commands)
-    return {"status": "started", "command": cmd}
+    cmd_display = " && ".join(" ".join(cmd) for cmd in commands)
+    runner.start(cmd_display, commands)
+    return {
+        "status": "started",
+        "command": cmd_display,
+        "steps": len(commands),
+    }
 
+
+@app.post("/api/train/run")
+def run_training(req: TrainRequest):
+    """
+    Start model training.
+    Accepts structured JSON - SAFE: no command string parsing needed.
+    """
+    try:
+        commands = build_train_command(req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    cmd_display = " && ".join(" ".join(cmd) for cmd in commands)
+    runner.start(cmd_display, commands)
+    return {
+        "status": "started",
+        "command": cmd_display,
+    }
+
+
+@app.post("/api/eval/run")
+def run_evaluation(req: EvalRequest):
+    """
+    Start prediction evaluation.
+    Accepts structured JSON - SAFE: no command string parsing needed.
+    """
+    try:
+        commands = build_eval_command(req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    cmd_display = " && ".join(" ".join(cmd) for cmd in commands)
+    runner.start(cmd_display, commands)
+    return {
+        "status": "started",
+        "command": cmd_display,
+    }
+
+
+@app.post("/api/eval/batch")
+def run_batch_evaluation(req: BatchEvalRequest):
+    """
+    Start batch evaluation of model runs.
+    Accepts structured JSON - SAFE: no command string parsing needed.
+    """
+    try:
+        commands = build_batch_eval_command(req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    cmd_display = " && ".join(" ".join(cmd) for cmd in commands)
+    runner.start(cmd_display, commands)
+    return {
+        "status": "started",
+        "command": cmd_display,
+    }
+
+
+# ============================================================
+# LEGACY ENDPOINTS (still used by the current frontend)
+# Removed after the frontend migrates to the structured API above.
+# ============================================================
 
 def _read_json_file(path: Path, default: Any = None) -> Any:
     try:
@@ -531,10 +824,16 @@ def evaluate_model_predictions(req: AIEvaluateRequest):
 
     model_type = req.model_type.lower()
     interval = req.interval or "1d"
+    params = req.params or {}
+    flags = []
+    if params.get("strict"):
+        flags.append("--strict")
+    if params.get("save_metadata"):
+        flags.append("--save-metadata")
     cmd = (
         f"python -m prosper.cli eval predictions --symbol {symbol} "
         f"--model-type {model_type} --timestamp {req.timestamp} "
-        f"--interval {interval} --root ./data"
+        f"--interval {interval} --root ./data {' '.join(flags)}"
     )
 
     try:
@@ -550,6 +849,7 @@ def evaluate_model_predictions(req: AIEvaluateRequest):
 def list_ai_evaluations(
     symbol: str | None = None,
     model_type: str | None = None,
+    sort_by: str = "model_score",
 ) -> dict[str, list[dict[str, Any]]]:
     settings = get_settings()
     base = settings.reports_dir / "evaluations"
@@ -560,7 +860,7 @@ def list_ai_evaluations(
     model_filter = model_type.lower() if model_type else None
     evaluations: list[dict[str, Any]] = []
     for symbol_dir in sorted(base.iterdir()):
-        if not symbol_dir.is_dir():
+        if not symbol_dir.is_dir() or symbol_dir.name.startswith("."):
             continue
         if symbol_filter and symbol_dir.name.upper() != symbol_filter:
             continue
@@ -570,7 +870,7 @@ def list_ai_evaluations(
             parsed = parse_evaluation_folder(run_dir.name)
             if not parsed:
                 continue
-            parsed_model_type, parsed_timestamp = parsed
+            parsed_model_type, parsed_interval, parsed_timestamp = parsed
             if model_filter and parsed_model_type.lower() != model_filter:
                 continue
             metrics = _read_json_file(run_dir / "metrics.json", {})
@@ -578,14 +878,17 @@ def list_ai_evaluations(
                 metrics = {
                     "symbol": symbol_dir.name,
                     "model_type": parsed_model_type,
+                    "interval": parsed_interval,
                     "timestamp": parsed_timestamp,
                 }
             evaluations.append(_evaluation_summary_from_metrics(metrics, run_dir))
 
+    sort_key = sort_by if sort_by in {"model_score", "accuracy", "brier", "ece", "nll"} else "model_score"
+    reverse = sort_key != "brier" and sort_key != "ece" and sort_key != "nll"
     evaluations.sort(
         key=lambda item: (
-            item.get("model_score") is not None,
-            item.get("model_score") or -1,
+            item.get(sort_key) is not None,
+            item.get(sort_key) if reverse else -(item.get(sort_key) or 0),
             item.get("created_at") or "",
         ),
         reverse=True,
@@ -593,11 +896,40 @@ def list_ai_evaluations(
     return {"evaluations": evaluations}
 
 
+@app.get("/api/ai/evaluations/status")
+def get_evaluation_batch_status() -> dict[str, Any]:
+    settings = get_settings()
+    status_path = settings.reports_dir / "evaluations" / "batch_status.json"
+    payload = _read_json_file(status_path, {})
+    if not payload:
+        return {"status": "idle", "evaluated": 0, "failed": 0, "results": [], "alerts": []}
+
+    alerts: list[str] = []
+    failed = int(payload.get("failed", 0) or 0)
+    evaluated = int(payload.get("evaluated", 0) or 0)
+    if failed > 0:
+        alerts.append(f"{failed} evaluation run(s) failed in the latest batch.")
+    for item in payload.get("results", []):
+        if item.get("status") != "ok":
+            continue
+        score = item.get("model_score")
+        if isinstance(score, int | float) and score < 50:
+            alerts.append(
+                f"Low model score ({score:.1f}) for {item.get('symbol')} "
+                f"{item.get('model_type')} {item.get('timestamp')}."
+            )
+    payload["alerts"] = alerts
+    payload["status"] = "failed" if failed and not evaluated else ("partial" if failed else "ok")
+    payload["status_path"] = str(status_path)
+    return payload
+
+
 @app.get("/api/ai/evaluations/{symbol}/{model_type}/{timestamp}")
 def get_ai_evaluation_detail(
     symbol: str,
     model_type: str,
     timestamp: str,
+    interval: str = "1d",
     limit: int = 500,
 ) -> dict[str, Any]:
     settings = get_settings()
@@ -607,7 +939,9 @@ def get_ai_evaluation_detail(
     if limit < 1 or limit > 5000:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 5000")
 
-    run_dir = get_evaluation_run_dir(symbol, model_type.lower(), timestamp, settings=settings)
+    run_dir = resolve_evaluation_run_dir(
+        symbol, model_type.lower(), timestamp, settings=settings, interval=interval
+    )
     if not run_dir.exists():
         raise HTTPException(status_code=404, detail="Evaluation not found")
 
@@ -769,3 +1103,4 @@ class NoCacheStaticFiles(StaticFiles):
 
 # Mount Frontend App
 app.mount("/", NoCacheStaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+

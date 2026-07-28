@@ -204,20 +204,25 @@ def get_evaluation_run_dir(
     model_type: str,
     timestamp: str,
     settings: Settings | None = None,
+    interval: str | None = "1d",
 ) -> Path:
     """
     Get directory for a versioned prediction-evaluation run.
 
     Layout:
-      data/reports/evaluations/{SYMBOL}/{model_type}_{timestamp}/
+      data/reports/evaluations/{SYMBOL}/{model_type}_{interval}_{timestamp}/
     """
     if settings is None:
         settings = get_settings()
-    return settings.reports_dir / "evaluations" / symbol / f"{model_type}_{timestamp}"
+    folder = versioned_prediction_folder_name(model_type, timestamp, interval)
+    return settings.reports_dir / "evaluations" / symbol / folder
 
 
-def parse_evaluation_folder(name: str) -> tuple[str, str] | None:
-    """Parse ``{model_type}_{timestamp}`` into ``(model_type, timestamp)``."""
+def parse_evaluation_folder(name: str) -> tuple[str, str, str] | None:
+    """Parse evaluation folder into ``(model_type, interval, timestamp)``."""
+    parsed = parse_versioned_prediction_folder(name)
+    if parsed:
+        return parsed
     if "_" not in name:
         return None
     parts = name.split("_")
@@ -227,7 +232,30 @@ def parse_evaluation_folder(name: str) -> tuple[str, str] | None:
     model_type = "_".join(parts[:-1])
     if not model_type:
         return None
-    return model_type, timestamp
+    return model_type, "1d", timestamp
+
+
+def resolve_evaluation_run_dir(
+    symbol: str,
+    model_type: str,
+    timestamp: str,
+    settings: Settings | None = None,
+    interval: str | None = "1d",
+) -> Path:
+    """Resolve an existing evaluation directory (interval-aware or legacy)."""
+    if settings is None:
+        settings = get_settings()
+    candidates: list[Path] = []
+    if interval:
+        candidates.append(get_evaluation_run_dir(symbol, model_type, timestamp, settings, interval))
+    candidates.append(get_evaluation_run_dir(symbol, model_type, timestamp, settings, None))
+    if interval:
+        legacy = settings.reports_dir / "evaluations" / symbol / f"{model_type}_{timestamp}"
+        candidates.append(legacy)
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
 
 
 def get_evaluation_metrics_path(
@@ -235,9 +263,10 @@ def get_evaluation_metrics_path(
     model_type: str,
     timestamp: str,
     settings: Settings | None = None,
+    interval: str | None = "1d",
 ) -> Path:
     """Return path to ``metrics.json`` for a versioned evaluation run."""
-    return get_evaluation_run_dir(symbol, model_type, timestamp, settings=settings) / "metrics.json"
+    return resolve_evaluation_run_dir(symbol, model_type, timestamp, settings, interval) / "metrics.json"
 
 
 KNOWN_PREDICTION_INTERVALS = frozenset({"1m", "1h", "1d", "1w"})

@@ -7,7 +7,6 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-
 from prosper.config import Settings
 from prosper.eval.predictions import (
     brier_score,

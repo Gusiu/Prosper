@@ -1,4 +1,4 @@
-"""Prediction-quality evaluation for versioned model runs."""
+﻿"""Prediction-quality evaluation for versioned model runs."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from prosper.storage.layout import (
     get_evaluation_run_dir,
     get_features_parquet_path,
     get_versioned_prediction_file,
+    parse_versioned_prediction_folder,
 )
 from prosper.storage.parquet import load_parquet
 
@@ -754,7 +755,9 @@ def evaluate_predictions(
             quality_rows.append(base_row)
 
     metrics, calibration = _aggregate_quality(quality_rows, eval_settings)
-    run_dir = get_evaluation_run_dir(symbol, model_type, timestamp, settings=settings)
+    run_dir = get_evaluation_run_dir(
+        symbol, model_type, timestamp, settings=settings, interval=interval
+    )
     run_dir.mkdir(parents=True, exist_ok=True)
 
     scored_rows = [row for row in quality_rows if row.get("status") == "scored"]
@@ -832,3 +835,87 @@ def evaluate_predictions(
         "worst_predictions": worst_rows,
         "recommendations": recommendations_payload["items"],
     }
+
+
+
+
+def evaluate_available_model_runs(
+    symbol: str | None = None,
+    model_type: str | None = None,
+    interval: str | None = None,
+    limit: int | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Evaluate saved prediction runs in bulk for scheduler/cron usage."""
+    settings = settings or get_settings()
+    base = settings.reports_predictions_dir
+    symbol_filter = symbol.upper() if symbol else None
+    model_filter = model_type.lower() if model_type else None
+    interval_filter = interval or None
+    results: list[dict[str, Any]] = []
+
+    if not base.exists():
+        return {"status": "ok", "evaluated": 0, "failed": 0, "results": []}
+
+    for symbol_dir in sorted(base.iterdir()):
+        if not symbol_dir.is_dir():
+            continue
+        if symbol_filter and symbol_dir.name.upper() != symbol_filter:
+            continue
+        for run_dir in sorted(symbol_dir.iterdir()):
+            if limit is not None and len(results) >= limit:
+                break
+            if not run_dir.is_dir():
+                continue
+            parsed = parse_versioned_prediction_folder(run_dir.name)
+            if not parsed:
+                continue
+            parsed_model, parsed_interval, parsed_timestamp = parsed
+            if model_filter and parsed_model.lower() != model_filter:
+                continue
+            if interval_filter and parsed_interval != interval_filter:
+                continue
+            try:
+                evaluation = evaluate_predictions(
+                    symbol=symbol_dir.name,
+                    model_type=parsed_model,
+                    timestamp=parsed_timestamp,
+                    interval=parsed_interval,
+                    settings=settings,
+                )
+                results.append(
+                    {
+                        "status": "ok",
+                        "symbol": symbol_dir.name,
+                        "model_type": parsed_model,
+                        "interval": parsed_interval,
+                        "timestamp": parsed_timestamp,
+                        "model_score": evaluation["metrics"].get("overall", {}).get("model_score"),
+                        "artifacts_dir": evaluation["metrics"].get("artifacts_dir"),
+                    }
+                )
+            except Exception as exc:
+                results.append(
+                    {
+                        "status": "failed",
+                        "symbol": symbol_dir.name,
+                        "model_type": parsed_model,
+                        "interval": parsed_interval,
+                        "timestamp": parsed_timestamp,
+                        "error": str(exc),
+                    }
+                )
+        if limit is not None and len(results) >= limit:
+            break
+
+    payload = {
+        "schema_version": 1,
+        "created_at": datetime.now(tz=UTC).isoformat(),
+        "evaluated": sum(1 for item in results if item["status"] == "ok"),
+        "failed": sum(1 for item in results if item["status"] == "failed"),
+        "results": results,
+    }
+    status_path = settings.reports_dir / "evaluations" / "batch_status.json"
+    _write_json(status_path, payload)
+    payload["status_path"] = str(status_path)
+    return payload

@@ -1,4 +1,4 @@
-"""CLI entrypoint using Typer."""
+﻿"""CLI entrypoint using Typer."""
 
 import json
 import logging
@@ -11,7 +11,7 @@ from rich.logging import RichHandler
 from prosper.binance.rest import BinanceRESTClient
 from prosper.config import get_settings
 from prosper.eval.backtest import run_backtest
-from prosper.eval.predictions import evaluate_predictions
+from prosper.eval.predictions import evaluate_available_model_runs, evaluate_predictions
 from prosper.eval.walkforward import eval_walkforward
 from prosper.features.build import build_features
 from prosper.labels.build import build_labels
@@ -132,7 +132,7 @@ def backfill_cmd(
         if failed > 0:
             console.print(f"[yellow]Warning: {failed}/{total} months had errors[/yellow]")
         if processed == 0:
-            # Only fail when zero months succeeded — partial errors should continue the chain
+            # Only fail when zero months succeeded â€” partial errors should continue the chain
             raise typer.Exit(1)
 
     except Exception as e:
@@ -774,7 +774,7 @@ def _run_predictions_evaluation(
         metrics = result["metrics"]
         artifacts = result["artifacts"]
         score = metrics.get("overall", {}).get("model_score")
-        score_text = f"{score:.2f}" if isinstance(score, (int, float)) else "N/A"
+        score_text = f"{score:.2f}" if isinstance(score, int | float) else "N/A"
 
         console.print(f"[green][OK][/green] Prediction evaluation saved to: {metrics['artifacts_dir']}")
         console.print(f"Model score: {score_text}")
@@ -803,20 +803,37 @@ def eval_predictions_cmd(
     _run_predictions_evaluation(symbol, model_type, timestamp, interval, root, strict, save_metadata)
 
 
-@eval_app.command("evaluate")
-def eval_predictions_alias_cmd(
-    symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
-    model_type: str = typer.Option(..., "--model-type", "--model_type", help="Model type"),
-    timestamp: str = typer.Option(..., "--timestamp", help="Versioned prediction timestamp"),
-    interval: str = typer.Option("1d", "--interval", help="Prediction/data interval"),
+@eval_app.command("batch")
+def eval_batch_cmd(
+    symbol: str | None = typer.Option(None, "--symbol", help="Optional symbol filter"),
+    model_type: str | None = typer.Option(None, "--model-type", "--model_type", help="Optional model filter"),
+    interval: str | None = typer.Option(None, "--interval", help="Optional interval filter"),
+    limit: int | None = typer.Option(None, "--limit", help="Maximum runs to evaluate"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
     save_metadata: bool = typer.Option(
         False, "--save-metadata", help="Save meta.json alongside artifacts"
     ),
 ) -> None:
-    """Alias for ``prosper eval predictions``."""
-    _run_predictions_evaluation(symbol, model_type, timestamp, interval, root, strict, save_metadata)
+    """Evaluate available model runs in bulk; useful for cron/scheduler jobs."""
+    settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
+    try:
+        result = evaluate_available_model_runs(
+            symbol=symbol,
+            model_type=model_type,
+            interval=interval,
+            limit=limit,
+            settings=settings,
+        )
+        console.print(
+            f"[green][OK][/green] Batch evaluation complete: "
+            f"{result.get('evaluated', 0)} ok, {result.get('failed', 0)} failed"
+        )
+        if result.get("status_path"):
+            console.print(f"Status: {result['status_path']}")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command("ui")
@@ -841,3 +858,6 @@ def start_ui(
 
 if __name__ == "__main__":
     app()
+
+
+

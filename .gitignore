@@ -26,9 +26,6 @@ env/
 ENV/
 .venv
 
-# Poetry
-poetry.lock
-
 # IDE
 .vscode/
 .idea/
@@ -64,8 +61,20 @@ htmlcov/
 data_smoke/
 checkpoints/
 lightning_logs/
+tmp/
 *_out.txt
 out.txt
-*.json
 tmp_*.parquet
 .testvenv*/
+
+# Generated JSON artifacts live under data/ (already ignored above).
+# A bare `*.json` rule used to sit here; it also swallowed tooling config
+# such as .claude/settings.json, so keep any new rule scoped to a path.
+
+# AI Agent Memory Bank (local only, not for git)
+.ai-memory/
+
+# Local-only working notes and editor/agent scratch files.
+CLAUDE.md
+AGENTS.md
+.claude/
