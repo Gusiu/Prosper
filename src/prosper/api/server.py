@@ -11,21 +11,23 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
+import polars as pl
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from prosper.config import get_settings
-from prosper.core import DataManager
+from prosper.eval.predictions import flatten_quality_row
+from prosper.inventory import DataManager
 from prosper.storage.layout import (
-    get_prediction_report_path,
     get_versioned_prediction_file,
     parse_evaluation_folder,
     parse_versioned_prediction_folder,
     resolve_evaluation_run_dir,
     resolve_versioned_prediction_dir,
 )
+from prosper.storage.runs import list_runs
 
 # ============================================================
 # NEW SAFE PYDANTIC MODELS (Phase 1.1 - REST API Refactor)
@@ -353,10 +355,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Prosper Analysis Platform UI", lifespan=lifespan)
 
 
+# A long training run emits hundreds of thousands of lines. The UI only ever
+# renders the tail, so keep a bounded window in memory instead of the lot.
+MAX_TASK_LOG_LINES = 5000
+
+
 class TaskRunner:
     def __init__(self):
         self.process: subprocess.Popen | None = None
         self.logs: list[str] = []
+        self.dropped_log_lines: int = 0
         self.is_running: bool = False
         self.progress: dict[str, Any] = {
             "visible": False,
@@ -369,6 +377,7 @@ class TaskRunner:
         if self.is_running:
             raise HTTPException(400, "A task is already running!")
         self.logs = [f"$ {cmd_str}"]
+        self.dropped_log_lines = 0
         self.is_running = True
         self.progress = {
             "visible": True,
@@ -383,7 +392,7 @@ class TaskRunner:
 
                 total_commands = max(1, len(commands))
                 for command_index, original_args in enumerate(commands):
-                    self.logs.append(f"$ {' '.join(original_args)}")
+                    self._append_log(f"$ {' '.join(original_args)}")
                     self._set_command_progress(command_index, total_commands, original_args)
 
                     # Ensure we use the current virtualenv's Python
@@ -405,14 +414,16 @@ class TaskRunner:
                         for line in iter(self.process.stdout.readline, ""):
                             if line:
                                 clean_line = line.rstrip("\n")
-                                self.logs.append(clean_line)
+                                self._append_log(clean_line)
                                 self._update_progress_from_log(
                                     clean_line,
                                     command_index,
                                     total_commands,
                                 )
                     self.process.wait()
-                    self.logs.append(f"Task finished with exit code {self.process.returncode}")
+                    self._append_log(
+                        f"Task finished with exit code {self.process.returncode}"
+                    )
                     # PĹ‚ynny skok postÄ™pu po zakoĹ„czeniu sub-komendy
                     self._set_command_progress(
                         command_index, total_commands, original_args, finished=True
@@ -421,7 +432,7 @@ class TaskRunner:
                         self.progress.update({"label": "Failed", "stage": "failed"})
                         break
             except Exception as e:
-                self.logs.append(f"Error executing task: {str(e)}")
+                self._append_log(f"Error executing task: {str(e)}")
                 self.progress.update({"label": "Failed", "stage": "failed"})
             finally:
                 self.is_running = False
@@ -432,6 +443,25 @@ class TaskRunner:
                     )
 
         threading.Thread(target=run_thread, daemon=True).start()
+
+    def _append_log(self, line: str) -> None:
+        """Append a line, discarding the oldest once the window is full.
+
+        `dropped_log_lines` keeps client cursors absolute: readers page by a
+        line number that survives trimming rather than by list position.
+        """
+        self.logs.append(line)
+        overflow = len(self.logs) - MAX_TASK_LOG_LINES
+        if overflow > 0:
+            del self.logs[:overflow]
+            self.dropped_log_lines += overflow
+
+    def read_logs(self, start_idx: int) -> tuple[list[str], int]:
+        """Return log lines from absolute *start_idx* and the next cursor."""
+        offset = self.dropped_log_lines
+        local_start = max(0, start_idx - offset)
+        lines = self.logs[local_start:]
+        return lines, offset + len(self.logs)
 
     def _set_command_progress(
         self, command_index: int, total_commands: int, args: list[str], finished: bool = False
@@ -506,8 +536,11 @@ def run_task(req: RunRequest):
 
 @app.get("/api/task/logs")
 def get_task_logs(start_idx: int = 0):
+    lines, next_idx = runner.read_logs(start_idx)
     return {
-        "logs": runner.logs[start_idx:],
+        "logs": lines,
+        "next_idx": next_idx,
+        "dropped": runner.dropped_log_lines,
         "is_running": runner.is_running,
         "progress": runner.progress,
     }
@@ -578,58 +611,108 @@ def get_ai_models() -> dict[str, list[dict[str, Any]]]:
     return {"models": models}
 
 
+@app.get("/api/runs")
+def list_prediction_runs(
+    symbol: str | None = None,
+    model_type: str | None = None,
+    interval: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """List versioned prediction runs, newest first.
+
+    Every downstream artifact (windows, walk-forward, backtest) is keyed by one
+    of these runs, so this is the canonical picker for the UI.
+    """
+    if symbol and not _is_valid_symbol(symbol.upper()):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+    runs = list_runs(
+        symbol=symbol, model_type=model_type, interval=interval, settings=get_settings()
+    )
+    return {"runs": [run.to_dict() for run in runs]}
+
+
 @app.get("/api/ai/predictions")
 def get_ai_predictions(
     symbol: str,
+    model_type: str,
+    timestamp: str,
+    interval: str = "1d",
     year: int | None = None,
     month: int | None = None,
-    model_type: str | None = None,
-    timestamp: str | None = None,
-    interval: str = "1d",
 ):
+    """Return a run's predictions, optionally narrowed to one calendar month.
+
+    A full sub-daily run is tens of megabytes, so callers that only render one
+    month should pass ``year``/``month`` rather than filtering client-side.
+    """
     settings = get_settings()
     symbol = symbol.upper()
     if not _is_valid_symbol(symbol):
         raise HTTPException(status_code=400, detail="Invalid symbol")
 
-    # If model_type+timestamp provided, prefer versioned folder
-    if model_type and timestamp:
-        p = get_versioned_prediction_file(
-            symbol, model_type, timestamp, settings=settings, interval=interval
-        )
-        if not p.exists():
-            raise HTTPException(status_code=404, detail="Versioned prediction file not found")
-        try:
-            rows = []
-            with open(p, encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        rows.append(json.loads(line))
-                    except Exception:
-                        continue
-            return {"predictions": rows}
-        except OSError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+    path = get_versioned_prediction_file(
+        symbol, model_type, timestamp, settings=settings, interval=interval
+    )
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Versioned prediction file not found")
 
-    # Fallback to monthly JSONL files
-    if year is None or month is None:
-        raise HTTPException(
-            status_code=400, detail="Require year and month unless requesting versioned run"
-        )
-    p = get_prediction_report_path(symbol, year, month, settings=settings)
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="Monthly prediction file not found")
+    month_prefix: str | None = None
+    if year is not None and month is not None:
+        month_prefix = f"{year:04d}-{month:02d}"
+
     try:
         rows = []
-        with open(p, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
-                try:
-                    rows.append(json.loads(line))
-                except Exception:
+                if not line.strip():
                     continue
-        return {"predictions": rows}
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if month_prefix and str(row.get("date", ""))[:7] != month_prefix:
+                    continue
+                rows.append(row)
+        return {"predictions": rows, "month": month_prefix, "count": len(rows)}
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.get("/api/ai/predictions/months")
+def get_ai_prediction_months(
+    symbol: str,
+    model_type: str,
+    timestamp: str,
+    interval: str = "1d",
+) -> dict[str, Any]:
+    """Return the sorted list of ``YYYY-MM`` months present in a run."""
+    settings = get_settings()
+    symbol = symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+
+    path = get_versioned_prediction_file(
+        symbol, model_type, timestamp, settings=settings, interval=interval
+    )
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Versioned prediction file not found")
+
+    months: set[str] = set()
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                date_value = str(row.get("date", ""))
+                if len(date_value) >= 7:
+                    months.add(date_value[:7])
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    return {"months": sorted(months)}
 
 
 @app.get("/api/ai/feature_importances")
@@ -807,6 +890,7 @@ def _evaluation_summary_from_metrics(metrics: dict[str, Any], run_dir: Path) -> 
         "path": str(run_dir),
         "samples": overall.get("samples", metrics.get("scored_rows", 0)),
         "missing_targets": overall.get("missing_targets"),
+        "untrained_rows": overall.get("untrained_rows", 0),
         "model_score": overall.get("model_score"),
         "accuracy": overall.get("accuracy"),
         "brier": overall.get("brier"),
@@ -924,14 +1008,49 @@ def get_evaluation_batch_status() -> dict[str, Any]:
     return payload
 
 
+def _load_worst_predictions(
+    run_dir: Path, limit: int, flag: str | None = None
+) -> tuple[list[dict[str, Any]], int]:
+    """Return the worst-scoring rows of a run, plus the total scored count.
+
+    Reads `predictions_quality.parquet` lazily so a run with hundreds of
+    thousands of rows costs a bounded amount of memory. Falls back to the
+    legacy JSONL for evaluations produced before the Parquet switch.
+    """
+    parquet_path = run_dir / "predictions_quality.parquet"
+    if parquet_path.exists():
+        lazy = pl.scan_parquet(str(parquet_path)).filter(pl.col("status") == "scored")
+        if flag:
+            lazy = lazy.filter(pl.col("flags").str.contains(flag, literal=True))
+        total = int(lazy.select(pl.len()).collect().item())
+        frame = lazy.sort("error_score", descending=True).head(limit).collect()
+        return frame.to_dicts(), total
+
+    legacy = run_dir / "predictions_quality.jsonl"
+    rows = [
+        row
+        for row in _read_jsonl_file(legacy, limit=20000)
+        if row.get("status") == "scored"
+        and (not flag or flag in (row.get("flags") or []))
+    ]
+    rows.sort(key=lambda row: row.get("error_score", 0.0), reverse=True)
+    return [flatten_quality_row(row) for row in rows[:limit]], len(rows)
+
+
 @app.get("/api/ai/evaluations/{symbol}/{model_type}/{timestamp}")
 def get_ai_evaluation_detail(
     symbol: str,
     model_type: str,
     timestamp: str,
     interval: str = "1d",
-    limit: int = 500,
+    limit: int = 100,
+    flag: str | None = None,
 ) -> dict[str, Any]:
+    """Summary, calibration and the worst rows of one evaluation run.
+
+    Deliberately bounded: an unfiltered response for a 1h run used to be ~71 MB
+    because every recommendation was serialised so the UI could render fifty.
+    """
     settings = get_settings()
     symbol = symbol.upper()
     if not _is_valid_symbol(symbol):
@@ -947,22 +1066,51 @@ def get_ai_evaluation_detail(
 
     metrics = _read_json_file(run_dir / "metrics.json", {})
     calibration = _read_json_file(run_dir / "calibration.json", {})
-    quality_rows = _read_jsonl_file(run_dir / "predictions_quality.jsonl", limit=limit)
-    worst_rows = sorted(
-        [row for row in quality_rows if row.get("status") == "scored"],
-        key=lambda row: row.get("error_score", 0.0),
-        reverse=True,
-    )[:100]
+    worst_rows, scored_total = _load_worst_predictions(run_dir, limit=limit, flag=flag)
     recommendations = _read_json_file(run_dir / "recommendations.json", {"items": []})
     return {
         "metrics": metrics,
         "summary": _evaluation_summary_from_metrics(metrics, run_dir),
         "calibration": calibration,
-        "quality_rows": quality_rows,
         "worst_predictions": worst_rows,
-        "recommendations": recommendations.get("items", []),
+        "worst_predictions_total": scored_total,
+        "recommendations": recommendations.get("items", [])[:limit],
+        "recommendations_truncated": bool(recommendations.get("truncated")),
         "artifacts": metrics.get("artifacts", {}),
     }
+
+
+@app.get("/api/ai/evaluations/{symbol}/{model_type}/{timestamp}/flags")
+def get_ai_evaluation_flags(
+    symbol: str,
+    model_type: str,
+    timestamp: str,
+    interval: str = "1d",
+) -> dict[str, Any]:
+    """Distinct quality flags in a run, with counts, for the UI filter."""
+    settings = get_settings()
+    symbol = symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+
+    run_dir = resolve_evaluation_run_dir(
+        symbol, model_type.lower(), timestamp, settings=settings, interval=interval
+    )
+    parquet_path = run_dir / "predictions_quality.parquet"
+    if not parquet_path.exists():
+        return {"flags": []}
+
+    frame = (
+        pl.scan_parquet(str(parquet_path))
+        .filter((pl.col("status") == "scored") & (pl.col("flags") != ""))
+        .select(pl.col("flags").str.split("|").alias("flag"))
+        .explode("flag")
+        .group_by("flag")
+        .agg(pl.len().alias("count"))
+        .sort("count", descending=True)
+        .collect()
+    )
+    return {"flags": frame.to_dicts()}
 
 
 @app.get("/api/meta/symbols")
@@ -1064,33 +1212,65 @@ def delete_symbol_data(symbol: str):
 
 @app.get("/api/backtest/{symbol}")
 def run_backtest_api(
-    symbol: str, start: str = "2021-01-01", end: str = "2024-06-30"
+    symbol: str,
+    start: str = "2021-01-01",
+    end: str = "2024-06-30",
+    model_type: str | None = None,
+    timestamp: str | None = None,
+    interval: str | None = None,
+    horizon: str = "short",
+    capital: float = 10000.0,
 ) -> dict[str, Any]:
-    """Dynamically run backtest and return capital curve & stats."""
+    """Simulate one prediction run and return its capital curve and stats.
+
+    The run identity is part of the response: a backtest number is meaningless
+    unless you know which model produced the signals behind it.
+    """
+    symbol = symbol.upper()
+    if not _is_valid_symbol(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+
     settings = get_settings()
+    # Import lazily to avoid pulling heavy ML/runtime deps during module import
+    from prosper.eval.backtest import run_backtest
+
     try:
-        # Import lazily to avoid pulling heavy ML/runtime deps during module import
-        from prosper.eval.backtest import run_backtest
-
-        results = run_backtest(symbol, start, end, settings=settings)
-        if "error" in results:
-            raise HTTPException(status_code=400, detail=results["error"])
-
-        history = results.get("chart_data", [])
-
-        return {
-            "roi": round(results["roi_pct"], 2),
-            "max_drawdown": round(results["max_drawdown_pct"], 2),
-            "final_capital": round(results["final_value"], 2),
-            "total_trades": results["total_trades"],
-            "chart_data": {
-                "dates": [h["date"] for h in history],
-                "capital": [h["value"] for h in history],
-                "close": [h["price"] for h in history],
-            },
-        }
+        results = run_backtest(
+            symbol,
+            start,
+            end,
+            initial_capital=capital,
+            settings=settings,
+            model_type=model_type,
+            timestamp=timestamp,
+            interval=interval,
+            horizon=horizon,
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    if "error" in results:
+        raise HTTPException(status_code=400, detail=results["error"])
+
+    history = results.get("chart_data", [])
+
+    return {
+        "run": results["run"],
+        "horizon": results["horizon"],
+        "roi": round(results["roi_pct"], 2),
+        "max_drawdown": round(results["max_drawdown_pct"], 2),
+        "final_capital": round(results["final_value"], 2),
+        "initial_capital": results["initial_capital"],
+        "total_trades": results["total_trades"],
+        "days_tested": results["days_tested"],
+        "skipped_untrained": results["skipped_untrained"],
+        "limitations": results["limitations"],
+        "chart_data": {
+            "dates": [h["date"] for h in history],
+            "capital": [h["value"] for h in history],
+            "close": [h["price"] for h in history],
+        },
+    }
 
 
 class NoCacheStaticFiles(StaticFiles):

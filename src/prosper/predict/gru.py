@@ -11,14 +11,23 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
 from prosper.config import Settings, get_settings
-from prosper.labels.depth import (
+from prosper.domain import (
+    DEFAULT_HORIZONS,
     DEPTH_BIN_LABELS,
     DIR_TO_IDX,
-    N_DEPTH_BINS,
+    IDX_TO_DIR,
+    assign_depth_bin,
     direction_from_return,
+    parse_depth_bins,
+)
+from prosper.predict.window import (
+    days_to_steps,
+    training_bounds,
+    untrained_horizon_payload,
+    validate_train_window,
 )
 from prosper.storage.layout import get_features_parquet_path
-from prosper.storage.predictions import write_predictions_jsonl, write_versioned_predictions
+from prosper.storage.predictions import write_versioned_predictions
 from prosper.utils.time import parse_date
 
 
@@ -100,7 +109,7 @@ def predict_gru(
     settings: Settings | None = None,
     interval: str = "1d",
     seq_len: int = 30,
-    train_window_days: int = 365,
+    train_window_days: int = 730,
     hidden_size: int = 64,
     num_layers: int = 2,
     dropout: float = 0.2,
@@ -108,16 +117,17 @@ def predict_gru(
     batch_size: int = 32,
     lr: float = 1e-3,
     flat_threshold: float = 0.01,
-    short_forward_days: int = 28,
-    medium_forward_days: int = 182,
-    long_forward_days: int = 365,
 ) -> dict[str, Any]:
     """
-    Train a GRU classifier on rolling windows and produce daily JSONL predictions.
+    Train a GRU classifier on rolling windows and produce per-bar JSONL predictions.
     Output format is identical to predict_baseline / predict_ml.
     """
     if settings is None:
         settings = get_settings()
+
+    horizon_specs = list(DEFAULT_HORIZONS)
+    steps_by_horizon = validate_train_window(train_window_days, interval, horizon_specs)
+    train_window_steps = days_to_steps(train_window_days, interval)
 
     # ── Seed & deterministic mode (research) ─────────────────────────────────
     if settings.deterministic:
@@ -160,6 +170,7 @@ def predict_gru(
     if not feature_cols:
         return {"error": "No feature columns found", "symbol": symbol}
 
+    open_times = df["open_time"].to_list()
     dates = df["_date"].to_list()
     closes = df["close"].to_list()
     X_all_raw = df.select(feature_cols).to_numpy().astype(np.float32)
@@ -169,137 +180,174 @@ def predict_gru(
     end_dt = parse_date(end).date()
 
     # ── 2. Pre-compute forward labels ─────────────────────────────────────────
-    horizons = {
-        "short": short_forward_days,
-        "medium": medium_forward_days,
-        "long": long_forward_days,
-    }
-    y_dir_all = {}
-    for h_name, f_days in horizons.items():
-        arr = np.full(n, -1, dtype=np.int64)
-        for i in range(n - f_days):
-            j = i + f_days
+    depth_bins, depth_labels = parse_depth_bins(",".join(DEPTH_BIN_LABELS))
+    y_dir_all: dict[str, np.ndarray] = {}
+    y_depth_all: dict[str, np.ndarray] = {}
+    for h in horizon_specs:
+        forward_steps = steps_by_horizon[h.name]
+        dir_arr = np.full(n, -1, dtype=np.int64)
+        depth_arr = np.full(n, -1, dtype=np.int64)
+        for i in range(n - forward_steps):
+            j = i + forward_steps
             if closes[i] and closes[j]:
                 r = closes[j] / closes[i] - 1.0
-                arr[i] = DIR_TO_IDX[direction_from_return(r, flat_threshold)]
-        y_dir_all[h_name] = arr
+                direction = direction_from_return(r, flat_threshold)
+                dir_arr[i] = DIR_TO_IDX[direction]
+                if direction in ("long", "short"):
+                    bin_idx = assign_depth_bin(abs(r) * 100.0, depth_bins)
+                    if bin_idx is not None:
+                        depth_arr[i] = bin_idx
+        y_dir_all[h.name] = dir_arr
+        y_depth_all[h.name] = depth_arr
 
     # ── 3. Rolling-month training + inference ─────────────────────────────────
     predictions: list[dict[str, Any]] = []
+    untrained_counts: dict[str, int] = {h.name: 0 for h in horizon_specs}
     # We retrain once per calendar month to balance speed vs. freshness
     current_train_month = None
-    models_cache = {}
-    scaler_params = None
+    models_cache: dict[str, Any] = {}
+    depth_cache: dict[str, dict[str, dict[str, float]]] = {}
+    X_norm_current: np.ndarray | None = None
 
     for i in range(n):
         row_date = dates[i]
         if row_date < start_dt or row_date > end_dt:
             continue
 
-        train_start = max(0, i - train_window_days)
-
         # Retrain once per month
         month_key = (row_date.year, row_date.month)
-        if month_key != current_train_month and (i - 1) - train_start >= seq_len + 10:
+        if month_key != current_train_month:
             current_train_month = month_key
             models_cache = {}
+            depth_cache = {}
 
-            # Normalise using only the training slice, but apply to full array
-            # so that inference indices stay valid
-            X_train_raw = X_all_raw[train_start : i]
-            X_norm = _robust_normalise(X_train_raw, X_all_raw)
-            scaler_params = X_norm
+            # Normalise using only past rows, then apply to the full array so
+            # inference indices stay valid. Stats never see future bars.
+            X_norm_current = _robust_normalise(X_all_raw[max(0, i - train_window_steps) : i], X_all_raw)
 
-            for h_name, f_days in horizons.items():
-                # Prevent look-ahead leakage: labels at index k require
-                # the close price at k + f_days.  At prediction day i we
-                # can only know labels for k where k + f_days < i.
-                safe_train_end = i - 1 - f_days
-                if safe_train_end <= train_start:
-                    models_cache[h_name] = None
+            for h in horizon_specs:
+                forward_steps = steps_by_horizon[h.name]
+                train_start, train_end = training_bounds(i, train_window_steps, forward_steps)
+                if train_end - train_start < seq_len + 10:
+                    models_cache[h.name] = None
                     continue
 
-                y_slice = y_dir_all[h_name][train_start : safe_train_end + 1]
-                X_slice = X_norm[train_start : safe_train_end + 1]
+                y_slice = y_dir_all[h.name][train_start:train_end]
+                X_slice = X_norm_current[train_start:train_end]
                 valid = [k for k in range(len(y_slice)) if y_slice[k] >= 0]
-                if len(valid) >= seq_len + 5 and len(set(y_slice[valid])) > 1:
-                    # Pass the SLICED arrays so indices match
-                    ds = SequenceDataset(X_slice, y_slice, seq_len)
-                    if len(ds) < 8:
-                        models_cache[h_name] = None
-                        continue
-                    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
-                    m = GRUClassifier(len(feature_cols), hidden_size, num_layers, dropout).to(
-                        device
-                    )
-                    opt = torch.optim.Adam(m.parameters(), lr=lr)
-                    loss_fn = nn.CrossEntropyLoss()
+                if len(valid) < seq_len + 5 or len(set(y_slice[valid])) <= 1:
+                    models_cache[h.name] = None
+                    continue
 
-                    m.train()
-                    for _ in range(epochs):
-                        for xb, yb in loader:
-                            xb, yb = xb.to(device), yb.to(device)
-                            opt.zero_grad()
-                            loss_fn(m(xb), yb).backward()
-                            torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0)
-                            opt.step()
+                ds = SequenceDataset(X_slice, y_slice, seq_len)
+                if len(ds) < 8:
+                    models_cache[h.name] = None
+                    continue
 
-                    models_cache[h_name] = m
-                else:
-                    models_cache[h_name] = None
+                loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
+                m = GRUClassifier(len(feature_cols), hidden_size, num_layers, dropout).to(device)
+                opt = torch.optim.Adam(m.parameters(), lr=lr)
+                loss_fn = nn.CrossEntropyLoss()
+
+                m.train()
+                for _ in range(epochs):
+                    for xb, yb in loader:
+                        xb, yb = xb.to(device), yb.to(device)
+                        opt.zero_grad()
+                        loss_fn(m(xb), yb).backward()
+                        torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0)
+                        opt.step()
+
+                models_cache[h.name] = m
+                # The GRU head only models direction; depth comes from the
+                # realised conditional distribution over the same window.
+                depth_cache[h.name] = _empirical_depth(
+                    y_dir_all[h.name][train_start:train_end],
+                    y_depth_all[h.name][train_start:train_end],
+                    depth_labels,
+                )
 
         # ── Inference ─────────────────────────────────────────────────────────
-        date_str = row_date.isoformat()
-        out: dict[str, Any] = {"date": date_str, "symbol": symbol}
+        out: dict[str, Any] = {
+            "open_time": open_times[i].isoformat(),
+            "date": row_date.isoformat(),
+            "symbol": symbol,
+        }
 
-        uniform_depth = {lbl: 1.0 / N_DEPTH_BINS for lbl in DEPTH_BIN_LABELS}
+        for h in horizon_specs:
+            m = models_cache.get(h.name)
+            if m is None or X_norm_current is None or i < seq_len:
+                out[h.name] = untrained_horizon_payload(depth_labels)
+                untrained_counts[h.name] += 1
+                continue
 
-        for h_name in horizons.keys():
-            m = models_cache.get(h_name)
-            if m is None or scaler_params is None or i < seq_len:
-                out[h_name] = {
-                    "P_long": 0.33,
-                    "P_flat": 0.34,
-                    "P_short": 0.33,
-                    "depth_long_bins": uniform_depth.copy(),
-                    "depth_short_bins": uniform_depth.copy(),
-                }
-            else:
-                x_seq = (
-                    torch.tensor(scaler_params[i - seq_len : i], dtype=torch.float32)
-                    .unsqueeze(0)
-                    .to(device)
-                )
-                m.eval()
-                with torch.no_grad():
-                    logits = m(x_seq)  # (1, 3)
-                    probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
+            x_seq = (
+                torch.tensor(X_norm_current[i - seq_len : i], dtype=torch.float32)
+                .unsqueeze(0)
+                .to(device)
+            )
+            m.eval()
+            with torch.no_grad():
+                logits = m(x_seq)  # (1, 3)
+                probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
 
-                out[h_name] = {
-                    "P_long": float(probs[2]),
-                    "P_flat": float(probs[1]),
-                    "P_short": float(probs[0]),
-                    "depth_long_bins": uniform_depth.copy(),
-                    "depth_short_bins": uniform_depth.copy(),
-                }
+            depths = depth_cache.get(h.name, {})
+            out[h.name] = {
+                "P_long": float(probs[2]),
+                "P_flat": float(probs[1]),
+                "P_short": float(probs[0]),
+                "depth_long_bins": depths.get("long", _uniform_depth(depth_labels)),
+                "depth_short_bins": depths.get("short", _uniform_depth(depth_labels)),
+                "trained": True,
+            }
 
         predictions.append(out)
 
     if not predictions:
         return {"error": "No predictions generated for the requested date range", "symbol": symbol}
 
-    write_predictions_jsonl(predictions, symbol, settings)
 
-    # Also write a consolidated predictions.jsonl into a versioned folder
-    try:
-        write_versioned_predictions(predictions, symbol, "gru", settings, interval=interval)
-    except Exception:
-        pass
+    run_dir = write_versioned_predictions(
+        predictions, symbol, "gru", settings, interval=interval
+    )
 
     return {
         "symbol": symbol,
         "start": start,
         "end": end,
+        "interval": interval,
         "predictions": len(predictions),
+        "untrained_horizons": untrained_counts,
+        "run_dir": str(run_dir),
         "device": str(device),
     }
+
+
+def _uniform_depth(labels: list[str]) -> dict[str, float]:
+    return {label: 1.0 / len(labels) for label in labels}
+
+
+def _empirical_depth(
+    directions: np.ndarray,
+    depths: np.ndarray,
+    labels: list[str],
+) -> dict[str, dict[str, float]]:
+    """Realised depth-bin distribution per direction over a training window."""
+    counts = {"long": [0] * len(labels), "short": [0] * len(labels)}
+    for direction_idx, depth_idx in zip(directions, depths, strict=True):
+        if depth_idx < 0:
+            continue
+        direction = IDX_TO_DIR.get(int(direction_idx))
+        if direction in counts:
+            counts[direction][int(depth_idx)] += 1
+
+    out: dict[str, dict[str, float]] = {}
+    for direction, bucket in counts.items():
+        total = sum(bucket)
+        if total == 0:
+            out[direction] = _uniform_depth(labels)
+        else:
+            out[direction] = {
+                label: count / total for label, count in zip(labels, bucket, strict=True)
+            }
+    return out

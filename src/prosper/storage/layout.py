@@ -138,40 +138,28 @@ def get_qa_report_path(
     return settings.reports_qa_dir / symbol / interval / filename
 
 
-def get_prediction_report_path(
-    symbol: str, year: int, month: int, settings: Settings | None = None
-) -> Path:
-    """
-    Get path for prediction report JSONL file.
-
-    Args:
-        symbol: Trading symbol
-        year: Year
-        month: Month (1-12)
-        settings: Settings instance (defaults to global)
-
-    Returns:
-        Path to prediction report file
-    """
-    if settings is None:
-        settings = get_settings()
-
-    month_str = f"{month:02d}"
-    filename = f"{year}-{month_str}.jsonl"
-    return settings.reports_predictions_dir / symbol / "daily" / filename
-
-
 def get_recommendation_report_path(
-    symbol: str, year: int, month: int, settings: Settings | None = None
+    symbol: str,
+    year: int,
+    month: int,
+    settings: Settings | None = None,
+    run_slug: str | None = None,
 ) -> Path:
     """
     Get path for recommendation report JSON file.
 
+    Layout:
+      data/reports/recommendations/{SYMBOL}/{run_slug}/{YYYY-MM}.json
+
+    ``run_slug`` identifies the prediction run the windows were derived from.
+    Without it the file would not say which model produced the recommendation.
+
     Args:
         symbol: Trading symbol
         year: Year
         month: Month (1-12)
         settings: Settings instance (defaults to global)
+        run_slug: Prediction run identity, e.g. ``ml_1d_20240501123000``
 
     Returns:
         Path to recommendation report file
@@ -181,22 +169,46 @@ def get_recommendation_report_path(
 
     month_str = f"{month:02d}"
     filename = f"{year}-{month_str}.json"
-    return settings.reports_recommendations_dir / symbol / "windows" / filename
+    folder = run_slug or "windows"
+    return settings.reports_recommendations_dir / symbol / folder / filename
 
 
 def get_eval_walkforward_summary_path(
     symbol: str,
     settings: Settings | None = None,
+    run_slug: str | None = None,
 ) -> Path:
     """
     Get path for walk-forward evaluation summary JSON.
 
     Layout:
-      data/reports/eval/{SYMBOL}/walkforward_summary.json
+      data/reports/eval/{SYMBOL}/{run_slug}/walkforward_summary.json
     """
     if settings is None:
         settings = get_settings()
-    return settings.reports_eval_dir / symbol / "walkforward_summary.json"
+    base = settings.reports_eval_dir / symbol
+    if run_slug:
+        base = base / run_slug
+    return base / "walkforward_summary.json"
+
+
+def get_backtest_report_path(
+    symbol: str,
+    settings: Settings | None = None,
+    run_slug: str | None = None,
+) -> Path:
+    """
+    Get path for a trading backtest report JSON.
+
+    Layout:
+      data/reports/backtests/{SYMBOL}/{run_slug}/backtest.json
+    """
+    if settings is None:
+        settings = get_settings()
+    base = settings.reports_dir / "backtests" / symbol
+    if run_slug:
+        base = base / run_slug
+    return base / "backtest.json"
 
 
 def get_evaluation_run_dir(

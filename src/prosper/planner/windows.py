@@ -6,6 +6,7 @@ from typing import Any
 
 from prosper.config import Settings, get_settings
 from prosper.storage.layout import get_recommendation_report_path
+from prosper.storage.runs import load_run_predictions, resolve_run
 from prosper.utils.time import parse_date
 
 
@@ -103,57 +104,66 @@ def plan_windows(
     start: str | None = None,
     end: str | None = None,
     settings: Settings | None = None,
+    model_type: str | None = None,
+    timestamp: str | None = None,
+    interval: str | None = None,
 ) -> dict[str, Any]:
     """
-    Plan action windows based on baseline predictions.
+    Plan action windows from one versioned prediction run.
 
     Args:
         symbol: Trading symbol
         short_weeks: Short horizon weeks range (min, max)
         medium_weeks: Medium horizon weeks range (min, max)
         long_weeks: Long horizon weeks range (min, max)
+        start: Optional lower date bound (YYYY-MM-DD)
+        end: Optional upper date bound (YYYY-MM-DD)
         settings: Settings instance (defaults to global)
+        model_type: Model that produced the predictions; latest run if omitted
+        timestamp: Run timestamp; latest matching run if omitted
+        interval: Run interval; latest matching run if omitted
 
     Returns:
-        Dictionary with window recommendations
+        Dictionary with window recommendations, tagged with the source run
     """
     if settings is None:
         settings = get_settings()
 
-    predictions_dir = settings.reports_predictions_dir / symbol / "daily"
-    if not predictions_dir.exists():
-        return {
-            "error": f"No predictions found for {symbol}. Run `prosper predict baseline` first."
-        }
+    try:
+        run = resolve_run(
+            symbol,
+            model_type=model_type,
+            timestamp=timestamp,
+            interval=interval,
+            settings=settings,
+        )
+    except FileNotFoundError as e:
+        return {"error": str(e)}
 
     start_dt = parse_date(start) if start else None
     end_dt = parse_date(end) if end else None
 
     predictions: list[dict[str, Any]] = []
-    for jsonl_file in sorted(predictions_dir.glob("*.jsonl")):
-        with open(jsonl_file, encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                pred = json.loads(line)
-                pred_date = parse_date(pred["date"])
-                if start_dt is not None and pred_date < start_dt:
-                    continue
-                if end_dt is not None and pred_date > end_dt:
-                    continue
-                predictions.append(pred)
+    for pred in load_run_predictions(run):
+        pred_date = parse_date(str(pred["date"])[:10])
+        if start_dt is not None and pred_date < start_dt:
+            continue
+        if end_dt is not None and pred_date > end_dt:
+            continue
+        predictions.append(pred)
 
     if not predictions:
-        return {"error": "No predictions loaded for given date range"}
+        return {"error": f"No predictions in run {run.slug} for the given date range"}
 
-    predictions.sort(key=lambda x: x["date"])
+    predictions.sort(key=lambda x: str(x.get("open_time") or x["date"]))
 
     horizons = ["short", "medium", "long"]
     # (horizon, iso_year, iso_week) -> accumulators
     buckets: dict[tuple[str, int, int], dict[str, Any]] = {}
 
+    skipped_untrained = 0
     for pred in predictions:
-        dt = parse_date(pred["date"])
+        dt = parse_date(str(pred["date"])[:10])
         iso_year, iso_week = dt.isocalendar()[0], dt.isocalendar()[1]
         week_start = dt - timedelta(days=dt.weekday())
         week_end = week_start + timedelta(days=6)
@@ -161,6 +171,12 @@ def plan_windows(
         week_end_str = week_end.date().isoformat()
 
         for h in horizons:
+            # An untrained horizon carries the uniform prior. Averaging it into
+            # a window would dilute real signal toward "Hold" for free.
+            if pred[h].get("trained") is False:
+                skipped_untrained += 1
+                continue
+
             p_long = float(pred[h]["P_long"])
             p_short = float(pred[h]["P_short"])
             edge = calculate_edge(p_long=p_long, p_short=p_short)
@@ -209,14 +225,19 @@ def plan_windows(
         month_key = b["week_start"][:7]
         month_to_windows.setdefault(month_key, []).append(w)
 
-    # Write one report per month
+    # Write one report per month, scoped to the run that produced it
     for month_key, windows in month_to_windows.items():
         year = int(month_key[:4])
         month = int(month_key[5:7])
-        report_path = get_recommendation_report_path(symbol, year, month, settings=settings)
+        report_path = get_recommendation_report_path(
+            symbol, year, month, settings=settings, run_slug=run.slug
+        )
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report = {
             "symbol": symbol,
+            "model_type": run.model_type,
+            "interval": run.interval,
+            "timestamp": run.timestamp,
             "month": month_key,
             "windows": windows,
             "summary": {"total_windows": len(windows)},
@@ -224,4 +245,10 @@ def plan_windows(
         with open(report_path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, sort_keys=True, default=str)
 
-    return {"symbol": symbol, "total_windows": len(all_windows), "windows": all_windows}
+    return {
+        "symbol": symbol,
+        "run": run.to_dict(),
+        "total_windows": len(all_windows),
+        "skipped_untrained_horizons": skipped_untrained,
+        "windows": all_windows,
+    }

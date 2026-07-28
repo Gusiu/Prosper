@@ -1,7 +1,7 @@
 """Tests for walk-forward evaluation utility functions."""
 
+from prosper.domain import direction_from_return
 from prosper.eval.walkforward import multiclass_logloss_brier
-from prosper.labels.depth import direction_from_return
 
 
 def test_label_from_return_thresholding() -> None:

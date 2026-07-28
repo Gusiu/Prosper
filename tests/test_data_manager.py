@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import polars as pl
 from prosper.config import Settings
-from prosper.core import DataManager
+from prosper.inventory import DataManager
 from prosper.storage.layout import (
     get_features_parquet_path,
     get_labels_parquet_path,

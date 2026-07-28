@@ -562,7 +562,7 @@ class DataManager:
         limit: int,
     ) -> pl.DataFrame:
         base_path = self.settings.processed_binance_spot_klines_dir / interval / f"symbol={symbol}"
-        lazy = self._scan_parquet_tree(base_path)
+        lazy = self._scan_parquet_tree(base_path, start_dt, end_dt)
         if lazy is None:
             return pl.DataFrame()
 
@@ -645,13 +645,77 @@ class DataManager:
         return self._has_parquet_data(f_path)
 
     @staticmethod
-    def _scan_parquet_tree(path: Path) -> pl.LazyFrame | None:
+    def _partition_in_range(
+        year_dir: Path,
+        leaf_dir: Path,
+        start_dt: datetime | None,
+        end_dt: datetime | None,
+    ) -> bool:
+        """Decide from the `year=`/`month=` names alone whether a leaf can match.
+
+        Cheap partition pruning: a 1m symbol holds ~100 monthly files and
+        scanning them all to answer a one-month chart request cost seconds.
+        Anything unparseable is kept, so a malformed name never hides data.
+        """
+        if start_dt is None and end_dt is None:
+            return True
+        try:
+            year = int(year_dir.name.split("=", 1)[1])
+            key, raw_value = leaf_dir.name.split("=", 1)
+            value = int(raw_value)
+        except (ValueError, IndexError):
+            return True
+
+        if key == "month":
+            first = datetime(year, value, 1, tzinfo=UTC)
+            last_day = calendar.monthrange(year, value)[1]
+            last = datetime(year, value, last_day, 23, 59, 59, tzinfo=UTC)
+        elif key == "week":
+            try:
+                first = datetime.combine(
+                    date.fromisocalendar(year, value, 1), datetime.min.time(), tzinfo=UTC
+                )
+            except ValueError:
+                return True
+            last = first + timedelta(days=7)
+        else:
+            return True
+
+        if start_dt is not None and last < start_dt:
+            return False
+        if end_dt is not None and first > end_dt:
+            return False
+        return True
+
+    @classmethod
+    def _scan_parquet_tree(
+        cls,
+        path: Path,
+        start_dt: datetime | None = None,
+        end_dt: datetime | None = None,
+    ) -> pl.LazyFrame | None:
         if path.is_file() and path.suffix == ".parquet" and path.stat().st_size > 0:
             return pl.scan_parquet(str(path), hive_partitioning=False)
         if not path.exists():
             return None
 
-        files = [p for p in path.glob("**/*.parquet") if p.is_file() and p.stat().st_size > 0]
+        files: list[Path] = []
+        year_dirs = sorted(p for p in path.glob("year=*") if p.is_dir())
+        if year_dirs:
+            for year_dir in year_dirs:
+                for leaf_dir in sorted(year_dir.iterdir()):
+                    if not leaf_dir.is_dir():
+                        continue
+                    if not cls._partition_in_range(year_dir, leaf_dir, start_dt, end_dt):
+                        continue
+                    files.extend(
+                        p
+                        for p in leaf_dir.glob("*.parquet")
+                        if p.is_file() and p.stat().st_size > 0
+                    )
+        else:
+            files = [p for p in path.glob("**/*.parquet") if p.is_file() and p.stat().st_size > 0]
+
         if not files:
             return None
         return pl.scan_parquet([str(p) for p in files], hive_partitioning=False)

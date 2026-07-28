@@ -5,15 +5,22 @@ from typing import Any
 import polars as pl
 
 from prosper.config import Settings, get_settings
-from prosper.labels.depth import (
-    HorizonSpec,
+from prosper.domain import (
+    DEFAULT_HORIZONS,
     assign_depth_bin,
     direction_from_return,
     parse_depth_bins,
 )
+from prosper.predict.window import (
+    MIN_TRAIN_SAMPLES,
+    days_to_steps,
+    training_bounds,
+    untrained_horizon_payload,
+    validate_train_window,
+)
 from prosper.storage.layout import get_parquet_file_path
 from prosper.storage.parquet import load_parquet
-from prosper.storage.predictions import write_predictions_jsonl, write_versioned_predictions
+from prosper.storage.predictions import write_versioned_predictions
 from prosper.utils.time import generate_month_range, parse_date
 
 
@@ -29,20 +36,28 @@ def predict_baseline(
     rolling_window_days: int | None = None,
     flat_threshold: float = 0.01,
     depth_bins_str: str = "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34+",
-    short_forward_days: int = 28,
-    medium_forward_days: int = 182,
-    long_forward_days: int = 365,
     alpha: float = 1.0,
 ) -> dict[str, Any]:
     """Baseline probabilistic predictions using rolling empirical frequencies + Laplace smoothing.
 
     Output JSONL format (per day):
-      {date, symbol, short:{...}, medium:{...}, long:{...}}
+      {open_time, date, symbol, short:{...}, medium:{...}, long:{...}}
+
+    The rolling window only counts outcomes that had already been realised at
+    the prediction bar. Counting the most recent ``forward_days`` bars would
+    mean reading returns that had not happened yet, which is exactly the
+    advantage a benchmark must not have.
     """
     if settings is None:
         settings = get_settings()
     if rolling_window_days is None:
         rolling_window_days = settings.baseline_rolling_window_days
+
+    # The baseline reads daily klines directly, so its bar size is fixed at 1d.
+    interval = "1d"
+    horizons = list(DEFAULT_HORIZONS)
+    steps_by_horizon = validate_train_window(rolling_window_days, interval, horizons)
+    window_steps = days_to_steps(rolling_window_days, interval)
 
     depth_bins, depth_labels = parse_depth_bins(depth_bins_str)
     depth_k = len(depth_bins)
@@ -55,12 +70,12 @@ def predict_baseline(
 
     daily_parts: list[pl.DataFrame] = []
     for yy, mm in months:
-        path = get_parquet_file_path(symbol, "1d", yy, month=mm, settings=settings)
+        path = get_parquet_file_path(symbol, interval, yy, month=mm, settings=settings)
         if path.exists():
             daily_parts.append(load_parquet(path))
 
     if not daily_parts:
-        return {"error": f"No daily parquet found for {symbol} at 1d", "symbol": symbol}
+        return {"error": f"No daily parquet found for {symbol} at {interval}", "symbol": symbol}
 
     df_daily = pl.concat(daily_parts).sort("open_time").unique(subset=["open_time"], keep="first")
     df_daily = df_daily.with_columns(pl.col("open_time").dt.date().alias("_date"))
@@ -71,104 +86,99 @@ def predict_baseline(
     if df_daily.is_empty():
         return {"error": "No daily rows for requested date range", "symbol": symbol}
 
-    # Prepare horizon labels once per horizon (direction + depth_bin)
-    horizons = [
-        HorizonSpec("short", short_forward_days),
-        HorizonSpec("medium", medium_forward_days),
-        HorizonSpec("long", long_forward_days),
-    ]
-
-    # Convert to python lists for fast rolling-window loops.
-    df_daily = df_daily.with_columns(pl.col("_date").dt.strftime("%Y-%m-%d").alias("_date_str"))
-    dates = df_daily["_date_str"].to_list()
+    open_times = df_daily["open_time"].to_list()
+    dates = df_daily["_date"].to_list()
     closes = df_daily["close"].to_list()
-
     n = len(df_daily)
 
-    def horizon_labels(forward_days: int) -> dict[str, list[Any]]:
+    def horizon_labels(forward_steps: int) -> dict[str, list[Any]]:
         directions: list[str | None] = [None] * n
         depth_bins_idx: list[int | None] = [None] * n
-        returns: list[float | None] = [None] * n
 
         for i in range(n):
-            j = i + forward_days
+            j = i + forward_steps
             if j >= n:
                 continue
             r = closes[j] / closes[i] - 1.0
-            returns[i] = r
             directions[i] = direction_from_return(r, flat_threshold)
             if directions[i] in ("long", "short"):
-                depth_pct = abs(r) * 100.0
-                depth_bins_idx[i] = assign_depth_bin(depth_pct, depth_bins)
-        return {"direction": directions, "depth_bin_idx": depth_bins_idx, "return": returns}
+                depth_bins_idx[i] = assign_depth_bin(abs(r) * 100.0, depth_bins)
+        return {"direction": directions, "depth_bin_idx": depth_bins_idx}
 
-    horizon_data = {h.name: horizon_labels(h.forward_days) for h in horizons}
-
-    def window_slice(i: int) -> range:
-        j0 = max(0, i - rolling_window_days)
-        return range(j0, i)
+    horizon_data = {h.name: horizon_labels(steps_by_horizon[h.name]) for h in horizons}
 
     predictions: list[dict[str, Any]] = []
+    untrained_counts: dict[str, int] = {h.name: 0 for h in horizons}
+
     for i in range(n):
-        date_str = dates[i]
-        out: dict[str, Any] = {"date": date_str, "symbol": symbol}
+        out: dict[str, Any] = {
+            "open_time": open_times[i].isoformat(),
+            "date": dates[i].isoformat(),
+            "symbol": symbol,
+        }
 
         for h in horizons:
             labels = horizon_data[h.name]
             dirs = labels["direction"]
             d_idx = labels["depth_bin_idx"]
 
-            window_idx = list(window_slice(i))
-            train_dirs = [dirs[j] for j in window_idx if dirs[j] is not None]
-            total_dir = len(train_dirs)
-            c_long = sum(1 for d in train_dirs if d == "long")
-            c_flat = sum(1 for d in train_dirs if d == "flat")
-            c_short = sum(1 for d in train_dirs if d == "short")
+            # Only outcomes realised strictly before bar i are observable.
+            train_start, train_end = training_bounds(
+                i, window_steps, steps_by_horizon[h.name]
+            )
+            window_idx = [j for j in range(train_start, train_end) if dirs[j] is not None]
+
+            if len(window_idx) < MIN_TRAIN_SAMPLES:
+                out[h.name] = untrained_horizon_payload(depth_labels)
+                untrained_counts[h.name] += 1
+                continue
+
+            total_dir = len(window_idx)
+            c_long = sum(1 for j in window_idx if dirs[j] == "long")
+            c_flat = sum(1 for j in window_idx if dirs[j] == "flat")
+            c_short = sum(1 for j in window_idx if dirs[j] == "short")
 
             k_dir = 3
             p_long = _laplace_prob(c_long, total_dir, k_dir, alpha)
             p_flat = _laplace_prob(c_flat, total_dir, k_dir, alpha)
             p_short = _laplace_prob(c_short, total_dir, k_dir, alpha)
 
-            def depth_probs_for(direction: str) -> dict[str, float]:
+            def depth_probs_for(direction: str, window_idx: list[int] = window_idx) -> dict[str, float]:
                 idxs = [
                     d_idx[j] for j in window_idx if dirs[j] == direction and d_idx[j] is not None
                 ]
                 total = len(idxs)
                 counts = [0] * depth_k
                 for bi in idxs:
-                    if bi is not None:
-                        counts[int(bi)] += 1
+                    counts[int(bi)] += 1
 
-                probs: dict[str, float] = {}
-                for bi, label in enumerate(depth_labels):
-                    probs[label] = _laplace_prob(counts[bi], total, depth_k, alpha)
-                return probs
-
-            depth_long_bins = depth_probs_for("long")
-            depth_short_bins = depth_probs_for("short")
+                return {
+                    label: _laplace_prob(counts[bi], total, depth_k, alpha)
+                    for bi, label in enumerate(depth_labels)
+                }
 
             out[h.name] = {
                 "P_long": p_long,
                 "P_flat": p_flat,
                 "P_short": p_short,
-                "depth_long_bins": depth_long_bins,
-                "depth_short_bins": depth_short_bins,
+                "depth_long_bins": depth_probs_for("long"),
+                "depth_short_bins": depth_probs_for("short"),
+                "trained": True,
             }
 
         predictions.append(out)
 
-    write_predictions_jsonl(predictions, symbol, settings)
 
-    # Also emit a consolidated predictions.jsonl into a versioned folder
-    try:
-        write_versioned_predictions(predictions, symbol, "baseline", settings, interval="1d")
-    except Exception:
-        pass
+    run_dir = write_versioned_predictions(
+        predictions, symbol, "baseline", settings, interval=interval
+    )
 
     return {
         "symbol": symbol,
         "start": start,
         "end": end,
+        "interval": interval,
         "predictions": len(predictions),
+        "untrained_horizons": untrained_counts,
+        "run_dir": str(run_dir),
     }

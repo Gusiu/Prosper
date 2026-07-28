@@ -14,7 +14,7 @@ from typing import Any
 import polars as pl
 
 from prosper.config import Settings, get_settings
-from prosper.labels.depth import (
+from prosper.domain import (
     DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
     DEPTH_BIN_LABELS,
@@ -81,6 +81,9 @@ class EvaluationSettings:
     confident_wrong_threshold: float = 0.65
     large_return_error_pct: float = 5.0
     worst_predictions_limit: int = 100
+    # The full ranking is recoverable from predictions_quality.parquet; this
+    # file only needs the head that a reader would actually look at.
+    recommendations_limit: int = 500
 
 
 def _finite_float(value: Any, default: float = 0.0) -> float:
@@ -207,6 +210,23 @@ def _date_key(value: Any) -> str | None:
     if len(text) >= 10:
         return text[:10]
     return text
+
+
+def _bar_key(value: Any) -> str | None:
+    """Identity of a single bar, precise to the second.
+
+    Sub-daily runs put many bars on the same calendar date, so keying by date
+    alone would score every hour of a day against the same candle.
+    """
+    dt = _datetime_from_value(value)
+    if dt is None:
+        return None
+    return dt.astimezone(UTC).isoformat()
+
+
+def _prediction_bar_key(prediction: dict[str, Any]) -> str | None:
+    """Prefer the precise ``open_time``; fall back to legacy date-only rows."""
+    return _bar_key(prediction.get("open_time") or prediction.get("date"))
 
 
 def _datetime_from_value(value: Any) -> datetime | None:
@@ -509,6 +529,10 @@ def _aggregate_quality(
             "mae_expected_depth_pct": "Mean absolute error between expected depth percent and realized absolute return percent.",
             "rmse_expected_depth_pct": "RMSE of expected depth percent against realized absolute return percent.",
             "score": "Composite 0-100 quality score; higher is better.",
+            "untrained_rows": (
+                "Rows the model could not train for this horizon. They carry a uniform "
+                "placeholder distribution and are excluded from every metric above."
+            ),
         },
         "overall": {
             "samples": len(scored_rows),
@@ -530,12 +554,113 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default), encoding="utf-8")
 
 
-def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+QUALITY_COLUMNS: tuple[str, ...] = (
+    "symbol",
+    "model_type",
+    "timestamp",
+    "interval",
+    "date",
+    "open_time",
+    "horizon",
+    "forward_steps",
+    "forward_days",
+    "status",
+    "target_date",
+    "pred_direction",
+    "pred_confidence",
+    "pred_p_short",
+    "pred_p_flat",
+    "pred_p_long",
+    "pred_edge",
+    "pred_risk",
+    "pred_recommendation",
+    "pred_expected_depth_pct",
+    "pred_depth_bin",
+    "actual_direction",
+    "actual_return",
+    "actual_return_pct",
+    "actual_depth_bin",
+    "correct",
+    "brier",
+    "nll",
+    "entropy",
+    "depth_kl",
+    "depth_js",
+    "depth_abs_error_pct",
+    "quality_score",
+    "error_score",
+    "flags",
+    "reason",
+)
+
+
+def flatten_quality_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Flatten one nested quality row into a tabular record.
+
+    The nested JSON shape is convenient to build but expensive to store and
+    impossible to scan lazily; a 1h run produced a 331 MB JSONL that the API
+    then parsed in full to return a hundred rows.
+    """
+    prediction = row.get("prediction", {}) or {}
+    actual = row.get("actual", {}) or {}
+    metrics = row.get("metrics", {}) or {}
+    probabilities = prediction.get("probabilities", {}) or {}
+
+    record: dict[str, Any] = {
+        "symbol": row.get("symbol"),
+        "model_type": row.get("model_type"),
+        "timestamp": row.get("timestamp"),
+        "interval": row.get("interval"),
+        "date": row.get("date"),
+        "open_time": row.get("open_time"),
+        "horizon": row.get("horizon"),
+        "forward_steps": row.get("forward_steps"),
+        "forward_days": row.get("forward_days"),
+        "status": row.get("status"),
+        "target_date": row.get("target_date"),
+        "pred_direction": prediction.get("direction"),
+        "pred_confidence": prediction.get("confidence"),
+        "pred_p_short": probabilities.get("short"),
+        "pred_p_flat": probabilities.get("flat"),
+        "pred_p_long": probabilities.get("long"),
+        "pred_edge": prediction.get("edge"),
+        "pred_risk": prediction.get("risk"),
+        "pred_recommendation": prediction.get("recommendation"),
+        "pred_expected_depth_pct": prediction.get("expected_depth_pct"),
+        "pred_depth_bin": prediction.get("predicted_depth_bin"),
+        "actual_direction": actual.get("direction"),
+        "actual_return": actual.get("return"),
+        "actual_return_pct": actual.get("return_pct"),
+        "actual_depth_bin": actual.get("depth_bin"),
+        "correct": metrics.get("correct"),
+        "brier": metrics.get("brier"),
+        "nll": metrics.get("nll"),
+        "entropy": metrics.get("entropy"),
+        "depth_kl": metrics.get("depth_kl"),
+        "depth_js": metrics.get("depth_js"),
+        "depth_abs_error_pct": metrics.get("depth_abs_error_pct"),
+        "quality_score": row.get("quality_score"),
+        "error_score": row.get("error_score"),
+        "flags": "|".join(row.get("flags", []) or []),
+        "reason": row.get("reason"),
+    }
+    for name, value in (row.get("feature_snapshot", {}) or {}).items():
+        record[f"feat_{name}"] = value
+    return record
+
+
+def _write_quality_parquet(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write quality rows as Parquet so consumers can scan them lazily."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, sort_keys=True, default=_json_default))
-            f.write("\n")
+    records = [flatten_quality_row(row) for row in rows]
+    if not records:
+        pl.DataFrame({column: [] for column in QUALITY_COLUMNS}).write_parquet(path)
+        return
+
+    frame = pl.DataFrame(records, infer_schema_length=None)
+    ordered = [c for c in QUALITY_COLUMNS if c in frame.columns]
+    extras = sorted(c for c in frame.columns if c not in QUALITY_COLUMNS)
+    frame.select([*ordered, *extras]).write_parquet(path, compression="zstd")
 
 
 def _write_worst_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -603,27 +728,46 @@ def evaluate_predictions(
     predictions = _read_predictions(prediction_path)
     ohlc_rows, gaps = _load_ohlc(symbol, interval, settings)
     feature_snapshots = _load_feature_snapshots(symbol, interval, settings)
+
+    # Index bars by their exact timestamp; legacy date-only prediction files
+    # additionally resolve through the first bar of each calendar date.
+    bar_to_index: dict[str, int] = {}
     date_to_index: dict[str, int] = {}
     for idx, row in enumerate(ohlc_rows):
-        key = _date_key(row.get("open_time"))
-        if key and key not in date_to_index:
-            date_to_index[key] = idx
+        bar_key = _bar_key(row.get("open_time"))
+        if bar_key and bar_key not in bar_to_index:
+            bar_to_index[bar_key] = idx
+        date_key = _date_key(row.get("open_time"))
+        if date_key and date_key not in date_to_index:
+            date_to_index[date_key] = idx
 
     depth_ranges, depth_labels = parse_depth_bins(DEFAULT_DEPTH_BINS_STR)
     midpoints = _depth_midpoints(depth_labels)
     quality_rows: list[dict[str, Any]] = []
     matched_predictions = 0
+    untrained_by_horizon: dict[str, int] = {h.name: 0 for h in DEFAULT_HORIZONS}
 
     for prediction in predictions:
-        pred_date = _date_key(prediction.get("date") or prediction.get("open_time"))
+        pred_date = _date_key(prediction.get("open_time") or prediction.get("date"))
         if not pred_date:
             continue
-        pred_index = date_to_index.get(pred_date)
+        pred_key = _prediction_bar_key(prediction)
+        pred_index = bar_to_index.get(pred_key) if pred_key else None
+        if pred_index is None:
+            pred_index = date_to_index.get(pred_date)
         if pred_index is not None:
             matched_predictions += 1
 
         for horizon in DEFAULT_HORIZONS:
             horizon_pred = prediction.get(horizon.name) or {}
+            forward_steps = horizon.steps(interval)
+
+            # A horizon the model could not train emits a uniform placeholder.
+            # Scoring it would report the prior as if it were a forecast.
+            if horizon_pred.get("trained") is False:
+                untrained_by_horizon[horizon.name] += 1
+                continue
+
             probs = normalize_probabilities(horizon_pred)
             predicted_direction = max(probs, key=probs.get)
             confidence = probs[predicted_direction]
@@ -636,8 +780,10 @@ def evaluate_predictions(
                 "timestamp": timestamp,
                 "interval": interval,
                 "date": pred_date,
+                "open_time": pred_key,
                 "horizon": horizon.name,
-                "forward_steps": horizon.forward_days,
+                "forward_steps": forward_steps,
+                "forward_days": horizon.forward_days,
                 "feature_snapshot": feature_snapshots.get(pred_date, {}),
                 "prediction": {
                     "direction": predicted_direction,
@@ -650,7 +796,7 @@ def evaluate_predictions(
                 "flags": [],
             }
 
-            target_index = None if pred_index is None else pred_index + horizon.forward_days
+            target_index = None if pred_index is None else pred_index + forward_steps
             if pred_index is None or target_index is None or target_index >= len(ohlc_rows):
                 base_row.update(
                     {
@@ -755,6 +901,10 @@ def evaluate_predictions(
             quality_rows.append(base_row)
 
     metrics, calibration = _aggregate_quality(quality_rows, eval_settings)
+    for horizon_name, untrained in untrained_by_horizon.items():
+        metrics["by_horizon"][horizon_name]["untrained_rows"] = untrained
+    metrics["overall"]["untrained_rows"] = sum(untrained_by_horizon.values())
+
     run_dir = get_evaluation_run_dir(
         symbol, model_type, timestamp, settings=settings, interval=interval
     )
@@ -764,6 +914,8 @@ def evaluate_predictions(
     worst_rows = sorted(scored_rows, key=lambda row: row.get("error_score", 0.0), reverse=True)[
         : eval_settings.worst_predictions_limit
     ]
+    # Only the head of this ranking is ever shown. Serialising every scored row
+    # produced a 97 MB recommendations.json that the API loaded in full.
     recommendations = sorted(
         scored_rows,
         key=lambda row: (
@@ -771,7 +923,7 @@ def evaluate_predictions(
             abs(row.get("prediction", {}).get("edge", 0.0)),
         ),
         reverse=True,
-    )
+    )[: eval_settings.recommendations_limit]
 
     metadata = {
         "symbol": symbol,
@@ -784,6 +936,7 @@ def evaluate_predictions(
         "predictions_matched": matched_predictions,
         "quality_rows": len(quality_rows),
         "scored_rows": len(scored_rows),
+        "untrained_horizons": untrained_by_horizon,
         "gaps_detected": len(gaps),
         "gap_preview": gaps[:20],
         "created_at": datetime.now(tz=UTC).isoformat(),
@@ -791,18 +944,21 @@ def evaluate_predictions(
     metrics = {**metadata, **metrics}
     metrics["artifacts"] = {
         "metrics": str(run_dir / "metrics.json"),
-        "predictions_quality": str(run_dir / "predictions_quality.jsonl"),
+        "predictions_quality": str(run_dir / "predictions_quality.parquet"),
         "calibration": str(run_dir / "calibration.json"),
         "worst_predictions": str(run_dir / "worst_predictions.csv"),
         "recommendations": str(run_dir / "recommendations.json"),
     }
 
     recommendations_payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "symbol": symbol,
         "model_type": model_type,
         "timestamp": timestamp,
         "interval": interval,
+        "limit": eval_settings.recommendations_limit,
+        "scored_rows": len(scored_rows),
+        "truncated": len(scored_rows) > eval_settings.recommendations_limit,
         "items": [
             {
                 "date": row["date"],
@@ -822,7 +978,7 @@ def evaluate_predictions(
     }
 
     _write_json(run_dir / "metrics.json", metrics)
-    _write_jsonl(run_dir / "predictions_quality.jsonl", quality_rows)
+    _write_quality_parquet(run_dir / "predictions_quality.parquet", quality_rows)
     _write_json(run_dir / "calibration.json", calibration)
     _write_worst_csv(run_dir / "worst_predictions.csv", worst_rows)
     _write_json(run_dir / "recommendations.json", recommendations_payload)

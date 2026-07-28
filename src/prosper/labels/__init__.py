@@ -1,15 +1,6 @@
-"""Label building and shared direction/depth utilities."""
+"""Label building.
 
-from prosper.labels.depth import (  # noqa: F401 – public API
-    DEFAULT_DEPTH_BINS_STR,
-    DEFAULT_HORIZONS,
-    DEPTH_BIN_LABELS,
-    DIR_TO_IDX,
-    DIRECTION_CLASSES,
-    IDX_TO_DIR,
-    N_DEPTH_BINS,
-    HorizonSpec,
-    assign_depth_bin,
-    direction_from_return,
-    parse_depth_bins,
-)
+The direction/depth/horizon vocabulary these labels are expressed in lives in
+:mod:`prosper.domain`, because predictors, evaluation and the planner share it
+too — it is not owned by the labelling step.
+"""

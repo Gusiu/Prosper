@@ -9,11 +9,12 @@ from typing import Any
 import polars as pl
 
 from prosper.config import Settings, get_settings
-from prosper.labels.depth import direction_from_return
+from prosper.domain import DEFAULT_HORIZONS, direction_from_return
 from prosper.storage.layout import (
     get_eval_walkforward_summary_path,
     get_parquet_file_path,
 )
+from prosper.storage.runs import RunRef, load_run_predictions, resolve_run
 from prosper.utils.time import generate_month_range
 
 ALLOWED_RECOMMENDATIONS = {
@@ -75,35 +76,23 @@ def load_daily_closes(symbol: str, start_ym: str, end_ym: str, settings: Setting
     return df
 
 
-def load_predictions_jsonl(
-    symbol: str, start_ym: str, end_ym: str, settings: Settings
+def load_run_predictions_in_range(
+    run: RunRef, start_ym: str, end_ym: str
 ) -> list[dict[str, Any]]:
-    """Load prediction JSONL rows for the requested months."""
-    from prosper.storage.layout import get_prediction_report_path
-    from prosper.utils.time import generate_month_range
-
-    rows: list[dict[str, Any]] = []
-    for y, m in generate_month_range(start_ym, end_ym):
-        p = get_prediction_report_path(symbol, y, m, settings=settings)
-        if not p.exists():
-            continue
-        with open(p, encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    rows.append(json.loads(line))
-    return rows
+    """Load a run's predictions restricted to the requested months."""
+    months = {f"{y:04d}-{m:02d}" for y, m in generate_month_range(start_ym, end_ym)}
+    return [row for row in load_run_predictions(run) if str(row["date"])[:7] in months]
 
 
 def load_recommendations_windows(
-    symbol: str, start_ym: str, end_ym: str, settings: Settings
+    symbol: str, start_ym: str, end_ym: str, settings: Settings, run_slug: str | None = None
 ) -> list[dict[str, Any]]:
-    """Load recommendation windows JSON for requested months."""
+    """Load recommendation windows JSON for requested months of one run."""
     from prosper.storage.layout import get_recommendation_report_path
-    from prosper.utils.time import generate_month_range
 
     windows: list[dict[str, Any]] = []
     for y, m in generate_month_range(start_ym, end_ym):
-        p = get_recommendation_report_path(symbol, y, m, settings=settings)
+        p = get_recommendation_report_path(symbol, y, m, settings=settings, run_slug=run_slug)
         if not p.exists():
             continue
         payload = json.loads(p.read_text(encoding="utf-8"))
@@ -139,29 +128,41 @@ def eval_walkforward(
     step_months: int = 1,
     settings: Settings | None = None,
     flat_threshold: float | None = None,
+    model_type: str | None = None,
+    timestamp: str | None = None,
+    interval: str | None = None,
 ) -> dict[str, Any]:
     """
-    Walk-forward evaluation (MVP).
+    Walk-forward evaluation of one versioned prediction run.
 
     Notes:
     - Predictions and recommendations are precomputed by earlier steps.
     - `train_months` / `step_months` define test-month slices; we do not retrain in this MVP.
+    - The run is identified explicitly so the report can be attributed to a model.
     """
     if settings is None:
         settings = get_settings()
     if flat_threshold is None:
         flat_threshold = settings.label_flat_threshold_default
 
+    run = resolve_run(
+        symbol, model_type=model_type, timestamp=timestamp, interval=interval, settings=settings
+    )
+
     # Load data needed for evaluation
     daily_df = load_daily_closes(symbol, start, end, settings)
     daily_dates = daily_df["_date"].to_list()
     closes = daily_df["close"].to_list()
 
-    predictions = load_predictions_jsonl(symbol, start, end, settings)
+    predictions = load_run_predictions_in_range(run, start, end)
     if not predictions:
-        raise FileNotFoundError(f"No predictions JSONL found for {symbol} in {start}..{end}")
+        raise FileNotFoundError(
+            f"Run {run.slug} has no predictions in {start}..{end}"
+        )
 
-    windows_payload = load_recommendations_windows(symbol, start, end, settings)
+    windows_payload = load_recommendations_windows(
+        symbol, start, end, settings, run_slug=run.slug
+    )
     windows: list[Window] = [Window.from_dict(w) for w in windows_payload if w.get("horizon")]
     for w in windows:
         if w.recommendation not in ALLOWED_RECOMMENDATIONS:
@@ -172,8 +173,9 @@ def eval_walkforward(
     for w in windows:
         windows_by_horizon.setdefault(w.horizon, []).append(w)
 
-    # Compute actual forward returns arrays for each horizon based on index.
-    horizon_specs: dict[str, int] = {"short": 28, "medium": 182, "long": 365}
+    # Realised forward returns are read off the 1d series, so the horizons are
+    # measured in daily bars regardless of the run's own interval.
+    horizon_specs: dict[str, int] = {h.name: h.steps("1d") for h in DEFAULT_HORIZONS}
 
     # Map prediction row date to index in daily data
     date_to_idx = {d: i for i, d in enumerate(daily_dates)}
@@ -227,19 +229,22 @@ def eval_walkforward(
             }
 
         for pred in month_rows:
-            date_str = str(pred["date"])
+            date_str = str(pred["date"])[:10]
             if date_str not in date_to_idx:
                 continue
             i = date_to_idx[date_str]
 
             for h in horizons:
+                probs = pred[h]
+                if probs.get("trained") is False:
+                    continue
+
                 forward_days = horizon_specs[h]
                 r = forward_return_idx(i, forward_days)
                 if r is None:
                     continue
                 y_true = direction_from_return(r, float(flat_threshold))
 
-                probs = pred[h]
                 p_long = float(probs["P_long"])
                 p_flat = float(probs["P_flat"])
                 p_short = float(probs["P_short"])
@@ -297,6 +302,10 @@ def eval_walkforward(
 
     report = {
         "symbol": symbol,
+        "run": run.to_dict(),
+        "model_type": run.model_type,
+        "interval": run.interval,
+        "timestamp": run.timestamp,
         "start": start,
         "end": end,
         "train_months": train_months,
@@ -308,7 +317,7 @@ def eval_walkforward(
         "walkforward_test_months": month_summaries,
     }
 
-    out_path = get_eval_walkforward_summary_path(symbol, settings=settings)
+    out_path = get_eval_walkforward_summary_path(symbol, settings=settings, run_slug=run.slug)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, indent=2, sort_keys=True, default=str), encoding="utf-8")
 

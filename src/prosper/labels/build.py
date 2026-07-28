@@ -5,7 +5,7 @@ from typing import Any
 import polars as pl
 
 from prosper.config import Settings, get_settings
-from prosper.labels.depth import assign_depth_bin, parse_depth_bins
+from prosper.domain import assign_depth_bin, parse_depth_bins
 from prosper.storage.layout import get_labels_parquet_path
 from prosper.storage.parquet import load_parquet, save_parquet
 

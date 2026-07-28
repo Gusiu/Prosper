@@ -1247,3 +1247,32 @@ progress::-moz-progress-bar {
     order: 3;
   }
 }
+
+/* --- Backtest tab --- */
+.mono-cell {
+  font-family: "Fira Code", monospace;
+  font-size: 0.7rem;
+  letter-spacing: -0.02em;
+}
+
+.limitations-list {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.limitations-list li {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+#backtest-limitations {
+  border-left: 2px solid rgba(255, 189, 46, 0.45);
+}
+
+#backtest-status {
+  margin-top: 12px;
+}

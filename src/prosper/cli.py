@@ -357,10 +357,10 @@ def predict_baseline_cmd(
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
     window_days: int = typer.Option(
-        180,
+        730,
         "--window-days",
         "--window_days",
-        help="Rolling window size in days (used for empirical frequencies)",
+        help="Rolling window in calendar days; must exceed the longest horizon (365d)",
     ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
@@ -396,10 +396,10 @@ def predict_ml_cmd(
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
     interval: str = typer.Option("1d", "--interval", "-i", help="Feature interval (1m, 1h, 1d)"),
     train_window_days: int = typer.Option(
-        150,
+        730,
         "--train-window-days",
         "--train_window_days",
-        help="Training window size in days",
+        help="Training window in calendar days; must exceed the longest horizon (365d)",
     ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
@@ -446,10 +446,10 @@ def predict_xgboost_cmd(
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
     interval: str = typer.Option("1d", "--interval", "-i", help="Feature interval (1m, 1h, 1d)"),
     train_window_days: int = typer.Option(
-        150,
+        730,
         "--train-window-days",
         "--train_window_days",
-        help="Training window size in days",
+        help="Training window in calendar days; must exceed the longest horizon (365d)",
     ),
     n_estimators: int = typer.Option(100, "--n-estimators", help="XGBoost n_estimators"),
     max_depth: int = typer.Option(6, "--max-depth", help="XGBoost max_depth"),
@@ -504,7 +504,7 @@ def predict_gru_cmd(
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
     interval: str = typer.Option("1d", "--interval", "-i", help="Feature interval (1m, 1h, 1d)"),
     train_window_days: int = typer.Option(
-        365, "--train-window-days", help="Training window size in days"
+        730, "--train-window-days", help="Training window in calendar days; must exceed 365d"
     ),
     seq_len: int = typer.Option(30, "--seq-len", help="Sequence length for GRU input"),
     epochs: int = typer.Option(20, "--epochs", help="Training epochs per window"),
@@ -557,7 +557,7 @@ def predict_tft_cmd(
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
     interval: str = typer.Option("1d", "--interval", "-i", help="Feature interval (1m, 1h, 1d)"),
     train_window_days: int = typer.Option(
-        365, "--train-window-days", help="Training window size in days"
+        730, "--train-window-days", help="Training window in calendar days; must exceed 365d"
     ),
     seq_len: int = typer.Option(60, "--seq-len", help="Encoder sequence length"),
     max_epochs: int = typer.Option(10, "--max-epochs", help="Training epochs per window"),
@@ -615,6 +615,13 @@ def planner_windows(
     long_weeks: str = typer.Option("26-104", "--long-weeks", help="Long horizon weeks (min-max)"),
     start: str = typer.Option(None, "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(None, "--end", help="End date in YYYY-MM-DD format"),
+    model_type: str = typer.Option(
+        None, "--model-type", "--model_type", help="Source model; latest run if omitted"
+    ),
+    timestamp: str = typer.Option(
+        None, "--timestamp", help="Source run timestamp; latest run if omitted"
+    ),
+    interval: str = typer.Option(None, "--interval", help="Source run interval"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
     save_metadata: bool = typer.Option(
@@ -646,15 +653,23 @@ def planner_windows(
             start=start,
             end=end,
             settings=settings,
+            model_type=model_type,
+            timestamp=timestamp,
+            interval=interval,
         )
 
         if "error" in results:
             console.print(f"[red]Error: {results['error']}[/red]")
             raise typer.Exit(1)
 
+        run = results.get("run", {})
         console.print(f"\n[bold]Action Windows for {symbol}[/bold]")
+        console.print(f"Source run: {run.get('slug', 'unknown')}")
         windows_all = results.get("windows", []) or []
         console.print(f"Total windows: {len(windows_all)}")
+        skipped = results.get("skipped_untrained_horizons", 0)
+        if skipped:
+            console.print(f"[yellow]Skipped {skipped} untrained horizon rows[/yellow]")
 
         console.print("\n[bold]Sample windows:[/bold]")
         for window in windows_all[:5]:
@@ -682,6 +697,13 @@ def eval_walkforward_cmd(
     ),
     start: str = typer.Option(..., "--start", help="Start month in YYYY-MM"),
     end: str = typer.Option(..., "--end", help="End month in YYYY-MM"),
+    model_type: str = typer.Option(
+        None, "--model-type", "--model_type", help="Source model; latest run if omitted"
+    ),
+    timestamp: str = typer.Option(
+        None, "--timestamp", help="Source run timestamp; latest run if omitted"
+    ),
+    interval: str = typer.Option(None, "--interval", help="Source run interval"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
     save_metadata: bool = typer.Option(
@@ -699,10 +721,16 @@ def eval_walkforward_cmd(
             train_months=train_months,
             step_months=step_months,
             settings=settings,
+            model_type=model_type,
+            timestamp=timestamp,
+            interval=interval,
         )
 
-        out_path = get_eval_walkforward_summary_path(symbol, settings=settings)
+        out_path = get_eval_walkforward_summary_path(
+            symbol, settings=settings, run_slug=report["run"]["slug"]
+        )
         console.print(f"[green][OK][/green] Eval report saved to: {out_path}")
+        console.print(f"Source run: {report['run']['slug']}")
         console.print(f"Horizons: {', '.join(report['horizons'].keys())}")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -715,13 +743,21 @@ def eval_backtest_cmd(
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD"),
     capital: float = typer.Option(10000.0, "--capital", help="Initial Capital in USDT"),
+    model_type: str = typer.Option(
+        None, "--model-type", "--model_type", help="Source model; latest run if omitted"
+    ),
+    timestamp: str = typer.Option(
+        None, "--timestamp", help="Source run timestamp; latest run if omitted"
+    ),
+    interval: str = typer.Option(None, "--interval", help="Source run interval"),
+    horizon: str = typer.Option("short", "--horizon", help="Horizon driving the signal"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
     save_metadata: bool = typer.Option(
         False, "--save-metadata", help="Save meta.json alongside artifacts"
     ),
 ) -> None:
-    """Run Trading Simulator (Backtest) using generated predictions."""
+    """Run Trading Simulator (Backtest) over one versioned prediction run."""
     settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
 
     try:
@@ -731,6 +767,11 @@ def eval_backtest_cmd(
             end=end,
             initial_capital=capital,
             settings=settings,
+            model_type=model_type,
+            timestamp=timestamp,
+            interval=interval,
+            horizon=horizon,
+            save_report=True,
         )
 
         if "error" in res:
@@ -738,6 +779,7 @@ def eval_backtest_cmd(
             raise typer.Exit(1)
 
         console.print(f"\n[bold]Backtest Results for {symbol}[/bold]")
+        console.print(f"Source run:      {res['run']['slug']} (horizon: {res['horizon']})")
         console.print(f"Initial Capital: ${res['initial_capital']:.2f}")
         console.print(f"Final Value:     ${res['final_value']:.2f}")
 
@@ -746,6 +788,10 @@ def eval_backtest_cmd(
         console.print(f"Max Drawdown:    [red]-{res['max_drawdown_pct']:.2f}%[/red]")
         console.print(f"Total Trades:    {res['total_trades']}")
         console.print(f"Days Tested:     {res['days_tested']}")
+        console.print(f"Report:          {res.get('report_path', 'n/a')}")
+        console.print("\n[yellow]Known limitations of this MVP strategy:[/yellow]")
+        for note in res["limitations"]:
+            console.print(f"  - {note}")
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")

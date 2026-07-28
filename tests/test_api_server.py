@@ -12,7 +12,7 @@ from prosper.api.server import (
     parse_safe_command_chain,
 )
 from prosper.config import Settings
-from prosper.core import DataManager
+from prosper.inventory import DataManager
 from prosper.storage.layout import get_parquet_file_path
 from prosper.storage.parquet import save_parquet
 

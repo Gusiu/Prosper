@@ -253,7 +253,15 @@ def main() -> None:
             str(root),
         ]
     )
-    pred_path = root / "reports" / "predictions" / symbol / "daily" / f"{start_year:04d}-{start_month:02d}.jsonl"
+    # Predictions live in a versioned run folder identified by model/interval/timestamp.
+    run_dirs = sorted(
+        (root / "reports" / "predictions" / symbol).glob("baseline_*_*"),
+        key=lambda p: p.name,
+    )
+    if not run_dirs:
+        raise SystemExit(f"No baseline run folder under {root / 'reports' / 'predictions' / symbol}")
+    run_dir = run_dirs[-1]
+    pred_path = run_dir / "predictions.jsonl"
     if not pred_path.exists():
         raise SystemExit(f"Missing predictions file: {pred_path}")
     lines = pred_path.read_text(encoding="utf-8").splitlines()
@@ -264,7 +272,8 @@ def main() -> None:
     if abs(s - 1.0) > 1e-6:
         raise SystemExit(f"Probability sum != 1.0 for first row: {s}")
 
-    # Planner windows
+    # Planner windows, scoped to the run we just produced
+    model_type, interval, timestamp = run_dir.name.split("_")
     run(
         [
             "prosper",
@@ -272,6 +281,12 @@ def main() -> None:
             "windows",
             "--symbol",
             symbol,
+            "--model-type",
+            model_type,
+            "--timestamp",
+            timestamp,
+            "--interval",
+            interval,
             "--start",
             f"{start_year:04d}-{start_month:02d}-01",
             "--end",
@@ -280,10 +295,19 @@ def main() -> None:
             str(root),
         ]
     )
-    win_path = root / "reports" / "recommendations" / symbol / "windows" / f"{start_year:04d}-{start_month:02d}.json"
+    win_path = (
+        root
+        / "reports"
+        / "recommendations"
+        / symbol
+        / run_dir.name
+        / f"{start_year:04d}-{start_month:02d}.json"
+    )
     if not win_path.exists():
         raise SystemExit(f"Missing windows JSON: {win_path}")
     payload = json.loads(win_path.read_text(encoding="utf-8"))
+    if payload.get("model_type") != model_type:
+        raise SystemExit(f"Windows report is not attributed to {model_type}: {payload}")
     for w in payload["windows"]:
         rec = w["recommendation"]
         if rec not in ALLOWED_RECOMMENDATIONS:

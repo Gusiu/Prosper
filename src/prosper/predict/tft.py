@@ -10,13 +10,22 @@ import pandas as pd
 import polars as pl
 
 from prosper.config import Settings, get_settings
-from prosper.labels.depth import (
+from prosper.domain import (
+    DEFAULT_HORIZONS,
     DEPTH_BIN_LABELS,
-    N_DEPTH_BINS,
+    IDX_TO_DIR,
+    assign_depth_bin,
     direction_from_return,
+    parse_depth_bins,
+)
+from prosper.predict.window import (
+    days_to_steps,
+    training_bounds,
+    untrained_horizon_payload,
+    validate_train_window,
 )
 from prosper.storage.layout import get_features_parquet_path
-from prosper.storage.predictions import write_predictions_jsonl, write_versioned_predictions
+from prosper.storage.predictions import write_versioned_predictions
 from prosper.utils.time import parse_date
 
 
@@ -33,22 +42,23 @@ def predict_tft(
     settings: Settings | None = None,
     interval: str = "1d",
     seq_len: int = 60,
-    train_window_days: int = 365,
+    train_window_days: int = 730,
     max_epochs: int = 10,
     hidden_size: int = 32,
     attention_head_size: int = 2,
     flat_threshold: float = 0.01,
-    short_forward_days: int = 28,
-    medium_forward_days: int = 182,
-    long_forward_days: int = 365,
     learning_rate: float = 1e-3,
 ) -> dict[str, Any]:
     """
     Train a Temporal Fusion Transformer every calendar month (rolling window)
-    and produce daily JSONL predictions identical in format to ML/GRU models.
+    and produce per-bar JSONL predictions identical in format to ML/GRU models.
     """
     if settings is None:
         settings = get_settings()
+
+    horizon_specs = list(DEFAULT_HORIZONS)
+    steps_by_horizon = validate_train_window(train_window_days, interval, horizon_specs)
+    train_window_steps = days_to_steps(train_window_days, interval)
 
     # ── Seed & deterministic mode (research) ─────────────────────────────────
     if settings.deterministic:
@@ -94,6 +104,7 @@ def predict_tft(
     exclude_cols = {"open_time", "close_time", "_date", "symbol"}
     feature_cols = [c for c in df_pl.columns if c not in exclude_cols and c != "close"]
 
+    open_times = df_pl["open_time"].to_list()
     dates = df_pl["_date"].to_list()
     closes = df_pl["close"].to_list()
     X_raw = df_pl.select(feature_cols).to_numpy().astype(np.float32)
@@ -104,20 +115,25 @@ def predict_tft(
 
     # ── 2. Pre-compute forward labels ─────────────────────────────────────────
     dir_map = {"short": 0, "flat": 1, "long": 2}
-    horizons = {
-        "short": short_forward_days,
-        "medium": medium_forward_days,
-        "long": long_forward_days,
-    }
-    y_dir_all = {}
-    for h_name, f_days in horizons.items():
-        arr = np.full(n, -1, dtype=np.int64)
-        for i in range(n - f_days):
-            j = i + f_days
+    depth_bins, depth_labels = parse_depth_bins(",".join(DEPTH_BIN_LABELS))
+    y_dir_all: dict[str, np.ndarray] = {}
+    y_depth_all: dict[str, np.ndarray] = {}
+    for h in horizon_specs:
+        forward_steps = steps_by_horizon[h.name]
+        dir_arr = np.full(n, -1, dtype=np.int64)
+        depth_arr = np.full(n, -1, dtype=np.int64)
+        for i in range(n - forward_steps):
+            j = i + forward_steps
             if closes[i] and closes[j]:
                 r = closes[j] / closes[i] - 1.0
-                arr[i] = dir_map[direction_from_return(r, flat_threshold)]
-        y_dir_all[h_name] = arr
+                direction = direction_from_return(r, flat_threshold)
+                dir_arr[i] = dir_map[direction]
+                if direction in ("long", "short"):
+                    bin_idx = assign_depth_bin(abs(r) * 100.0, depth_bins)
+                    if bin_idx is not None:
+                        depth_arr[i] = bin_idx
+        y_dir_all[h.name] = dir_arr
+        y_depth_all[h.name] = depth_arr
 
     # ── 3. Rolling-month train + inference ───────────────────────────────────
     try:
@@ -132,54 +148,49 @@ def predict_tft(
         }
 
     predictions: list[dict[str, Any]] = []
+    untrained_counts: dict[str, int] = {h.name: 0 for h in horizon_specs}
     current_train_month = None
-    tft_model = {}
-    norm_params: tuple[np.ndarray, np.ndarray] | None = None  # (med, iqr)
-
-    uniform_depth = {lbl: 1.0 / N_DEPTH_BINS for lbl in DEPTH_BIN_LABELS}
+    tft_model: dict[str, Any] = {}
+    dataset_cache: dict[str, Any] = {}
+    depth_cache: dict[str, dict[str, dict[str, float]]] = {}
+    X_norm_all: np.ndarray | None = None
 
     for i in range(n):
         row_date = dates[i]
         if row_date < start_dt or row_date > end_dt:
             continue
 
-        train_end = i - 1
-        train_start = max(0, i - train_window_days)
         month_key = (row_date.year, row_date.month)
 
         # ── Train once per calendar month ─────────────────────────────────
-        if month_key != current_train_month and (train_end - train_start) >= seq_len + 20:
+        if month_key != current_train_month:
             current_train_month = month_key
             tft_model = {}
+            dataset_cache = {}
+            depth_cache = {}
 
-            # Normalise
-            X_tr = X_raw[train_start : train_end + 1]
+            # Normalise on past rows only; stats never see future bars.
+            X_tr = X_raw[max(0, i - train_window_steps) : i]
             X_safe = np.where(np.isfinite(X_tr), X_tr, 0.0)
             med = np.median(X_safe, axis=0)
             iqr_arr = np.percentile(X_safe, 75, axis=0) - np.percentile(X_safe, 25, axis=0)
             iqr_arr[iqr_arr == 0] = 1.0
-            norm_params = (med, iqr_arr)
             X_norm_all = _robust_normalize(X_raw, med, iqr_arr)
 
-            norm_params_cache = {}
-
-            for h_name, f_days in horizons.items():
+            for h in horizon_specs:
+                h_name = h.name
+                forward_steps = steps_by_horizon[h_name]
                 y_dir = y_dir_all[h_name]
-                # Prevent look-ahead leakage: label at k needs close[k + f_days]
-                safe_train_end = train_end - f_days
-                if safe_train_end <= train_start:
-                    tft_model[h_name] = None
-                    continue
+                train_start, train_end = training_bounds(i, train_window_steps, forward_steps)
                 # Build pandas dataframe for TimeSeriesDataSet
-                valid_idx = [k for k in range(train_start, safe_train_end + 1) if y_dir[k] >= 0]
+                valid_idx = [k for k in range(train_start, train_end) if y_dir[k] >= 0]
                 if len(valid_idx) < seq_len + 10 or len(set(y_dir[valid_idx])) < 2:
                     tft_model[h_name] = None
                     continue
 
-                dir_map_rev = {0: "short", 1: "flat", 2: "long"}
                 rows = []
                 for k in valid_idx:
-                    row = {"time_idx": k, "group": symbol, "target": dir_map_rev[y_dir[k]]}
+                    row = {"time_idx": k, "group": symbol, "target": IDX_TO_DIR[int(y_dir[k])]}
                     for fi, fc in enumerate(feature_cols):
                         row[fc] = float(X_norm_all[k, fi])
                     rows.append(row)
@@ -222,51 +233,68 @@ def predict_tft(
                         reduce_on_plateau_patience=2,
                     )
 
-                    trainer_kwargs = dict(
+                    # The model is used immediately and discarded, so neither a
+                    # logger nor a checkpoint is wanted. Left on, Lightning
+                    # writes one lightning_logs/version_N/ and one .ckpt per
+                    # Trainer — a full run once left ~18k directories and
+                    # 260 MB of dead artifacts in the repo root.
+                    trainer_kwargs: dict[str, Any] = dict(
                         max_epochs=max_epochs,
                         enable_progress_bar=False,
                         enable_model_summary=False,
+                        enable_checkpointing=False,
                         logger=False,
                         accelerator="cpu",
+                        default_root_dir=str(settings.meta_dir / "lightning"),
                     )
                     if settings.deterministic:
                         trainer_kwargs["deterministic"] = True
                     trainer = L.Trainer(**trainer_kwargs)
                     trainer.fit(tft, train_dataloaders=loader)
                     tft_model[h_name] = tft
-                    norm_params_cache[h_name] = ds
+                    dataset_cache[h_name] = ds
+                    depth_cache[h_name] = _empirical_depth(
+                        y_dir_all[h_name][train_start:train_end],
+                        y_depth_all[h_name][train_start:train_end],
+                        depth_labels,
+                    )
                 except Exception as e:
                     print(f"Training exception for month {current_train_month}: {e}")
                     tft_model[h_name] = None
-            norm_params = (med, iqr_arr, X_norm_all, norm_params_cache)
 
         # ── Inference ─────────────────────────────────────────────────────
         date_str = row_date.isoformat()
-        out: dict[str, Any] = {"date": date_str, "symbol": symbol}
+        out: dict[str, Any] = {
+            "open_time": open_times[i].isoformat(),
+            "date": date_str,
+            "symbol": symbol,
+        }
 
-        for h_name in horizons.keys():
+        for h in horizon_specs:
+            h_name = h.name
+            forward_steps = steps_by_horizon[h_name]
             tft_h = tft_model.get(h_name)
-            if not tft_h or norm_params is None or i < seq_len:
-                out[h_name] = {
-                    "P_long": 0.33,
-                    "P_flat": 0.34,
-                    "P_short": 0.33,
-                    "depth_long_bins": uniform_depth.copy(),
-                    "depth_short_bins": uniform_depth.copy(),
-                }
+            if not tft_h or X_norm_all is None or i < seq_len:
+                out[h_name] = untrained_horizon_payload(depth_labels)
+                untrained_counts[h_name] += 1
             else:
                 try:
-                    med, iqr_arr, X_norm_all, norm_params_cache = norm_params
-                    ds_ref = norm_params_cache.get(h_name)
+                    ds_ref = dataset_cache.get(h_name)
                     if not ds_ref:
                         raise ValueError("No ds_ref")
                     enc_len = min(seq_len, i)
                     rows_inf = []
-                    dir_map_rev = {0: "short", 1: "flat", 2: "long"}
                     y_dir = y_dir_all[h_name]
                     for k in range(i - enc_len, i + 1):
-                        fake_target = dir_map_rev[max(y_dir[k], 0)]
-                        row = {"time_idx": k, "group": symbol, "target": fake_target}
+                        # The encoder consumes target history. Only labels
+                        # realised before bar i are known then; anything newer
+                        # must be masked or the model reads its own answer.
+                        known = k + forward_steps < i and y_dir[k] >= 0
+                        row = {
+                            "time_idx": k,
+                            "group": symbol,
+                            "target": IDX_TO_DIR[int(y_dir[k])] if known else np.nan,
+                        }
                         for fi, fc in enumerate(feature_cols):
                             row[fc] = float(X_norm_all[k, fi])
                         rows_inf.append(row)
@@ -312,18 +340,28 @@ def predict_tft(
                     if logits.ndim > 1:
                         logits = logits.flatten()
 
-                    probs = np.exp(logits) / np.exp(logits).sum()
+                    # NaNLabelEncoder(add_nan=True) prepends an "unknown"
+                    # class; drop it so the 3 direction classes line up.
+                    if logits.shape[0] == len(IDX_TO_DIR) + 1:
+                        logits = logits[1:]
+
+                    shifted = logits - np.max(logits)
+                    probs = np.exp(shifted) / np.exp(shifted).sum()
                     p_short, p_flat, p_long = float(probs[0]), float(probs[1]), float(probs[2])
                 except Exception as e:
                     print(f"Inference exception at {date_str}: {e}")
-                    p_short, p_flat, p_long = 0.33, 0.34, 0.33
+                    out[h_name] = untrained_horizon_payload(depth_labels)
+                    untrained_counts[h_name] += 1
+                    continue
 
+                depths = depth_cache.get(h_name, {})
                 out[h_name] = {
                     "P_long": p_long,
                     "P_flat": p_flat,
                     "P_short": p_short,
-                    "depth_long_bins": uniform_depth.copy(),
-                    "depth_short_bins": uniform_depth.copy(),
+                    "depth_long_bins": depths.get("long", _uniform_depth(depth_labels)),
+                    "depth_short_bins": depths.get("short", _uniform_depth(depth_labels)),
+                    "trained": True,
                 }
 
         predictions.append(out)
@@ -331,12 +369,46 @@ def predict_tft(
     if not predictions:
         return {"error": "No predictions generated for the requested date range", "symbol": symbol}
 
-    write_predictions_jsonl(predictions, symbol, settings)
 
-    # Also write versioned consolidated predictions.jsonl
-    try:
-        write_versioned_predictions(predictions, symbol, "tft", settings, interval=interval)
-    except Exception:
-        pass
+    run_dir = write_versioned_predictions(
+        predictions, symbol, "tft", settings, interval=interval
+    )
 
-    return {"symbol": symbol, "start": start, "end": end, "predictions": len(predictions)}
+    return {
+        "symbol": symbol,
+        "start": start,
+        "end": end,
+        "interval": interval,
+        "predictions": len(predictions),
+        "untrained_horizons": untrained_counts,
+        "run_dir": str(run_dir),
+    }
+
+
+def _uniform_depth(labels: list[str]) -> dict[str, float]:
+    return {label: 1.0 / len(labels) for label in labels}
+
+
+def _empirical_depth(
+    directions: np.ndarray,
+    depths: np.ndarray,
+    labels: list[str],
+) -> dict[str, dict[str, float]]:
+    """Realised depth-bin distribution per direction over a training window."""
+    counts = {"long": [0] * len(labels), "short": [0] * len(labels)}
+    for direction_idx, depth_idx in zip(directions, depths, strict=True):
+        if depth_idx < 0 or direction_idx < 0:
+            continue
+        direction = IDX_TO_DIR.get(int(direction_idx))
+        if direction in counts:
+            counts[direction][int(depth_idx)] += 1
+
+    out: dict[str, dict[str, float]] = {}
+    for direction, bucket in counts.items():
+        total = sum(bucket)
+        out[direction] = (
+            _uniform_depth(labels)
+            if total == 0
+            else {label: c / total for label, c in zip(labels, bucket, strict=True)}
+        )
+    return out

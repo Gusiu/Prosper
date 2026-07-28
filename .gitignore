@@ -59,13 +59,17 @@ htmlcov/
 
 # Project Specific Trash & Logs
 data_smoke/
-checkpoints/
-lightning_logs/
 tmp/
 *_out.txt
 out.txt
 tmp_*.parquet
 .testvenv*/
+
+# Lightning artifacts. predict/tft.py disables the logger and checkpointing so
+# these should no longer appear; kept as a guard because leaving them on once
+# produced ~18k directories and 260 MB in the repo root.
+checkpoints/
+lightning_logs/
 
 # Generated JSON artifacts live under data/ (already ignored above).
 # A bare `*.json` rule used to sit here; it also swallowed tooling config

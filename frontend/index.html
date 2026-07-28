@@ -35,6 +35,9 @@
           <li class="tab-link" onclick="switchTab('tab-eval', this)">
             Evaluation
           </li>
+          <li class="tab-link" onclick="switchTab('tab-backtest', this)">
+            Backtest
+          </li>
         </ul>
 
         <!-- Sidebar Footer with Research Mode -->
@@ -628,9 +631,11 @@
                       <th>Rank</th>
                       <th>Symbol</th>
                       <th>Model</th>
+                      <th>Run</th>
                       <th>Score</th>
                       <th>Acc.</th>
                       <th>ECE</th>
+                      <th>Untr.</th>
                       <th>Actions</th>
                     </tr>
                   </thead>
@@ -693,7 +698,7 @@
               <div class="table-title-row">
                 <h3>Worst Predictions</h3>
                 <div class="evaluation-actions compact">
-                  <select id="eval-flag-filter" class="glass-input" onchange="renderWorstPredictions()">
+                  <select id="eval-flag-filter" class="glass-input" onchange="onEvaluationFlagChange()">
                     <option value="">All flags</option>
                   </select>
                   <button class="outline-btn" onclick="exportWorstPredictionsCsv()">
@@ -748,20 +753,38 @@
             </div>
           </div>
 
+        </div>
+
+        <!-- TAB 4: BACKTEST -->
+        <div id="tab-backtest" class="tab-content fade-in">
           <div class="ops-card glass-panel mb-2 evaluation-backtest-card">
             <div class="table-title-row">
-              <h3>Trading Backtest</h3>
-              <span class="text-muted">Legacy simulation view</span>
+              <h3>Trading Simulation</h3>
+              <span class="text-muted" id="backtest-run-label"
+                >No run selected</span
+              >
             </div>
+            <p class="metric-desc mb-2">
+              Replays one saved prediction run as a long-only strategy. Results
+              are tied to that exact run — pick the model explicitly.
+            </p>
             <div class="evaluation-backtest-controls">
               <label class="evaluation-label">
-                <span>Symbol</span>
+                <span>Prediction run</span>
                 <select
-                  id="eval-symbol"
+                  id="backtest-run"
                   class="glass-input"
-                  onchange="updateEvalDates()"
+                  onchange="onBacktestRunChange()"
                 >
-                  <option value="">Select Symbol...</option>
+                  <option value="">No model runs loaded...</option>
+                </select>
+              </label>
+              <label class="evaluation-label">
+                <span>Horizon</span>
+                <select id="backtest-horizon" class="glass-input">
+                  <option value="short" selected>short</option>
+                  <option value="medium">medium</option>
+                  <option value="long">long</option>
                 </select>
               </label>
               <label class="evaluation-label">
@@ -772,9 +795,22 @@
                 <span>End date</span>
                 <input type="date" id="eval-end" class="glass-input" />
               </label>
+              <label class="evaluation-label">
+                <span>Capital (USDT)</span>
+                <input
+                  type="number"
+                  id="backtest-capital"
+                  class="glass-input"
+                  value="10000"
+                  min="1"
+                />
+              </label>
               <button class="glow-btn accent-green" onclick="runBacktest()">
                 Execute Backtest
               </button>
+            </div>
+            <div id="backtest-status" class="analysis-status">
+              Select a prediction run to simulate.
             </div>
           </div>
 
@@ -782,21 +818,35 @@
             <div class="metric-card glass-panel">
               <h3>Net ROI</h3>
               <div class="metric-value fade-in" id="val-roi">--%</div>
+              <p class="metric-desc">Return over the simulated period.</p>
             </div>
             <div class="metric-card glass-panel">
               <h3>Final Capital</h3>
               <div class="metric-value fade-in" id="val-capital">$0.00</div>
+              <p class="metric-desc">Balance at the last simulated bar.</p>
             </div>
             <div class="metric-card glass-panel">
               <h3>Max Drawdown</h3>
               <div class="metric-value fade-in text-red" id="val-drawdown">
                 --%
               </div>
+              <p class="metric-desc">Deepest peak-to-trough decline.</p>
             </div>
             <div class="metric-card glass-panel">
               <h3>Total Trades</h3>
               <div class="metric-value fade-in" id="val-trades">0</div>
+              <p class="metric-desc">Entries plus exits.</p>
             </div>
+          </div>
+
+          <div id="backtest-limitations" class="ops-card glass-panel mb-2">
+            <div class="table-title-row">
+              <h3>Model limitations</h3>
+              <span class="text-muted">Read before quoting these numbers</span>
+            </div>
+            <ul id="backtest-limitations-list" class="limitations-list">
+              <li class="text-muted">Run a backtest to see its assumptions.</li>
+            </ul>
           </div>
 
           <div class="chart-container glass-panel">

@@ -48,8 +48,10 @@ class Settings(BaseSettings):
         default_factory=lambda: ["1-2", "2-3", "3-5", "5-8", "8-13", "13-21", "21-34", "34+"]
     )
 
-    # Baseline model settings
-    baseline_rolling_window_days: int = Field(default=180, ge=1)
+    # Baseline model settings. The window must stay wider than the longest
+    # horizon (365d) plus a usable sample count, otherwise the long horizon has
+    # no realised outcomes to count; see prosper.predict.window.
+    baseline_rolling_window_days: int = Field(default=730, ge=1)
     baseline_min_samples: int = Field(default=30, ge=1)
 
     # Planner settings

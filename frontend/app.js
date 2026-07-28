@@ -8,9 +8,10 @@ let aiModelRuns = [];
 let evaluationState = {
   evaluations: [],
   selected: null,
-  qualityRows: [],
+  summary: null,
   worstRows: [],
   recommendations: [],
+  flags: [],
 };
 let researchMode = false;
 let symbolMetadata = { symbols: [], base_assets: [], quote_assets: [] };
@@ -259,6 +260,13 @@ async function initializeDates() {
 
     document.getElementById("eval-start").value = "2024-01-01";
     document.getElementById("eval-end").value = endInput.value;
+
+    // Track manual edits so run selection stops overwriting the end date.
+    ["eval-start", "eval-end"].forEach((id) => {
+      document.getElementById(id)?.addEventListener("change", (event) => {
+        event.target.dataset.userSet = "1";
+      });
+    });
   } catch (e) {
     console.error("Failed to fetch dates", e);
   }
@@ -338,14 +346,11 @@ async function loadInventory(refresh = false) {
     tbody.innerHTML = "";
 
     const trainSelect = document.getElementById("train-symbol");
-    const evalSelect = document.getElementById("eval-symbol");
 
-    // Save current selections
+    // Save current selection
     const currTrain = trainSelect.value;
-    const currEval = evalSelect.value;
 
     trainSelect.innerHTML = '<option value="">Select Symbol...</option>';
-    evalSelect.innerHTML = '<option value="">Select Symbol...</option>';
 
     globalInventory.forEach((item) => {
       const tr = document.createElement("tr");
@@ -434,12 +439,10 @@ async function loadInventory(refresh = false) {
 
       // Populate dropdowns
       trainSelect.innerHTML += `<option value="${item.symbol}">${item.symbol}</option>`;
-      evalSelect.innerHTML += `<option value="${item.symbol}">${item.symbol}</option>`;
     });
 
-    // Restore selections if still valid
+    // Restore selection if still valid
     if (currTrain) trainSelect.value = currTrain;
-    if (currEval) evalSelect.value = currEval;
     // Ensure dependent UI reflects restored selection: intervals and epochs visibility
     try {
       updateTrainDates();
@@ -524,16 +527,6 @@ function updateTrainDates() {
     updateTrainModelUI();
   } catch (e) {
     /* ignore */
-  }
-}
-
-function updateEvalDates() {
-  const sym = document.getElementById("eval-symbol").value;
-  const item = globalInventory.find((i) => i.symbol === sym);
-  if (item && item.start_date !== "N/A") {
-    // usually eval is recent
-    document.getElementById("eval-start").value = "2024-01-01";
-    document.getElementById("eval-end").value = item.end_date;
   }
 }
 
@@ -698,6 +691,7 @@ async function loadAIInventory() {
     aiModelRuns = data.models || [];
     renderAIInventory(aiModelRuns);
     populateEvaluationModelSelect(aiModelRuns);
+    populateBacktestRuns(aiModelRuns);
   } catch (e) {
     console.error("Failed to load AI inventory", e);
   }
@@ -901,13 +895,19 @@ function renderEvaluationRanking() {
 
   evaluationState.evaluations.forEach((item, index) => {
     const tr = document.createElement("tr");
+    const untrained = Number(item.untrained_rows || 0);
+    const untrainedCell = untrained
+      ? `<span class="text-red" title="Horizons the model could not train; excluded from every metric">${untrained}</span>`
+      : `<span class="text-muted">0</span>`;
     tr.innerHTML = `
       <td>#${index + 1}</td>
       <td>${escapeHtml(item.symbol)}</td>
       <td>${escapeHtml(item.model_type)} <span class="text-muted">(${escapeHtml(item.interval || "1d")})</span></td>
+      <td><span class="text-muted mono-cell">${escapeHtml(item.timestamp)}</span></td>
       <td><strong>${formatMetric(item.model_score, 1)}</strong></td>
       <td>${formatPercentMetric(item.accuracy, 1)}</td>
       <td>${formatMetric(item.ece, 3)}</td>
+      <td>${untrainedCell}</td>
       <td></td>
     `;
     const button = document.createElement("button");
@@ -927,20 +927,31 @@ async function openEvaluationDetails(summary) {
   if (status) status.innerText = `Loading evaluation ${summary.model_type} ${summary.timestamp}...`;
 
   try {
-    const res = await fetch(
-      `/api/ai/evaluations/${encodeURIComponent(summary.symbol)}/${encodeURIComponent(
-        summary.model_type,
-      )}/${encodeURIComponent(summary.timestamp)}?limit=5000`,
-    );
+    const interval = summary.interval || "1d";
+    const flag = document.getElementById("eval-flag-filter")?.value || "";
+    const params = new URLSearchParams({ interval, limit: "100" });
+    if (flag) params.set("flag", flag);
+
+    const base = `/api/ai/evaluations/${encodeURIComponent(summary.symbol)}/${encodeURIComponent(
+      summary.model_type,
+    )}/${encodeURIComponent(summary.timestamp)}`;
+
+    const [res, flagsRes] = await Promise.all([
+      fetch(`${base}?${params.toString()}`),
+      fetch(`${base}/flags?interval=${encodeURIComponent(interval)}`),
+    ]);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || res.statusText);
     }
     const detail = await res.json();
+    const flagsPayload = flagsRes.ok ? await flagsRes.json() : { flags: [] };
+
     evaluationState.selected = detail;
-    evaluationState.qualityRows = detail.quality_rows || [];
+    evaluationState.summary = summary;
     evaluationState.worstRows = detail.worst_predictions || [];
     evaluationState.recommendations = detail.recommendations || [];
+    evaluationState.flags = flagsPayload.flags || [];
     renderEvaluationMetrics(detail.metrics || {});
     renderCalibration(detail.calibration || {});
     renderSharpness(detail.metrics || {});
@@ -1027,50 +1038,56 @@ function populateEvaluationFlagFilter() {
   const select = document.getElementById("eval-flag-filter");
   if (!select) return;
   const current = select.value;
-  const flags = [
-    ...new Set(
-      evaluationState.worstRows.flatMap((row) => row.flags || []).filter(Boolean),
-    ),
-  ].sort();
   select.innerHTML = '<option value="">All flags</option>';
-  flags.forEach((flag) => {
+  (evaluationState.flags || []).forEach(({ flag, count }) => {
     const option = document.createElement("option");
     option.value = flag;
-    option.textContent = flag;
+    option.textContent = `${flag} (${count})`;
     select.appendChild(option);
   });
-  if (flags.includes(current)) select.value = current;
+  if ([...select.options].some((option) => option.value === current)) {
+    select.value = current;
+  }
+}
+
+// Filtering happens server-side: the full quality set is far too large to
+// ship to the browser just so it can hide rows.
+function onEvaluationFlagChange() {
+  if (evaluationState.summary) openEvaluationDetails(evaluationState.summary);
 }
 
 function renderWorstPredictions() {
   const tbody = document.getElementById("eval-worst-tbody");
   if (!tbody) return;
-  const flag = document.getElementById("eval-flag-filter")?.value || "";
-  const indexedRows = evaluationState.worstRows
-    .map((row, index) => ({ row, index }))
-    .filter(({ row }) => !flag || (row.flags || []).includes(flag));
+  const rows = evaluationState.worstRows || [];
 
   tbody.innerHTML = "";
-  if (indexedRows.length === 0) {
+  if (rows.length === 0) {
     tbody.innerHTML = `<tr><td class="text-muted">No worst prediction rows</td></tr>`;
     return;
   }
 
-  indexedRows.forEach(({ row, index }) => {
+  rows.forEach((row, index) => {
     const tr = document.createElement("tr");
-    const actual = row.actual?.direction || "-";
-    const predicted = row.prediction?.direction || "-";
+    const flags = row.flags ? String(row.flags).split("|").filter(Boolean) : [];
     tr.innerHTML = `
       <td>${escapeHtml(row.date)}</td>
       <td>${escapeHtml(row.horizon)}</td>
-      <td>${escapeHtml(actual)}</td>
-      <td>${escapeHtml(predicted)} <span class="text-muted">${formatPercentMetric(row.prediction?.confidence, 0)}</span></td>
+      <td>${escapeHtml(row.actual_direction || "-")}</td>
+      <td>${escapeHtml(row.pred_direction || "-")} <span class="text-muted">${formatPercentMetric(row.pred_confidence, 0)}</span></td>
       <td>${formatMetric(row.quality_score, 1)}</td>
-      <td><span class="eval-flag-list">${escapeHtml((row.flags || []).join(", ") || "none")}</span></td>
+      <td><span class="eval-flag-list">${escapeHtml(flags.join(", ") || "none")}</span></td>
       <td><button class="action-btn" onclick="inspectEvaluationPrediction(${index})">Inspect</button></td>
     `;
     tbody.appendChild(tr);
   });
+
+  const total = evaluationState.selected?.worst_predictions_total;
+  if (Number.isFinite(total) && total > rows.length) {
+    const note = document.createElement("tr");
+    note.innerHTML = `<td colspan="7" class="text-muted">Showing the ${rows.length} worst of ${total} scored rows.</td>`;
+    tbody.appendChild(note);
+  }
 }
 
 function renderRecommendations() {
@@ -1098,13 +1115,15 @@ function renderRecommendations() {
 function exportWorstPredictionsCsv() {
   const rows = evaluationState.worstRows || [];
   if (rows.length === 0) return alert("No worst predictions to export.");
+  // Rows arrive already flattened from predictions_quality.parquet.
   const headers = [
     "date",
+    "open_time",
     "horizon",
     "target_date",
     "actual_direction",
-    "predicted_direction",
-    "confidence",
+    "pred_direction",
+    "pred_confidence",
     "quality_score",
     "error_score",
     "flags",
@@ -1114,19 +1133,7 @@ function exportWorstPredictionsCsv() {
     headers.join(","),
     ...rows.map((row) =>
       headers
-        .map((header) => {
-          const value =
-            header === "actual_direction"
-              ? row.actual?.direction
-              : header === "predicted_direction"
-                ? row.prediction?.direction
-                : header === "confidence"
-                  ? row.prediction?.confidence
-                  : header === "flags"
-                    ? (row.flags || []).join("|")
-                    : row[header];
-          return `"${String(value ?? "").replace(/"/g, '""')}"`;
-        })
+        .map((header) => `"${String(row[header] ?? "").replace(/"/g, '""')}"`)
         .join(","),
     ),
   ];
@@ -1844,9 +1851,11 @@ async function checkTaskLogs() {
       div.className = "log-line";
       div.textContent = log;
       term.appendChild(div);
-      lastLogIdx++;
       added = true;
     });
+    // The server trims its buffer, so trust its absolute cursor rather than
+    // counting locally.
+    if (Number.isFinite(data.next_idx)) lastLogIdx = data.next_idx;
 
     if (added) {
       term.scrollTop = term.scrollHeight;
@@ -1941,7 +1950,16 @@ function initAnalysisDrawer() {
 
   const intervalSelect = document.getElementById("analysis-interval");
   if (intervalSelect)
-    intervalSelect.addEventListener("change", loadAnalysisData);
+    intervalSelect.addEventListener("change", () => {
+      // Re-scale the default window: 1000 bars of 1m is days, of 1d is years.
+      const item = globalInventory.find((i) => i.symbol === analysisState.symbol);
+      const endInput = document.getElementById("analysis-end");
+      const startInput = document.getElementById("analysis-start");
+      if (item && endInput && startInput) {
+        startInput.value = defaultAnalysisStart(item, endInput.value);
+      }
+      loadAnalysisData();
+    });
 }
 
 function openAnalysisDrawer(symbol) {
@@ -1972,10 +1990,15 @@ function openAnalysisDrawer(symbol) {
   if (toolbar) toolbar.style.display = "";
   const layers = document.querySelector(".analysis-layers");
   if (layers) layers.style.display = "";
-  document.getElementById("analysis-start").value =
-    item.start_date !== "N/A" ? item.start_date : "";
-  document.getElementById("analysis-end").value =
-    item.end_date !== "N/A" ? item.end_date : "";
+  // Default to a recent window rather than the full history. The API returns
+  // the tail of the range anyway, so spanning nine years only meant scanning
+  // every partition to throw almost all of it away.
+  const endValue = item.end_date !== "N/A" ? item.end_date : "";
+  document.getElementById("analysis-end").value = endValue;
+  document.getElementById("analysis-start").value = defaultAnalysisStart(
+    item,
+    endValue,
+  );
   document.querySelectorAll(".indicator-checkbox").forEach((cb) => {
     cb.checked = false;
   });
@@ -1987,6 +2010,40 @@ function openAnalysisDrawer(symbol) {
   document.getElementById("analysis-show-gaps").checked = true;
   populateAnalysisIntervals(item);
   loadAnalysisData();
+}
+
+// Roughly how much history the default candle limit covers, per interval.
+const ANALYSIS_DEFAULT_SPAN_DAYS = {
+  "1m": 3,
+  "3m": 7,
+  "5m": 10,
+  "15m": 30,
+  "30m": 60,
+  "1h": 120,
+  "2h": 180,
+  "4h": 365,
+  "6h": 400,
+  "8h": 500,
+  "12h": 700,
+  "1d": 1000,
+  "3d": 1500,
+  "1w": 3000,
+};
+
+function defaultAnalysisStart(item, endValue) {
+  if (!endValue || item.start_date === "N/A") return "";
+  const interval = document.getElementById("analysis-interval")?.value || "1d";
+  const span = ANALYSIS_DEFAULT_SPAN_DAYS[interval] ?? 365;
+  const end = new Date(endValue);
+  if (Number.isNaN(end.getTime())) return item.start_date;
+
+  const start = new Date(end);
+  start.setDate(start.getDate() - span);
+  const earliest = new Date(item.start_date);
+  if (!Number.isNaN(earliest.getTime()) && start < earliest) {
+    return item.start_date;
+  }
+  return start.toISOString().slice(0, 10);
 }
 
 function closeAnalysisDrawer() {
@@ -2643,37 +2700,114 @@ function animateValue(id, start, end, duration, prefix = "", suffix = "") {
   window.requestAnimationFrame(step);
 }
 
+// --- BACKTEST TAB ---
+function populateBacktestRuns(models) {
+  const select = document.getElementById("backtest-run");
+  if (!select) return;
+
+  const current = select.value;
+  select.innerHTML = "";
+  if (!models || models.length === 0) {
+    select.innerHTML = '<option value="">No model runs found</option>';
+    onBacktestRunChange();
+    return;
+  }
+
+  models
+    .slice()
+    .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))
+    .forEach((model) => {
+      const option = document.createElement("option");
+      option.value = JSON.stringify({
+        symbol: model.symbol,
+        model_type: model.model_type,
+        timestamp: model.timestamp,
+        interval: model.interval || "1d",
+      });
+      option.textContent = `${model.symbol} / ${model.model_type} / ${model.interval || "1d"} / ${model.timestamp}`;
+      select.appendChild(option);
+    });
+
+  if ([...select.options].some((option) => option.value === current)) {
+    select.value = current;
+  }
+  onBacktestRunChange();
+}
+
+function getSelectedBacktestRun() {
+  const select = document.getElementById("backtest-run");
+  if (!select || !select.value) return null;
+  try {
+    return JSON.parse(select.value);
+  } catch (e) {
+    return null;
+  }
+}
+
+function onBacktestRunChange() {
+  const run = getSelectedBacktestRun();
+  const label = document.getElementById("backtest-run-label");
+  if (label) {
+    label.innerText = run
+      ? `${run.model_type}_${run.interval}_${run.timestamp}`
+      : "No run selected";
+  }
+  if (!run) return;
+
+  // Default the date range to the symbol's available history.
+  const item = globalInventory.find((i) => i.symbol === run.symbol);
+  const endInput = document.getElementById("eval-end");
+  if (item && item.end_date !== "N/A" && endInput && !endInput.dataset.userSet) {
+    endInput.value = item.end_date;
+  }
+}
+
+function renderBacktestLimitations(limitations) {
+  const list = document.getElementById("backtest-limitations-list");
+  if (!list) return;
+  const items = limitations || [];
+  list.innerHTML = items.length
+    ? items.map((note) => `<li>${escapeHtml(note)}</li>`).join("")
+    : '<li class="text-muted">No limitations reported.</li>';
+}
+
 async function runBacktest() {
-  const symbol = document.getElementById("eval-symbol").value;
-  if (!symbol) return alert("Select symbol first");
+  const run = getSelectedBacktestRun();
+  const status = document.getElementById("backtest-status");
+  if (!run) return alert("Select a prediction run first.");
 
   const start = document.getElementById("eval-start").value;
   const end = document.getElementById("eval-end").value;
+  const horizon = document.getElementById("backtest-horizon")?.value || "short";
+  const capital = document.getElementById("backtest-capital")?.value || "10000";
+
+  const params = new URLSearchParams({
+    start,
+    end,
+    model_type: run.model_type,
+    timestamp: run.timestamp,
+    interval: run.interval,
+    horizon,
+    capital,
+  });
+
+  if (status) status.innerText = `Simulating ${run.model_type} ${run.timestamp}...`;
 
   try {
-    document.getElementById("terminal-output").innerHTML +=
-      `<div class="log-line text-muted">Fetching backtest details from API...</div>`;
     const res = await fetch(
-      `/api/backtest/${symbol}?start=${start}&end=${end}`,
+      `/api/backtest/${encodeURIComponent(run.symbol)}?${params.toString()}`,
     );
 
     if (!res.ok) {
-      const err = await res.json();
-      alert("Evaluating Error: " + err.detail);
+      const err = await res.json().catch(() => ({}));
+      if (status) status.innerText = `Backtest failed: ${err.detail || res.statusText}`;
       return;
     }
 
     const data = await res.json();
 
     animateValue("val-roi", 0, data.roi, 1000, "", "%");
-    animateValue(
-      "val-capital",
-      Math.max(0, data.final_capital - 2000),
-      data.final_capital,
-      1000,
-      "$",
-      "",
-    );
+    animateValue("val-capital", data.initial_capital, data.final_capital, 1000, "$", "");
     animateValue("val-drawdown", 0, data.max_drawdown, 1000, "", "%");
 
     document.getElementById("val-trades").innerText = data.total_trades;
@@ -2682,11 +2816,20 @@ async function runBacktest() {
     roiEl.className =
       "metric-value fade-in " + (data.roi >= 0 ? "text-green" : "text-red");
 
+    renderBacktestLimitations(data.limitations);
     drawChart(data.chart_data);
-    document.getElementById("terminal-output").innerHTML +=
-      `<div class="log-line text-muted">Backtest complete. Chart rendered.</div>`;
+
+    if (status) {
+      const skipped = data.skipped_untrained
+        ? `, ${data.skipped_untrained} untrained rows skipped`
+        : "";
+      status.innerText =
+        `${data.run.slug} · ${data.horizon} horizon · ` +
+        `${data.days_tested} bars simulated${skipped}.`;
+    }
   } catch (e) {
-    alert("Failed to connect to Backtest API");
+    console.error(e);
+    if (status) status.innerText = "Failed to reach the backtest API.";
   }
 }
 
