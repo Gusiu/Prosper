@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import traceback
 import warnings
 from typing import Any
 
@@ -11,8 +12,8 @@ import polars as pl
 
 from prosper.config import Settings, get_settings
 from prosper.domain import (
+    DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
-    DEPTH_BIN_LABELS,
     IDX_TO_DIR,
     assign_depth_bin,
     direction_from_return,
@@ -82,6 +83,7 @@ def _predict_month(
     seq_len: int,
     forward_steps: int,
     cutoff: int,
+    trainer_kwargs: dict[str, Any] | None = None,
 ) -> dict[int, tuple[float, float, float]]:
     """Predict every bar of a retraining month in one batched pass.
 
@@ -118,7 +120,24 @@ def _predict_month(
     )
     loader = inference_set.to_dataloader(train=False, batch_size=64, num_workers=0)
 
-    result = model.predict(loader, mode="raw", return_index=True)
+    # `predict` builds its own Trainer when none is configured, and that one
+    # defaults to a TensorBoard logger writing `lightning_logs/version_N` in
+    # the CWD — the flags on the *training* Trainer do not reach it. Batching
+    # cut the call count from one per bar to one per month, which hid the leak
+    # rather than closing it.
+    #
+    # The copy is not optional. pytorch-forecasting does
+    #   trainer_kwargs.setdefault("callbacks", ... + [predict_callback])
+    # on the dict it is handed, so a shared dict keeps the callback from the
+    # first call: every later call builds a Trainer whose collector is the
+    # previous one, `predict_callback.result` comes back empty, and the horizon
+    # silently degrades to untrained.
+    result = model.predict(
+        loader,
+        mode="raw",
+        return_index=True,
+        trainer_kwargs=dict(trainer_kwargs or {}),
+    )
     # pytorch-forecasting >=1.x returns a Prediction namedtuple
     # (output, x, index, decoder_lengths, y); older versions returned a plain
     # (output, index) tuple — which cannot be unpacked into two names. Test for
@@ -195,6 +214,17 @@ def predict_tft(
     warnings.filterwarnings("ignore", category=UserWarning)
     warnings.filterwarnings("ignore", category=FutureWarning)
 
+    # Applied to the Trainer that `predict` creates for itself; without it that
+    # one logs to `lightning_logs/` in whatever directory the CLI was run from.
+    inference_trainer_kwargs: dict[str, Any] = {
+        "logger": False,
+        "enable_checkpointing": False,
+        "enable_progress_bar": False,
+        "enable_model_summary": False,
+        "accelerator": "cpu",
+        "default_root_dir": str(settings.meta_dir / "lightning"),
+    }
+
     # ── 1. Load features ──────────────────────────────────────────────────────
     feat_path = get_features_parquet_path(symbol, interval, settings=settings)
     if not feat_path.exists():
@@ -219,7 +249,7 @@ def predict_tft(
 
     # ── 2. Pre-compute forward labels ─────────────────────────────────────────
     dir_map = {"short": 0, "flat": 1, "long": 2}
-    depth_bins, depth_labels = parse_depth_bins(",".join(DEPTH_BIN_LABELS))
+    depth_bins, depth_labels = parse_depth_bins(DEFAULT_DEPTH_BINS_STR)
     y_dir_all: dict[str, np.ndarray] = {}
     y_depth_all: dict[str, np.ndarray] = {}
     for h in horizon_specs:
@@ -396,9 +426,16 @@ def predict_tft(
                         seq_len=seq_len,
                         forward_steps=steps_by_horizon[h.name],
                         cutoff=i,
+                        trainer_kwargs=inference_trainer_kwargs,
                     )
                 except Exception as e:
-                    print(f"Batched inference failed for {h.name} {month_key}: {e}")
+                    # This path turns the whole month into untrained rows, so a
+                    # bare message is not enough to tell a data problem from a
+                    # library one.
+                    print(
+                        f"Batched inference failed for {h.name} {month_key}: "
+                        f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+                    )
                     month_predictions[h.name] = {}
 
         # ── Inference: read the month's batched result ────────────────────

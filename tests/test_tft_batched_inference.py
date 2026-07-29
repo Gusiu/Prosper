@@ -68,8 +68,12 @@ class _FakeModel:
         self.time_indices = time_indices
         self.calls = 0
 
-    def predict(self, loader, mode, return_index):  # noqa: ARG002
+    def predict(self, loader, mode, return_index, trainer_kwargs=None):  # noqa: ARG002
         self.calls += 1
+        # `predict` spins up its own Trainer; it must be told not to log, or it
+        # writes lightning_logs/ into the working directory.
+        assert trainer_kwargs is not None
+        assert trainer_kwargs["logger"] is False
         import pandas as pd
         import torch
 
@@ -104,6 +108,7 @@ def test_a_month_is_predicted_in_one_call() -> None:
         seq_len=30,
         forward_steps=28,
         cutoff=100,
+        trainer_kwargs={"logger": False},
     )
 
     assert model.calls == 1, "one batched pass, not one per bar"
@@ -134,6 +139,7 @@ def test_target_history_is_masked_at_the_month_cutoff() -> None:
         seq_len=30,
         forward_steps=28,
         cutoff=100,
+        trainer_kwargs={"logger": False},
     )
 
     frame = captured["frame"]
@@ -143,6 +149,38 @@ def test_target_history_is_masked_at_the_month_cutoff() -> None:
     # cutoff=100, forward_steps=28 -> labels at k >= 72 need an unseen close.
     assert known["time_idx"].max() < 72
     assert masked["time_idx"].min() == 72
+
+
+def test_the_caller_dict_survives_repeated_prediction() -> None:
+    """pytorch-forecasting injects its collector into the dict it is handed.
+
+    `predict` does `trainer_kwargs.setdefault("callbacks", ... + [callback])`,
+    so a dict reused across calls keeps the *first* call's callback: every
+    later Trainer collects into a stale object, the result comes back empty and
+    the horizon degrades to untrained without raising. Reusing one dict for
+    three horizons a month is exactly the shape that triggers it.
+    """
+    shared = {"logger": False}
+    bars = [100]
+
+    for _ in range(3):
+        result = _predict_month(
+            _FakeModel(bars),
+            dataset_ref=None,
+            dataset_cls=_FakeDataset,
+            X_norm=np.zeros((200, 1), dtype=np.float32),
+            y_dir=np.zeros(200, dtype=np.int64),
+            feature_cols=["a"],
+            symbol=SYMBOL,
+            bar_indices=bars,
+            seq_len=30,
+            forward_steps=28,
+            cutoff=100,
+            trainer_kwargs=shared,
+        )
+        assert sorted(result) == bars
+
+    assert shared == {"logger": False}, "the caller's dict must not be mutated"
 
 
 def _write_cyclical_history(settings: Settings, days: int = 1500) -> None:

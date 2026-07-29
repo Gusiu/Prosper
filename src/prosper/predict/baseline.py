@@ -6,6 +6,7 @@ import polars as pl
 
 from prosper.config import Settings, get_settings
 from prosper.domain import (
+    DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
     assign_depth_bin,
     direction_from_return,
@@ -34,7 +35,7 @@ def predict_baseline(
     settings: Settings | None = None,
     rolling_window_days: int | None = None,
     flat_threshold: float = 0.01,
-    depth_bins_str: str = "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34+",
+    depth_bins_str: str = DEFAULT_DEPTH_BINS_STR,
     alpha: float = 1.0,
 ) -> dict[str, Any]:
     """Baseline probabilistic predictions using rolling empirical frequencies + Laplace smoothing.

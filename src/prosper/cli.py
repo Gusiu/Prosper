@@ -13,6 +13,7 @@ from rich.table import Table
 
 from prosper.binance.rest import BinanceRESTClient
 from prosper.config import get_settings
+from prosper.domain import DEFAULT_DEPTH_BINS_STR
 from prosper.eval.backtest import run_backtest
 from prosper.eval.predictions import (
     collect_evaluation_summaries,
@@ -277,7 +278,7 @@ def labels_build(
         0.01, "--flat-threshold", help="Flat threshold (e.g., 0.01 = 1%)"
     ),
     depth_bins: str = typer.Option(
-        "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34+",
+        DEFAULT_DEPTH_BINS_STR,
         "--depth-bins",
         help="Depth bin definitions",
     ),

@@ -8,7 +8,8 @@ def test_calculate_edge() -> None:
     assert abs(calculate_edge(0.1, 0.4) + 0.3) < 1e-12
 
 
-def test_calculate_risk_metric_large_bins_only() -> None:
+def test_calculate_risk_metric_counts_only_the_adverse_side() -> None:
+    """A bullish forecast is risked by the downside, not by its own rally."""
     p_long = 0.6
     p_short = 0.3
     depth_long = {
@@ -25,7 +26,7 @@ def test_calculate_risk_metric_large_bins_only() -> None:
         "21-34": 0.2,
         "34+": 0.1,
     }
-    expected = p_long * (0.3 + 0.2 + 0.1) + p_short * (0.4 + 0.2 + 0.1)
+    expected = p_short * (0.4 + 0.2 + 0.1)
     assert abs(calculate_risk_metric(p_long, p_short, depth_long, depth_short) - expected) < 1e-12
 
 

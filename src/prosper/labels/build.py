@@ -5,7 +5,7 @@ from typing import Any
 import polars as pl
 
 from prosper.config import Settings, get_settings
-from prosper.domain import assign_depth_bin, parse_depth_bins
+from prosper.domain import DEFAULT_DEPTH_BINS_STR, assign_depth_bin, parse_depth_bins
 from prosper.storage.layout import get_labels_parquet_path
 from prosper.storage.parquet import load_parquet, save_parquet
 
@@ -15,7 +15,7 @@ def build_labels(
     base_interval: str = "1d",
     forward_days: int = 1,
     flat_threshold: float = 0.01,
-    depth_bins_str: str = "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34+",
+    depth_bins_str: str = DEFAULT_DEPTH_BINS_STR,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     """

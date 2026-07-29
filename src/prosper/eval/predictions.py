@@ -15,14 +15,20 @@ import polars as pl
 
 from prosper.config import Settings, get_settings
 from prosper.domain import (
-    DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
     DEPTH_BIN_LABELS,
     assign_depth_bin,
+    depth_scheme_of,
     direction_from_return,
     parse_depth_bins,
 )
-from prosper.planner.windows import calculate_edge, calculate_risk_metric, map_to_recommendation
+from prosper.planner.windows import (
+    calculate_edge,
+    calculate_risk_metric,
+    clears_cost,
+    expected_move,
+    map_to_recommendation,
+)
 from prosper.storage.layout import (
     get_evaluation_run_dir,
     get_features_parquet_path,
@@ -336,6 +342,22 @@ def _load_feature_snapshots(symbol: str, interval: str, settings: Settings) -> d
     return snapshots
 
 
+def _run_depth_scheme(predictions: list[dict[str, Any]]) -> list[str]:
+    """The depth-bin labels a run was written with.
+
+    Read from the first horizon that carries a distribution; runs that predate
+    the extended tail name their own `34+` bin and are scored on it.
+    """
+    for prediction in predictions:
+        for horizon in DEFAULT_HORIZONS:
+            horizon_pred = prediction.get(horizon.name) or {}
+            for key in ("depth_long_bins", "depth_short_bins"):
+                bins = horizon_pred.get(key)
+                if bins:
+                    return depth_scheme_of(bins)
+    return list(DEPTH_BIN_LABELS)
+
+
 def _depth_midpoints(labels: list[str]) -> dict[str, float]:
     ranges, parsed_labels = parse_depth_bins(",".join(labels))
     midpoints: dict[str, float] = {}
@@ -348,15 +370,29 @@ def _expected_depth_pct(depth_probs: dict[str, float], midpoints: dict[str, floa
     return sum(depth_probs.get(label, 0.0) * midpoint for label, midpoint in midpoints.items())
 
 
-def _recommendation_payload(horizon_pred: dict[str, Any], probs: dict[str, float]) -> dict[str, Any]:
-    depth_long = normalize_distribution(horizon_pred.get("depth_long_bins", {}) or {}, DEPTH_BIN_LABELS)
-    depth_short = normalize_distribution(horizon_pred.get("depth_short_bins", {}) or {}, DEPTH_BIN_LABELS)
+def _recommendation_payload(
+    horizon_pred: dict[str, Any],
+    probs: dict[str, float],
+    round_trip_cost: float,
+) -> dict[str, Any]:
+    # Normalise over the bins the run itself used, not the current constant:
+    # runs written under the 8-bin scheme name a `34+` bin that no longer
+    # exists, and normalising them against today's labels would drop the whole
+    # tail — most of their probability mass — without raising anything.
+    raw_long = horizon_pred.get("depth_long_bins", {}) or {}
+    raw_short = horizon_pred.get("depth_short_bins", {}) or {}
+    depth_long = normalize_distribution(raw_long, depth_scheme_of(raw_long))
+    depth_short = normalize_distribution(raw_short, depth_scheme_of(raw_short))
     edge = calculate_edge(probs["long"], probs["short"])
     risk = calculate_risk_metric(probs["long"], probs["short"], depth_long, depth_short)
+    move = expected_move(probs["long"], probs["short"], depth_long, depth_short)
+    cost_cleared = clears_cost(move, round_trip_cost)
     return {
         "edge": edge,
         "risk": risk,
-        "recommendation": map_to_recommendation(edge, risk),
+        "expected_move": move,
+        "cost_cleared": cost_cleared,
+        "recommendation": map_to_recommendation(edge, risk, cost_cleared=cost_cleared),
         "depth_long_bins": depth_long,
         "depth_short_bins": depth_short,
     }
@@ -573,6 +609,8 @@ QUALITY_COLUMNS: tuple[str, ...] = (
     "pred_p_long",
     "pred_edge",
     "pred_risk",
+    "pred_expected_move",
+    "pred_cost_cleared",
     "pred_recommendation",
     "pred_expected_depth_pct",
     "pred_depth_bin",
@@ -625,6 +663,8 @@ def flatten_quality_row(row: dict[str, Any]) -> dict[str, Any]:
         "pred_p_long": probabilities.get("long"),
         "pred_edge": prediction.get("edge"),
         "pred_risk": prediction.get("risk"),
+        "pred_expected_move": prediction.get("expected_move"),
+        "pred_cost_cleared": prediction.get("cost_cleared"),
         "pred_recommendation": prediction.get("recommendation"),
         "pred_expected_depth_pct": prediction.get("expected_depth_pct"),
         "pred_depth_bin": prediction.get("predicted_depth_bin"),
@@ -741,7 +781,12 @@ def evaluate_predictions(
         if date_key and date_key not in date_to_index:
             date_to_index[date_key] = idx
 
-    depth_ranges, depth_labels = parse_depth_bins(DEFAULT_DEPTH_BINS_STR)
+    # Score every run against the bin scheme it was written with. Binning the
+    # realised return under one scheme while the forecast used another would
+    # compare distributions over different label sets — the depth Brier and the
+    # expected-depth error would both be meaningless.
+    depth_labels = _run_depth_scheme(predictions)
+    depth_ranges, _ = parse_depth_bins(",".join(depth_labels))
     midpoints = _depth_midpoints(depth_labels)
     quality_rows: list[dict[str, Any]] = []
     matched_predictions = 0
@@ -772,7 +817,9 @@ def evaluate_predictions(
             predicted_direction = max(probs, key=probs.get)
             confidence = probs[predicted_direction]
             entropy = probability_entropy(probs)
-            recommendation = _recommendation_payload(horizon_pred, probs)
+            recommendation = _recommendation_payload(
+                horizon_pred, probs, settings.planner_round_trip_cost
+            )
 
             base_row: dict[str, Any] = {
                 "symbol": symbol,
@@ -791,6 +838,8 @@ def evaluate_predictions(
                     "probabilities": probs,
                     "edge": recommendation["edge"],
                     "risk": recommendation["risk"],
+                    "expected_move": recommendation["expected_move"],
+                    "cost_cleared": recommendation["cost_cleared"],
                     "recommendation": recommendation["recommendation"],
                 },
                 "flags": [],

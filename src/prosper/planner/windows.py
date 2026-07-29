@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Any
 
 from prosper.config import Settings, get_settings
+from prosper.domain import depth_bin_midpoints, depth_scheme_of, is_large_move_bin
 from prosper.storage.layout import get_recommendation_report_path
 from prosper.storage.runs import load_run_predictions, resolve_run
 from prosper.utils.time import parse_date
@@ -31,7 +32,7 @@ def calculate_risk_metric(
     depth_short_bins: dict[str, float],
 ) -> float:
     """
-    Calculate risk metric based on probability of large moves.
+    Probability of a large move against the position the forecast implies.
 
     Args:
         p_long: Probability of long
@@ -42,19 +43,74 @@ def calculate_risk_metric(
     Returns:
         Risk metric (higher = more risk)
     """
-    # Risk = probability mass in large depth bins.
-    # Spec bins: 13-21, 21-34, 34+
-    large_bins = {"13-21", "21-34", "34+"}
+    # Which labels count as "large" is derived from the bin edges, not from a
+    # fixed set of names: naming them pinned the metric to one bin scheme, so
+    # extending the tail (34+ -> 34-55, 55-89, 89-144, 144+) would have
+    # silently dropped the whole tail for every run written under the old one.
+    long_large = sum(prob for label, prob in depth_long_bins.items() if is_large_move_bin(label))
+    short_large = sum(prob for label, prob in depth_short_bins.items() if is_large_move_bin(label))
 
-    long_large = sum(prob for bin_str, prob in depth_long_bins.items() if bin_str in large_bins)
-    short_large = sum(prob for bin_str, prob in depth_short_bins.items() if bin_str in large_bins)
+    # Risk is the chance of a large move *against* the position the edge
+    # implies — not of a large move in general. Summing both sides counted an
+    # expected rally as a reason not to buy: on strongly bullish bars of the ml
+    # run, mean risk was 0.85 and 98% of it was the upside term, so the planner
+    # vetoed the very signals it was most confident about.
+    #
+    # Reading the side from `p_long >= p_short` rather than from a separate
+    # argument is what keeps `map_to_recommendation` symmetric: mirroring a bar
+    # swaps both the probabilities and the distributions, so the risk of the
+    # mirrored bar is unchanged while the edge flips sign.
+    if p_long > p_short:
+        return p_short * short_large
+    if p_short > p_long:
+        return p_long * long_large
+    # No directional lean, so neither side is "against" the position. Take the
+    # worse tail: anything else makes the metric asymmetric at exactly the tie.
+    return max(p_short * short_large, p_long * long_large)
 
-    return p_long * long_large + p_short * short_large
+
+def expected_move(
+    p_long: float,
+    p_short: float,
+    depth_long_bins: dict[str, float],
+    depth_short_bins: dict[str, float],
+) -> float:
+    """Probability-weighted forward move, as a fraction (0.05 == 5%).
+
+    The direction head says which way; the depth head says how far. `edge`
+    alone answers only the first question, so a bar whose long mass all sits in
+    the 1-2% bin scores exactly like one whose mass sits in 144+. This combines
+    both, which is what a cost comparison needs.
+    """
+    long_mid = depth_bin_midpoints(depth_scheme_of(depth_long_bins))
+    short_mid = depth_bin_midpoints(depth_scheme_of(depth_short_bins))
+
+    up = sum(prob * long_mid.get(label, 0.0) for label, prob in depth_long_bins.items())
+    down = sum(prob * short_mid.get(label, 0.0) for label, prob in depth_short_bins.items())
+
+    return (p_long * up - p_short * down) / 100.0
 
 
-def map_to_recommendation(edge: float, risk: float) -> str:
+def clears_cost(expected: float, round_trip_cost: float) -> bool:
+    """Whether an expected move is worth acting on once costs are paid.
+
+    Costs are a property of the trade, not of the market: one round trip is
+    paid whether the position is held for a month or a year, so this threshold
+    is deliberately *not* scaled by horizon. It is symmetric because entering
+    and exiting both cost the same — see `map_to_recommendation`.
+    """
+    return abs(expected) > round_trip_cost
+
+
+def map_to_recommendation(edge: float, risk: float, *, cost_cleared: bool = True) -> str:
     """
     Map edge and risk to recommendation.
+
+    *cost_cleared* is the verdict of `clears_cost` on the expected move: a
+    signal whose expected magnitude cannot pay for its own round trip is
+    `Hold`, however confident the direction head is. It defaults to True so
+    that callers with no depth distribution to work from keep the old
+    behaviour rather than silently holding everything.
 
     Both sides are tested strongest-first and are mirror images of each other:
 
@@ -78,6 +134,8 @@ def map_to_recommendation(edge: float, risk: float) -> str:
         Recommendation string
     """
     if abs(edge) <= 0.05:
+        return "Hold"
+    if not cost_cleared:
         return "Hold"
 
     bullish = edge > 0
@@ -137,6 +195,7 @@ def plan_windows(
     except FileNotFoundError as e:
         return {"error": str(e)}
 
+    round_trip_cost = settings.planner_round_trip_cost
     start_dt = parse_date(start) if start else None
     end_dt = parse_date(end) if end else None
 
@@ -176,12 +235,20 @@ def plan_windows(
 
             p_long = float(pred[h]["P_long"])
             p_short = float(pred[h]["P_short"])
+            depth_long = pred[h].get("depth_long_bins", {})
+            depth_short = pred[h].get("depth_short_bins", {})
             edge = calculate_edge(p_long=p_long, p_short=p_short)
             risk = calculate_risk_metric(
                 p_long=p_long,
                 p_short=p_short,
-                depth_long_bins=pred[h].get("depth_long_bins", {}),
-                depth_short_bins=pred[h].get("depth_short_bins", {}),
+                depth_long_bins=depth_long,
+                depth_short_bins=depth_short,
+            )
+            move = expected_move(
+                p_long=p_long,
+                p_short=p_short,
+                depth_long_bins=depth_long,
+                depth_short_bins=depth_short,
             )
 
             key = (h, iso_year, iso_week)
@@ -195,11 +262,13 @@ def plan_windows(
                     "week_end": week_end_str,
                     "edge_sum": 0.0,
                     "risk_sum": 0.0,
+                    "move_sum": 0.0,
                     "count": 0,
                 }
                 buckets[key] = b
             b["edge_sum"] += edge
             b["risk_sum"] += risk
+            b["move_sum"] += move
             b["count"] += 1
 
     # Build window objects and group them by YYYY-MM
@@ -208,14 +277,22 @@ def plan_windows(
     for b in buckets.values():
         edge_mean = b["edge_sum"] / max(b["count"], 1)
         risk_mean = b["risk_sum"] / max(b["count"], 1)
-        recommendation = map_to_recommendation(edge_mean, risk_mean)
+        move_mean = b["move_sum"] / max(b["count"], 1)
+        cost_cleared = clears_cost(move_mean, round_trip_cost)
+        recommendation = map_to_recommendation(edge_mean, risk_mean, cost_cleared=cost_cleared)
 
         w = {
             "start_date": b["week_start"],
             "end_date": b["week_end"],
             "horizon": b["horizon"],
             "recommendation": recommendation,
-            "diagnostics": {"edge_mean": edge_mean, "risk_mean": risk_mean},
+            "diagnostics": {
+                "edge_mean": edge_mean,
+                "risk_mean": risk_mean,
+                "expected_move": move_mean,
+                "round_trip_cost": round_trip_cost,
+                "cost_cleared": cost_cleared,
+            },
         }
         all_windows.append(w)
 

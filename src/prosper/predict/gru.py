@@ -12,8 +12,8 @@ from torch.utils.data import DataLoader, Dataset
 
 from prosper.config import Settings, get_settings
 from prosper.domain import (
+    DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
-    DEPTH_BIN_LABELS,
     DIR_TO_IDX,
     IDX_TO_DIR,
     assign_depth_bin,
@@ -180,7 +180,7 @@ def predict_gru(
     end_dt = parse_date(end).date()
 
     # ── 2. Pre-compute forward labels ─────────────────────────────────────────
-    depth_bins, depth_labels = parse_depth_bins(",".join(DEPTH_BIN_LABELS))
+    depth_bins, depth_labels = parse_depth_bins(DEFAULT_DEPTH_BINS_STR)
     y_dir_all: dict[str, np.ndarray] = {}
     y_depth_all: dict[str, np.ndarray] = {}
     for h in horizon_specs:

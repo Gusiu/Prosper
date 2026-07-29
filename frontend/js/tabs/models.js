@@ -5,7 +5,7 @@ import { EVENTS, emit } from "../events.js";
 import { disposeAnalysisCharts } from "../analysis.js";
 import { getResearchFlags } from "../research.js";
 import { submitTask } from "../queue.js";
-import { ANALYSIS_INTERVALS, DEPTH_BIN_LABELS, state } from "../state.js";
+import { ANALYSIS_INTERVALS, state } from "../state.js";
 
 let aiModelRuns = [];
 let analysisDrawerContext = { symbol: null, model_type: null, timestamp: null };
@@ -528,11 +528,14 @@ export function showPredictionPopover(e, row) {
       try {
         const depthBins = obj && (obj.depth_long_bins || obj.depth_short_bins);
         if (depthBins && typeof depthBins === "object") {
-          // Enforce canonical chronological order of depth bins
-          const entries = DEPTH_BIN_LABELS.map((lbl) => [
-            lbl,
-            depthBins[lbl] || 0,
-          ]);
+          // Order the run's own bins by magnitude. The labels are not
+          // hardcoded here on purpose: runs written before the tail was
+          // extended carry a `34+` bin that the current scheme does not have,
+          // and a fixed list would render them as three empty bars plus a
+          // silently dropped one.
+          const entries = Object.entries(depthBins).sort(
+            (a, b) => parseFloat(a[0]) - parseFloat(b[0]),
+          );
           const bars = entries
             .map(([k, v]) => {
               const h = Math.max(6, Math.round((v || 0) * 100));

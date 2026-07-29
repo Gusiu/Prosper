@@ -34,14 +34,6 @@ export const ANALYSIS_INTERVALS = [
   "1w",
 ];
 
-/** Canonical depth bin labels (keep in sync with backend `DEFAULT_DEPTH_BINS_STR`). */
-export const DEPTH_BIN_LABELS = [
-  "1-2",
-  "2-3",
-  "3-5",
-  "5-8",
-  "8-13",
-  "13-21",
-  "21-34",
-  "34+",
-];
+// Depth-bin labels are deliberately not duplicated here. Prediction payloads
+// name their own bins, so views sort the keys they are given; a copy of the
+// backend scheme would go stale the moment the bins change.

@@ -7,6 +7,8 @@ import yaml
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from prosper.domain import DEPTH_BIN_LABELS
+
 _UNSET = Path()
 
 
@@ -65,9 +67,7 @@ class Settings(BaseSettings):
 
     # Label settings
     label_flat_threshold_default: float = Field(default=0.01, ge=0.0, le=1.0)
-    label_depth_bins_default: list[str] = Field(
-        default_factory=lambda: ["1-2", "2-3", "3-5", "5-8", "8-13", "13-21", "21-34", "34+"]
-    )
+    label_depth_bins_default: list[str] = Field(default_factory=lambda: list(DEPTH_BIN_LABELS))
 
     # Baseline model settings. The window must stay wider than the longest
     # horizon (365d) plus a usable sample count, otherwise the long horizon has
@@ -84,6 +84,17 @@ class Settings(BaseSettings):
     )
     planner_long_weeks: tuple[int, int] = Field(
         default=(26, 104), description="Long horizon weeks range"
+    )
+    # The round trip a signal has to pay for before it is worth acting on.
+    # This is a property of the market and the venue, not of the forecast, so
+    # it belongs here rather than in the labels: moving markets is a config
+    # change, not a relabel-and-retrain. 0.4% is 2x(fee + slippage) for Binance
+    # SPOT taker orders; venues with wider spreads want a larger value.
+    planner_round_trip_cost: float = Field(
+        default=0.004,
+        ge=0.0,
+        le=1.0,
+        description="Round-trip cost a signal must clear before the planner acts",
     )
 
     # Trading simulation costs (for eval walk-forward MVP)

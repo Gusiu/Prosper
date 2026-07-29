@@ -9,6 +9,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 
 from prosper.config import Settings, get_settings
 from prosper.domain import (
+    DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
     assign_depth_bin,
     direction_from_return,
@@ -40,7 +41,7 @@ def predict_ml(
     interval: str = "1d",
     train_window_days: int = 730,
     flat_threshold: float = 0.01,
-    depth_bins_str: str = "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34+",
+    depth_bins_str: str = DEFAULT_DEPTH_BINS_STR,
 ) -> dict[str, Any]:
     """
     ML predictions using HistGradientBoostingClassifier.
