@@ -793,11 +793,27 @@ def eval_backtest_cmd(
         color = "green" if res["roi_pct"] >= 0 else "red"
         console.print(f"ROI:             [{color}]{res['roi_pct']:.2f}%[/{color}]")
         console.print(f"Max Drawdown:    [red]-{res['max_drawdown_pct']:.2f}%[/red]")
+        sharpe = res.get("sharpe")
+        console.print(
+            f"Sharpe:          {sharpe:.2f}" if sharpe is not None else "Sharpe:          n/a"
+        )
         console.print(f"Total Trades:    {res['total_trades']}")
+        console.print(f"Turnover:        {res['turnover_ratio']:.2f}x initial capital")
+        console.print(f"Time in market:  {res['time_in_market_pct']:.1f}%")
         console.print(f"Days Tested:     {res['days_tested']}")
-        console.print(f"Report:          {res.get('report_path', 'n/a')}")
-        console.print("\n[yellow]Known limitations of this MVP strategy:[/yellow]")
-        for note in res["limitations"]:
+
+        bench = res["benchmark"]
+        bench_color = "green" if bench["roi_pct"] >= 0 else "red"
+        excess_color = "green" if bench["excess_roi_pct"] >= 0 else "red"
+        console.print(
+            f"\nBuy & hold ROI:  [{bench_color}]{bench['roi_pct']:.2f}%[/{bench_color}]"
+        )
+        console.print(
+            f"Excess vs hold:  [{excess_color}]{bench['excess_roi_pct']:+.2f}%[/{excess_color}]"
+        )
+        console.print(f"\nReport:          {res.get('report_path', 'n/a')}")
+        console.print("\n[yellow]Execution assumptions:[/yellow]")
+        for note in res["assumptions"]:
             console.print(f"  - {note}")
 
     except Exception as e:

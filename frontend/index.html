@@ -26,16 +26,16 @@
           <h1>Prosper.ai</h1>
         </div>
         <ul class="nav-links">
-          <li class="tab-link active" onclick="switchTab('tab-data', this)">
+          <li class="tab-link active" data-action="switch-tab" data-tab="tab-data">
             Data Manager
           </li>
-          <li class="tab-link" onclick="switchTab('tab-models', this)">
+          <li class="tab-link" data-action="switch-tab" data-tab="tab-models">
             AI Models
           </li>
-          <li class="tab-link" onclick="switchTab('tab-eval', this)">
+          <li class="tab-link" data-action="switch-tab" data-tab="tab-eval">
             Evaluation
           </li>
-          <li class="tab-link" onclick="switchTab('tab-backtest', this)">
+          <li class="tab-link" data-action="switch-tab" data-tab="tab-backtest">
             Backtest
           </li>
         </ul>
@@ -69,7 +69,7 @@
             <div
               class="research-toggle"
               id="research-toggle"
-              onclick="toggleResearchMode()"
+              data-action="toggle-research"
             >
               <span
                 style="
@@ -233,12 +233,12 @@
               </div>
 
               <div class="form-group row mt-2">
-                <button class="outline-btn full-width" onclick="addToQueue()">
+                <button class="outline-btn full-width" data-action="queue-add">
                   + Add to Queue
                 </button>
                 <button
                   class="glow-btn full-width"
-                  onclick="startQueueProcessing()"
+                  data-action="queue-start"
                 >
                   Start Processing
                 </button>
@@ -340,12 +340,12 @@
                 <div style="display: flex; gap: 8px">
                   <button
                     class="outline-btn"
-                    onclick="loadInventory(true)"
+                    data-action="inventory-verify"
                     title="Deep scan data files and update quality dots"
                   >
                     🛡️ Verify Quality
                   </button>
-                  <button class="outline-btn" onclick="loadInventory()">
+                  <button class="outline-btn" data-action="inventory-refresh">
                     ⟳ Refresh
                   </button>
                 </div>
@@ -405,7 +405,7 @@
                   <select
                     id="train-symbol"
                     class="glass-input"
-                    onchange="updateTrainDates()"
+                   
                     style="width: 100%; min-width: 0"
                   >
                     <option value="">Select Symbol...</option>
@@ -425,7 +425,7 @@
                     id="model-select"
                     class="glass-input"
                     style="width: 100%; min-width: 0"
-                    onchange="updateTrainModelUI()"
+                   
                   >
                     <option value="ml">Trad. ML (GradientBoost)</option>
                     <option value="xgboost">ML (XGBoost)</option>
@@ -522,7 +522,7 @@
                   />
                 </label>
               </div>
-              <button class="glow-btn full-width mt-2" onclick="runTrain()">
+              <button class="glow-btn full-width mt-2" data-action="train-run">
                 Train & Predict
               </button>
             </div>
@@ -566,7 +566,7 @@
                 "
               >
                 <h3>Model Inventory</h3>
-                <button class="outline-btn" onclick="loadAIInventory()">
+                <button class="outline-btn" data-action="models-refresh">
                   ⟳ Refresh
                 </button>
               </div>
@@ -607,10 +607,10 @@
                 </select>
               </label>
               <div class="evaluation-actions">
-                <button class="glow-btn accent-green" onclick="runPredictionEvaluation()">
+                <button class="glow-btn accent-green" data-action="evaluation-run">
                   Evaluate Run
                 </button>
-                <button class="outline-btn" onclick="loadEvaluations()">
+                <button class="outline-btn" data-action="evaluation-refresh">
                   Refresh Ranking
                 </button>
               </div>
@@ -698,10 +698,10 @@
               <div class="table-title-row">
                 <h3>Worst Predictions</h3>
                 <div class="evaluation-actions compact">
-                  <select id="eval-flag-filter" class="glass-input" onchange="onEvaluationFlagChange()">
+                  <select id="eval-flag-filter" class="glass-input">
                     <option value="">All flags</option>
                   </select>
-                  <button class="outline-btn" onclick="exportWorstPredictionsCsv()">
+                  <button class="outline-btn" data-action="evaluation-export">
                     Export CSV
                   </button>
                 </div>
@@ -774,7 +774,7 @@
                 <select
                   id="backtest-run"
                   class="glass-input"
-                  onchange="onBacktestRunChange()"
+                 
                 >
                   <option value="">No model runs loaded...</option>
                 </select>
@@ -805,7 +805,7 @@
                   min="1"
                 />
               </label>
-              <button class="glow-btn accent-green" onclick="runBacktest()">
+              <button class="glow-btn accent-green" data-action="backtest-run">
                 Execute Backtest
               </button>
             </div>
@@ -836,6 +836,32 @@
               <h3>Total Trades</h3>
               <div class="metric-value fade-in" id="val-trades">0</div>
               <p class="metric-desc">Entries plus exits.</p>
+            </div>
+          </div>
+
+          <div class="metrics-grid mb-2">
+            <div class="metric-card glass-panel">
+              <h3>vs Buy &amp; Hold</h3>
+              <div class="metric-value fade-in" id="val-excess">--%</div>
+              <p class="metric-desc">
+                Excess return over holding the asset for the same window. This
+                is the number that says whether the model added anything.
+              </p>
+            </div>
+            <div class="metric-card glass-panel">
+              <h3>Buy &amp; Hold ROI</h3>
+              <div class="metric-value fade-in" id="val-hold">--%</div>
+              <p class="metric-desc">The benchmark, same window and fees.</p>
+            </div>
+            <div class="metric-card glass-panel">
+              <h3>Sharpe</h3>
+              <div class="metric-value fade-in" id="val-sharpe">--</div>
+              <p class="metric-desc">Annualised, risk-free rate 0.</p>
+            </div>
+            <div class="metric-card glass-panel">
+              <h3>Time in Market</h3>
+              <div class="metric-value fade-in" id="val-exposure">--%</div>
+              <p class="metric-desc">Share of bars holding inventory.</p>
             </div>
           </div>
 
@@ -874,7 +900,7 @@
     <div
       id="analysis-backdrop"
       class="analysis-backdrop"
-      onclick="closeAnalysisDrawer()"
+      data-action="analysis-close"
     ></div>
     <aside id="analysis-drawer" class="analysis-drawer" aria-hidden="true">
       <div class="analysis-drawer-header">
@@ -887,7 +913,7 @@
         </div>
         <button
           class="drawer-close-btn"
-          onclick="closeAnalysisDrawer()"
+          data-action="analysis-close"
           aria-label="Close analysis drawer"
         >
           Close
@@ -918,15 +944,15 @@
             max="5000"
           />
         </label>
-        <button class="glow-btn" onclick="loadAnalysisData()">Load</button>
-        <button class="outline-btn" onclick="exportAnalysisPng()">
+        <button class="glow-btn" data-action="analysis-load">Load</button>
+        <button class="outline-btn" data-action="analysis-export">
           Export PNG
         </button>
         <button
           class="outline-btn"
           id="download-feature-imp-btn"
           style="display: none"
-          onclick="downloadFeatureImportances()"
+          data-action="analysis-download-fi"
         >
           Download FI
         </button>
@@ -1019,6 +1045,6 @@
       </div>
     </aside>
 
-    <script src="app.js"></script>
+    <script type="module" src="js/main.js"></script>
   </body>
 </html>

@@ -203,8 +203,9 @@ def test_backtest_reports_the_run_it_simulated(lake) -> None:
     assert "error" not in result
     assert result["run"]["slug"] == "ml_1d_20240101000000"
     assert result["total_trades"] >= 1
-    # The MVP execution model must stay visible to whoever reads the numbers.
-    assert any("same bar's close" in note for note in result["limitations"])
+    # The execution model must stay visible to whoever reads the numbers.
+    assert any("open of bar t+1" in note for note in result["assumptions"])
+    assert result["benchmark"]["name"] == "buy_and_hold"
 
 
 def test_backtest_refuses_a_run_with_no_trained_rows(lake) -> None:

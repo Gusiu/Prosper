@@ -1,6 +1,7 @@
 """Tests for versioned prediction folder helpers and AI model API."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -53,7 +54,7 @@ def test_parse_versioned_prediction_folder_embedded_model_type() -> None:
 
 def test_get_ai_models_parses_interval(tmp_path, monkeypatch) -> None:
     settings = Settings(data_root=tmp_path)
-    monkeypatch.setattr("prosper.api.server.get_settings", lambda: settings)
+    monkeypatch.setattr("prosper.api.routes.runs.get_settings", lambda: settings)
 
     run_dir = (
         settings.reports_predictions_dir
@@ -76,7 +77,7 @@ def test_get_ai_models_parses_interval(tmp_path, monkeypatch) -> None:
 
 def test_delete_ai_model_removes_run_folder(tmp_path, monkeypatch) -> None:
     settings = Settings(data_root=tmp_path)
-    monkeypatch.setattr("prosper.api.server.get_settings", lambda: settings)
+    monkeypatch.setattr("prosper.api.routes.runs.get_settings", lambda: settings)
 
     run_dir = resolve_versioned_prediction_dir(
         "BTCUSDT", "gru", "20240501123000", settings=settings, interval="1d"
@@ -92,7 +93,7 @@ def test_delete_ai_model_removes_run_folder(tmp_path, monkeypatch) -> None:
 
 def test_delete_ai_model_not_found(tmp_path, monkeypatch) -> None:
     settings = Settings(data_root=tmp_path)
-    monkeypatch.setattr("prosper.api.server.get_settings", lambda: settings)
+    monkeypatch.setattr("prosper.api.routes.runs.get_settings", lambda: settings)
 
     with pytest.raises(HTTPException) as exc:
         delete_ai_model("BTCUSDT", "tft", "20990101123000", interval="1d")
@@ -102,7 +103,7 @@ def test_delete_ai_model_not_found(tmp_path, monkeypatch) -> None:
 
 def test_get_ai_predictions_versioned_run(tmp_path, monkeypatch) -> None:
     settings = Settings(data_root=tmp_path)
-    monkeypatch.setattr("prosper.api.server.get_settings", lambda: settings)
+    monkeypatch.setattr("prosper.api.routes.runs.get_settings", lambda: settings)
 
     run_dir = resolve_versioned_prediction_dir(
         "BTCUSDT", "xgboost", "20240501123000", settings=settings, interval="1h"
@@ -124,7 +125,7 @@ def test_get_ai_predictions_versioned_run(tmp_path, monkeypatch) -> None:
 
 def test_get_feature_importances_returns_json(tmp_path, monkeypatch) -> None:
     settings = Settings(data_root=tmp_path)
-    monkeypatch.setattr("prosper.api.server.get_settings", lambda: settings)
+    monkeypatch.setattr("prosper.api.routes.runs.get_settings", lambda: settings)
 
     run_dir = resolve_versioned_prediction_dir(
         "BTCUSDT", "xgboost", "20240501123000", settings=settings, interval="1d"
@@ -146,10 +147,12 @@ def test_get_feature_importances_returns_json(tmp_path, monkeypatch) -> None:
 def test_run_training_includes_interval_in_command(monkeypatch) -> None:
     started: list[list[list[str]]] = []
 
-    def fake_start(cmd: str, commands: list[list[str]]) -> None:
+    def fake_submit(name: str, commands: list[list[str]]):
         started.append(commands)
+        return SimpleNamespace(to_dict=lambda: {"id": 1, "name": name})
 
-    monkeypatch.setattr(runner, "start", fake_start)
+    monkeypatch.setattr(runner, "submit", fake_submit)
+    monkeypatch.setattr(runner, "snapshot", lambda: {"queued": 0, "pending": []})
 
     result = run_training(
         TrainRequest(
@@ -161,7 +164,7 @@ def test_run_training_includes_interval_in_command(monkeypatch) -> None:
         )
     )
 
-    assert result["status"] == "started"
+    assert result["status"] == "queued"
     assert len(started) == 1
     argv = started[0][0]
     assert argv[:5] == ["python", "-m", "prosper.cli", "predict", "ml"]
@@ -169,13 +172,14 @@ def test_run_training_includes_interval_in_command(monkeypatch) -> None:
 
 
 def test_evaluate_model_predictions_builds_safe_command(monkeypatch) -> None:
-    started: list[str] = []
+    started: list[list[str]] = []
 
-    def fake_start(cmd: str, commands: list[list[str]]) -> None:
-        started.append(cmd)
-        assert commands[0][:5] == ["python", "-m", "prosper.cli", "eval", "predictions"]
+    def fake_submit(name: str, commands: list[list[str]]):
+        started.append(commands[0])
+        return SimpleNamespace(to_dict=lambda: {"id": 1, "name": name})
 
-    monkeypatch.setattr(runner, "start", fake_start)
+    monkeypatch.setattr(runner, "submit", fake_submit)
+    monkeypatch.setattr(runner, "snapshot", lambda: {"queued": 0, "pending": []})
 
     result = run_evaluation(
         EvalRequest(
@@ -186,7 +190,9 @@ def test_evaluate_model_predictions_builds_safe_command(monkeypatch) -> None:
         )
     )
 
-    assert result["status"] == "started"
+    assert result["status"] == "queued"
     assert len(started) == 1
-    assert "--model-type xgboost" in started[0]
-    assert "--timestamp 20240501123000" in started[0]
+    argv = started[0]
+    assert argv[:5] == ["python", "-m", "prosper.cli", "eval", "predictions"]
+    assert argv[argv.index("--model-type") + 1] == "xgboost"
+    assert argv[argv.index("--timestamp") + 1] == "20240501123000"

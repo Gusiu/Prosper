@@ -155,7 +155,7 @@ def test_repair_rejects_an_unknown_symbol() -> None:
 
 def test_delete_symbol_data_removes_feature_and_label_partitions(tmp_path, monkeypatch) -> None:
     settings = Settings(data_root=tmp_path)
-    monkeypatch.setattr("prosper.api.server.DataManager", lambda: DataManager(settings))
+    monkeypatch.setattr("prosper.api.routes.data.DataManager", lambda: DataManager(settings))
 
     features_dir = settings.processed_data_dir / "binance" / "spot" / "features" / "1d" / "symbol=TESTUSDT"
     labels_dir = settings.processed_binance_spot_labels_dir / "1d" / "symbol=TESTUSDT"
@@ -173,7 +173,7 @@ def test_delete_symbol_data_removes_feature_and_label_partitions(tmp_path, monke
 
 def test_get_kline_chart_data_returns_lightweight_payload(tmp_path, monkeypatch) -> None:
     settings = Settings(data_root=tmp_path)
-    monkeypatch.setattr("prosper.api.server.DataManager", lambda: DataManager(settings))
+    monkeypatch.setattr("prosper.api.routes.data.DataManager", lambda: DataManager(settings))
 
     symbol = "TESTUSDT"
     save_parquet(
@@ -200,7 +200,7 @@ def test_get_kline_chart_data_returns_lightweight_payload(tmp_path, monkeypatch)
 
 def test_get_symbol_metadata_returns_base_and_quote_assets(tmp_path, monkeypatch) -> None:
     settings = Settings(data_root=tmp_path)
-    monkeypatch.setattr("prosper.api.server.get_settings", lambda: settings)
+    monkeypatch.setattr("prosper.api.routes.meta.get_settings", lambda: settings)
     symbols_path = settings.meta_dir / "binance_spot_symbols.json"
     symbols_path.write_text(
         json.dumps(

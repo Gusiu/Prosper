@@ -56,14 +56,19 @@ def map_to_recommendation(edge: float, risk: float) -> str:
     """
     Map edge and risk to recommendation.
 
-    Recommendations:
-    - Strong Buy: edge > 0.3, risk < 0.2
-    - Buy: edge > 0.15, risk < 0.3
-    - Accumulate: edge > 0.05, risk < 0.4
-    - Hold: |edge| <= 0.05
-    - Reduce: edge < -0.05, risk < 0.4
-    - Sell: edge < -0.15, risk < 0.3
-    - Strong Sell: edge < -0.3, risk < 0.2
+    Both sides are tested strongest-first and are mirror images of each other:
+
+    - Strong Buy / Strong Sell: |edge| > 0.3, risk < 0.2
+    - Buy / Sell:               |edge| > 0.15, risk < 0.3
+    - Accumulate / Reduce:      |edge| > 0.05, risk < 0.4
+    - Hold:                     |edge| <= 0.05, or conviction the risk does not support
+
+    The ordering matters. An earlier version listed the sell branches
+    weakest-first, so `Reduce` (edge < -0.05, risk < 0.4) shadowed both `Sell`
+    and `Strong Sell`: any risk low enough to qualify as a strong signal also
+    satisfied the weaker branch, which was checked first. `Strong Sell` was
+    unreachable for every (edge, risk) pair and the advertised seven-point scale
+    was really a five-point one.
 
     Args:
         edge: Edge value (P_long - P_short)
@@ -72,28 +77,20 @@ def map_to_recommendation(edge: float, risk: float) -> str:
     Returns:
         Recommendation string
     """
-    if edge > 0.3 and risk < 0.2:
-        return "Strong Buy"
-    elif edge > 0.15 and risk < 0.3:
-        return "Buy"
-    elif edge > 0.05 and risk < 0.4:
-        return "Accumulate"
-    elif abs(edge) <= 0.05:
+    if abs(edge) <= 0.05:
         return "Hold"
-    elif edge < -0.05 and risk < 0.4:
-        return "Reduce"
-    elif edge < -0.15 and risk < 0.3:
-        return "Sell"
-    elif edge < -0.3 and risk < 0.2:
-        return "Strong Sell"
-    else:
-        # Default based on edge
-        if edge > 0.1:
-            return "Buy"
-        elif edge < -0.1:
-            return "Sell"
-        else:
-            return "Hold"
+
+    bullish = edge > 0
+    if abs(edge) > 0.3 and risk < 0.2:
+        return "Strong Buy" if bullish else "Strong Sell"
+    if abs(edge) > 0.15 and risk < 0.3:
+        return "Buy" if bullish else "Sell"
+    if abs(edge) > 0.05 and risk < 0.4:
+        return "Accumulate" if bullish else "Reduce"
+
+    # Conviction the risk metric does not support: stay flat rather than act on
+    # a signal whose downside distribution is fat.
+    return "Hold"
 
 
 def plan_windows(

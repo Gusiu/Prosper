@@ -90,7 +90,7 @@ def _evaluated_run(tmp_path, rows: int = 300) -> Settings:
 
 def test_evaluation_detail_is_bounded_by_limit(tmp_path, monkeypatch) -> None:
     settings = _evaluated_run(tmp_path)
-    monkeypatch.setattr("prosper.api.server.get_settings", lambda: settings)
+    monkeypatch.setattr("prosper.api.routes.evaluations.get_settings", lambda: settings)
 
     detail = get_ai_evaluation_detail(SYMBOL, "ml", TIMESTAMP, interval="1d", limit=25)
 
@@ -103,7 +103,7 @@ def test_evaluation_detail_is_bounded_by_limit(tmp_path, monkeypatch) -> None:
 
 def test_evaluation_detail_filters_by_flag_server_side(tmp_path, monkeypatch) -> None:
     settings = _evaluated_run(tmp_path)
-    monkeypatch.setattr("prosper.api.server.get_settings", lambda: settings)
+    monkeypatch.setattr("prosper.api.routes.evaluations.get_settings", lambda: settings)
 
     flags = get_ai_evaluation_flags(SYMBOL, "ml", TIMESTAMP, interval="1d")["flags"]
     assert flags, "expected at least one quality flag in the fixture"
@@ -121,7 +121,7 @@ def test_evaluation_detail_filters_by_flag_server_side(tmp_path, monkeypatch) ->
 
 def test_worst_predictions_are_sorted_by_error(tmp_path, monkeypatch) -> None:
     settings = _evaluated_run(tmp_path)
-    monkeypatch.setattr("prosper.api.server.get_settings", lambda: settings)
+    monkeypatch.setattr("prosper.api.routes.evaluations.get_settings", lambda: settings)
 
     rows = get_ai_evaluation_detail(SYMBOL, "ml", TIMESTAMP, interval="1d", limit=50)[
         "worst_predictions"
@@ -132,7 +132,7 @@ def test_worst_predictions_are_sorted_by_error(tmp_path, monkeypatch) -> None:
 
 def test_evaluation_detail_rejects_an_absurd_limit(tmp_path, monkeypatch) -> None:
     settings = _evaluated_run(tmp_path)
-    monkeypatch.setattr("prosper.api.server.get_settings", lambda: settings)
+    monkeypatch.setattr("prosper.api.routes.evaluations.get_settings", lambda: settings)
 
     from fastapi import HTTPException
 
