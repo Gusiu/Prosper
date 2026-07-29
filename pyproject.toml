@@ -53,6 +53,8 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# `slow` marks tests that actually train a model. Skip them with -m "not slow".
+markers = ["slow: trains a real model; tens of seconds"]
 
 [tool.mypy]
 python_version = "3.12"

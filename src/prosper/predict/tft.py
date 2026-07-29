@@ -35,6 +35,110 @@ def _robust_normalize(X: np.ndarray, med: np.ndarray, iqr: np.ndarray) -> np.nda
     return np.clip(np.nan_to_num(X_norm, nan=0.0, posinf=3.0, neginf=-3.0), -5.0, 5.0)
 
 
+def _logits_to_probs(logits: np.ndarray) -> tuple[float, float, float]:
+    """Softmax a raw output row into (P_short, P_flat, P_long)."""
+    flat = np.asarray(logits).reshape(-1)
+    # NaNLabelEncoder(add_nan=True) prepends an "unknown" class; drop it so the
+    # three direction classes line up.
+    if flat.shape[0] == len(IDX_TO_DIR) + 1:
+        flat = flat[1:]
+    shifted = flat - np.max(flat)
+    exp = np.exp(shifted)
+    probs = exp / exp.sum()
+    return float(probs[0]), float(probs[1]), float(probs[2])
+
+
+def _unwrap_prediction(raw: Any) -> Any:
+    """Pull the prediction tensor out of whatever pytorch-forecasting returned.
+
+    The shape of `predict(mode="raw")` has changed across versions: a dict, a
+    tuple whose first element is a dict or a tensor, or an object exposing
+    `.output.prediction` / `.prediction`.
+    """
+    if isinstance(raw, dict):
+        return raw["prediction"]
+    if isinstance(raw, tuple):
+        head = raw[0]
+        if isinstance(head, dict):
+            return head["prediction"]
+        return getattr(head, "prediction", head)
+    if hasattr(raw, "output"):
+        return raw.output.prediction
+    if hasattr(raw, "prediction"):
+        return raw.prediction
+    return raw
+
+
+def _predict_month(
+    model: Any,
+    dataset_ref: Any,
+    dataset_cls: Any,
+    *,
+    X_norm: np.ndarray,
+    y_dir: np.ndarray,
+    feature_cols: list[str],
+    symbol: str,
+    bar_indices: list[int],
+    seq_len: int,
+    forward_steps: int,
+    cutoff: int,
+) -> dict[int, tuple[float, float, float]]:
+    """Predict every bar of a retraining month in one batched pass.
+
+    Building a TimeSeriesDataSet and a DataLoader per bar — which is what this
+    replaces — dominated the runtime: a full run took hours, almost none of it
+    spent in the model.
+
+    The target history is masked at *cutoff*, the first bar of the month. The
+    model was fitted on information available at that point, so using the same
+    horizon for its inference keeps the two consistent and cannot leak: labels
+    needing a close at or after `cutoff` are hidden for every bar in the batch.
+    """
+    if not bar_indices:
+        return {}
+
+    first, last = min(bar_indices), max(bar_indices)
+    lo = max(0, first - seq_len)
+
+    rows = []
+    for k in range(lo, last + 1):
+        known = k + forward_steps < cutoff and y_dir[k] >= 0
+        row = {
+            "time_idx": k,
+            "group": symbol,
+            "target": IDX_TO_DIR[int(y_dir[k])] if known else np.nan,
+        }
+        for fi, fc in enumerate(feature_cols):
+            row[fc] = float(X_norm[k, fi])
+        rows.append(row)
+
+    frame = pd.DataFrame(rows)
+    inference_set = dataset_cls.from_dataset(
+        dataset_ref, frame, predict=False, stop_randomization=True
+    )
+    loader = inference_set.to_dataloader(train=False, batch_size=64, num_workers=0)
+
+    result = model.predict(loader, mode="raw", return_index=True)
+    # pytorch-forecasting >=1.x returns a Prediction namedtuple
+    # (output, x, index, decoder_lengths, y); older versions returned a plain
+    # (output, index) tuple — which cannot be unpacked into two names. Test for
+    # `output`, not `index`: every tuple has an `.index` *method*, so that check
+    # is true for both shapes and would send the old one down the wrong branch.
+    if hasattr(result, "output"):
+        raw, index = result.output, result.index
+    else:
+        raw, index = result[0], result[1]
+    predictions = _unwrap_prediction(raw)
+
+    wanted = set(bar_indices)
+    out: dict[int, tuple[float, float, float]] = {}
+    for position, decoder_start in enumerate(index["time_idx"].tolist()):
+        bar = int(decoder_start)
+        if bar in wanted:
+            out[bar] = _logits_to_probs(predictions[position, 0].cpu().numpy())
+    return out
+
+
 def predict_tft(
     symbol: str,
     start: str,
@@ -153,7 +257,15 @@ def predict_tft(
     tft_model: dict[str, Any] = {}
     dataset_cache: dict[str, Any] = {}
     depth_cache: dict[str, dict[str, dict[str, float]]] = {}
+    # bar index -> (p_short, p_flat, p_long), filled once per retraining month
+    month_predictions: dict[str, dict[int, tuple[float, float, float]]] = {}
     X_norm_all: np.ndarray | None = None
+
+    # Bars to predict, grouped by the month whose model will serve them.
+    bars_by_month: dict[tuple[int, int], list[int]] = {}
+    for idx in range(n):
+        if start_dt <= dates[idx] <= end_dt:
+            bars_by_month.setdefault((dates[idx].year, dates[idx].month), []).append(idx)
 
     for i in range(n):
         row_date = dates[i]
@@ -262,107 +374,57 @@ def predict_tft(
                     print(f"Training exception for month {current_train_month}: {e}")
                     tft_model[h_name] = None
 
-        # ── Inference ─────────────────────────────────────────────────────
-        date_str = row_date.isoformat()
+            # One batched pass per horizon for the whole month, instead of
+            # rebuilding a dataset and dataloader for every single bar.
+            month_predictions = {}
+            month_bars = [b for b in bars_by_month.get(month_key, []) if b >= seq_len]
+            for h in horizon_specs:
+                model = tft_model.get(h.name)
+                ds_ref = dataset_cache.get(h.name)
+                if model is None or ds_ref is None or X_norm_all is None or not month_bars:
+                    continue
+                try:
+                    month_predictions[h.name] = _predict_month(
+                        model,
+                        ds_ref,
+                        TimeSeriesDataSet,
+                        X_norm=X_norm_all,
+                        y_dir=y_dir_all[h.name],
+                        feature_cols=feature_cols,
+                        symbol=symbol,
+                        bar_indices=month_bars,
+                        seq_len=seq_len,
+                        forward_steps=steps_by_horizon[h.name],
+                        cutoff=i,
+                    )
+                except Exception as e:
+                    print(f"Batched inference failed for {h.name} {month_key}: {e}")
+                    month_predictions[h.name] = {}
+
+        # ── Inference: read the month's batched result ────────────────────
         out: dict[str, Any] = {
             "open_time": open_times[i].isoformat(),
-            "date": date_str,
+            "date": row_date.isoformat(),
             "symbol": symbol,
         }
 
         for h in horizon_specs:
-            h_name = h.name
-            forward_steps = steps_by_horizon[h_name]
-            tft_h = tft_model.get(h_name)
-            if not tft_h or X_norm_all is None or i < seq_len:
-                out[h_name] = untrained_horizon_payload(depth_labels)
-                untrained_counts[h_name] += 1
-            else:
-                try:
-                    ds_ref = dataset_cache.get(h_name)
-                    if not ds_ref:
-                        raise ValueError("No ds_ref")
-                    enc_len = min(seq_len, i)
-                    rows_inf = []
-                    y_dir = y_dir_all[h_name]
-                    for k in range(i - enc_len, i + 1):
-                        # The encoder consumes target history. Only labels
-                        # realised before bar i are known then; anything newer
-                        # must be masked or the model reads its own answer.
-                        known = k + forward_steps < i and y_dir[k] >= 0
-                        row = {
-                            "time_idx": k,
-                            "group": symbol,
-                            "target": IDX_TO_DIR[int(y_dir[k])] if known else np.nan,
-                        }
-                        for fi, fc in enumerate(feature_cols):
-                            row[fc] = float(X_norm_all[k, fi])
-                        rows_inf.append(row)
+            probs = month_predictions.get(h.name, {}).get(i)
+            if probs is None:
+                out[h.name] = untrained_horizon_payload(depth_labels)
+                untrained_counts[h.name] += 1
+                continue
 
-                    df_inf = pd.DataFrame(rows_inf)
-                    ds_inf = TimeSeriesDataSet.from_dataset(
-                        ds_ref, df_inf, predict=True, stop_randomization=True
-                    )
-                    inf_loader = ds_inf.to_dataloader(train=False, batch_size=1, num_workers=0)
-
-                    raw_preds = tft_h.predict(inf_loader, mode="raw", return_x=False)
-                    import torch
-
-                    # Handle various output formats from pytorch-forecasting
-                    if isinstance(raw_preds, dict):
-                        logits = raw_preds["prediction"][0, 0].cpu().numpy()
-                    elif isinstance(raw_preds, tuple):
-                        if isinstance(raw_preds[0], dict):
-                            logits = raw_preds[0]["prediction"][0, 0].cpu().numpy()
-                        else:
-                            logits = raw_preds[0][0, 0].cpu().numpy() if isinstance(raw_preds[0], torch.Tensor) else raw_preds[0].prediction[0, 0].cpu().numpy()
-                    elif hasattr(raw_preds, "output"):
-                        logits = raw_preds.output.prediction[0, 0].cpu().numpy()
-                    elif hasattr(raw_preds, "prediction"):
-                        logits = raw_preds.prediction[0, 0].cpu().numpy()
-                    elif isinstance(raw_preds, torch.Tensor):
-                        # Handle plain tensor - ensure correct shape
-                        if raw_preds.ndim == 3:
-                            logits = raw_preds[0, 0].cpu().numpy()
-                        elif raw_preds.ndim == 2:
-                            logits = raw_preds[0].cpu().numpy()
-                        else:
-                            logits = raw_preds.cpu().numpy()
-                    else:
-                        # Last resort fallback
-                        logits = np.array(raw_preds)
-                        if logits.ndim == 3:
-                            logits = logits[0, 0]
-                        elif logits.ndim == 2:
-                            logits = logits[0]
-
-                    # Ensure logits is 1D array of class probabilities
-                    if logits.ndim > 1:
-                        logits = logits.flatten()
-
-                    # NaNLabelEncoder(add_nan=True) prepends an "unknown"
-                    # class; drop it so the 3 direction classes line up.
-                    if logits.shape[0] == len(IDX_TO_DIR) + 1:
-                        logits = logits[1:]
-
-                    shifted = logits - np.max(logits)
-                    probs = np.exp(shifted) / np.exp(shifted).sum()
-                    p_short, p_flat, p_long = float(probs[0]), float(probs[1]), float(probs[2])
-                except Exception as e:
-                    print(f"Inference exception at {date_str}: {e}")
-                    out[h_name] = untrained_horizon_payload(depth_labels)
-                    untrained_counts[h_name] += 1
-                    continue
-
-                depths = depth_cache.get(h_name, {})
-                out[h_name] = {
-                    "P_long": p_long,
-                    "P_flat": p_flat,
-                    "P_short": p_short,
-                    "depth_long_bins": depths.get("long", _uniform_depth(depth_labels)),
-                    "depth_short_bins": depths.get("short", _uniform_depth(depth_labels)),
-                    "trained": True,
-                }
+            p_short, p_flat, p_long = probs
+            depths = depth_cache.get(h.name, {})
+            out[h.name] = {
+                "P_long": p_long,
+                "P_flat": p_flat,
+                "P_short": p_short,
+                "depth_long_bins": depths.get("long", _uniform_depth(depth_labels)),
+                "depth_short_bins": depths.get("short", _uniform_depth(depth_labels)),
+                "trained": True,
+            }
 
         predictions.append(out)
 

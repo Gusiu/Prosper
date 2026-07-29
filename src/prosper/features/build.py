@@ -173,6 +173,36 @@ def build_features(
         .drop(["_macd", "_signal"])
     )
 
+    # Order-flow features, derived from the Binance columns beyond OHLCV.
+    # Guarded because klines written before those columns were preserved do not
+    # carry them; the feature set simply stays narrower on that older data.
+    if {"taker_buy_base_volume", "num_trades"} <= set(df_feat.columns):
+        safe_volume = pl.when(pl.col("volume") > 0).then(pl.col("volume")).otherwise(None)
+        df_feat = df_feat.with_columns(
+            [
+                # Share of volume that lifted the ask. 0.5 means balanced flow;
+                # persistent deviation is the signal.
+                (pl.col("taker_buy_base_volume") / safe_volume).alias("taker_buy_ratio"),
+                # Mean trade size: the same volume from few large trades carries
+                # different information than from many small ones.
+                (
+                    pl.col("volume")
+                    / pl.when(pl.col("num_trades") > 0).then(pl.col("num_trades")).otherwise(None)
+                ).alias("avg_trade_size"),
+                pl.col("num_trades").cast(pl.Float64).alias("trade_count"),
+            ]
+        )
+        df_feat = df_feat.with_columns(
+            [
+                (pl.col("taker_buy_ratio") - 0.5).alias("flow_imbalance"),
+                pl.col("taker_buy_ratio").rolling_mean(window_size=14).alias("taker_buy_ratio_14"),
+                (
+                    pl.col("trade_count")
+                    / pl.col("trade_count").rolling_mean(window_size=30)
+                ).alias("trade_count_rel_30"),
+            ]
+        )
+
     # Intraday derived features (only when base interval is 1d and 1m data exists)
     intraday_base = settings.processed_binance_spot_klines_dir / "1m" / f"symbol={symbol}"
     if base_interval == "1d" and intraday_base.exists():

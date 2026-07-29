@@ -20,6 +20,18 @@ KLINES_MINIMAL_SCHEMA = {
     "volume": pl.Float64,
 }
 
+# Everything Binance ships in a kline row. `extract_csv_from_zip` already parses
+# these; the minimal schema above silently dropped them, so the order-flow
+# columns were paid for on every download and then thrown away.
+KLINES_FULL_SCHEMA = {
+    **KLINES_MINIMAL_SCHEMA,
+    "close_time": pl.Datetime(time_unit="ms", time_zone="UTC"),
+    "quote_asset_volume": pl.Float64,
+    "num_trades": pl.Int64,
+    "taker_buy_base_volume": pl.Float64,
+    "taker_buy_quote_volume": pl.Float64,
+}
+
 
 def candles_to_dataframe(
     candles: list[dict[str, float | int]], schema: dict[str, pl.DataType] | None = None
@@ -34,25 +46,29 @@ def candles_to_dataframe(
     Returns:
         Polars DataFrame
     """
-    if not candles:
-        # Return empty DataFrame with schema
-        if schema is None:
-            schema = KLINES_MINIMAL_SCHEMA
-        return pl.DataFrame({}, schema=schema)
-
     if schema is None:
-        schema = KLINES_MINIMAL_SCHEMA
+        # Keep whatever the source actually provided. Pinning the minimal schema
+        # here is what discarded num_trades and the taker-buy columns.
+        available = set(candles[0]) if candles else set()
+        schema = {
+            name: dtype
+            for name, dtype in KLINES_FULL_SCHEMA.items()
+            if name in available or name in KLINES_MINIMAL_SCHEMA
+        }
+
+    if not candles:
+        return pl.DataFrame({}, schema=schema)
 
     # Convert to DataFrame
     df = pl.DataFrame(candles, schema=schema, strict=False)
 
-    # Ensure open_time is datetime
-    if "open_time" in df.columns:
-        if df["open_time"].dtype == pl.Int64:
+    # Ensure epoch-millisecond timestamps become datetimes
+    for column in ("open_time", "close_time"):
+        if column in df.columns and df[column].dtype == pl.Int64:
             df = df.with_columns(
-                pl.from_epoch(pl.col("open_time"), time_unit="ms")
+                pl.from_epoch(pl.col(column), time_unit="ms")
                 .dt.replace_time_zone("UTC")
-                .alias("open_time")
+                .alias(column)
             )
 
     # Sort by open_time
