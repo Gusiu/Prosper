@@ -103,7 +103,7 @@ def test_xgboost_trains_when_a_window_lacks_one_direction(lake) -> None:
         assert all(p["trained"] for p in payloads)
         # Probabilities stay a valid distribution after the class remapping.
         for p in payloads:
-            total = p["P_long"] + p["P_flat"] + p["P_short"]
+            total = sum(v for k, v in p.items() if k.startswith("P_"))
             assert total == pytest.approx(1.0, abs=1e-6)
 
 

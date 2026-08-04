@@ -39,22 +39,20 @@ EXPOSURE_POLICY: dict[str, float] = {
 
 
 def multiclass_logloss_brier(
-    p_long: float,
-    p_flat: float,
-    p_short: float,
+    probs: dict[str, float],
     y_true: str,
     eps: float = 1e-12,
 ) -> tuple[float, float]:
-    """
-    Multi-class logloss and Brier for 3 classes: long/flat/short.
-    """
-    probs = {"long": p_long, "flat": p_flat, "short": p_short}
-    p_true = max(eps, float(probs[y_true]))
-    logloss = -math.log(p_true)
+    """Logloss and Brier over whatever direction classes *probs* carries.
 
-    y = {"long": 0.0, "flat": 0.0, "short": 0.0}
-    y[y_true] = 1.0
-    brier = sum((float(probs[c]) - y[c]) ** 2 for c in ("long", "flat", "short"))
+    Taking a dict rather than one argument per class is what lets a two-class
+    run and a legacy three-class one be scored by the same code.
+    """
+    p_true = max(eps, float(probs.get(y_true, 0.0)))
+    logloss = -math.log(p_true)
+    brier = sum(
+        (float(prob) - (1.0 if name == y_true else 0.0)) ** 2 for name, prob in probs.items()
+    )
     return logloss, brier
 
 
@@ -127,7 +125,6 @@ def eval_walkforward(
     train_months: int = 24,
     step_months: int = 1,
     settings: Settings | None = None,
-    flat_threshold: float | None = None,
     model_type: str | None = None,
     timestamp: str | None = None,
     interval: str | None = None,
@@ -142,8 +139,6 @@ def eval_walkforward(
     """
     if settings is None:
         settings = get_settings()
-    if flat_threshold is None:
-        flat_threshold = settings.label_flat_threshold_default
 
     run = resolve_run(
         symbol, model_type=model_type, timestamp=timestamp, interval=interval, settings=settings
@@ -243,15 +238,17 @@ def eval_walkforward(
                 r = forward_return_idx(i, forward_days)
                 if r is None:
                     continue
-                y_true = direction_from_return(r, float(flat_threshold))
+                y_true = direction_from_return(r)
+                if y_true is None:
+                    # An exactly flat forward return has no side to score.
+                    continue
 
-                p_long = float(probs["P_long"])
-                p_flat = float(probs["P_flat"])
-                p_short = float(probs["P_short"])
-
-                logloss, brier = multiclass_logloss_brier(
-                    p_long=p_long, p_flat=p_flat, p_short=p_short, y_true=y_true
-                )
+                row_probs = {
+                    key[2:]: float(value)
+                    for key, value in probs.items()
+                    if key.startswith("P_") and value is not None
+                }
+                logloss, brier = multiclass_logloss_brier(row_probs, y_true)
 
                 exposure = exposure_for(h, date_str)
                 pnl = exposure * r - exposure * cost_rate
@@ -310,7 +307,6 @@ def eval_walkforward(
         "end": end,
         "train_months": train_months,
         "step_months": step_months,
-        "flat_threshold": float(flat_threshold),
         "trading_cost_rate": cost_rate,
         "generated_at": datetime.now(UTC).isoformat(),
         "horizons": horizons_out,

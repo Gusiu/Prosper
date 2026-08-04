@@ -8,17 +8,23 @@ import numpy as np
 import polars as pl
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from prosper.config import Settings, get_settings
 from prosper.domain import (
     DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
     DIR_TO_IDX,
+    DIRECTION_CLASSES,
     IDX_TO_DIR,
     assign_depth_bin,
     direction_from_return,
     parse_depth_bins,
+)
+from prosper.predict.calibration import (
+    TemperatureCalibrator,
+    calibration_split,
+    fit_temperature,
 )
 from prosper.predict.window import (
     days_to_steps,
@@ -62,7 +68,7 @@ class GRUClassifier(nn.Module):
         hidden_size: int = 64,
         num_layers: int = 2,
         dropout: float = 0.2,
-        num_classes: int = 3,
+        num_classes: int = len(DIRECTION_CLASSES),
     ):
         super().__init__()
         self.gru = nn.GRU(
@@ -83,6 +89,25 @@ class GRUClassifier(nn.Module):
         last = out[:, -1, :]  # (B, H) – last timestep
         last = self.norm(last)
         return self.head(last)  # (B, C)
+
+
+def _fit_gru_calibrator(
+    model: nn.Module,
+    dataset: Dataset,
+    indices: list[int],
+    device: torch.device,
+) -> TemperatureCalibrator:
+    """Score the held-out sequences and fit a temperature on the result."""
+    if not indices:
+        return TemperatureCalibrator(1.0)
+
+    model.eval()
+    xs = torch.stack([dataset[k][0] for k in indices]).to(device)
+    ys = np.array([int(dataset[k][1]) for k in indices])
+    with torch.no_grad():
+        probs = torch.softmax(model(xs), dim=-1).cpu().numpy()
+    model.train()
+    return fit_temperature(probs, ys)
 
 
 # ── normalisation ─────────────────────────────────────────────────────────────
@@ -116,7 +141,6 @@ def predict_gru(
     epochs: int = 20,
     batch_size: int = 32,
     lr: float = 1e-3,
-    flat_threshold: float = 0.01,
 ) -> dict[str, Any]:
     """
     Train a GRU classifier on rolling windows and produce per-bar JSONL predictions.
@@ -191,9 +215,9 @@ def predict_gru(
             j = i + forward_steps
             if closes[i] and closes[j]:
                 r = closes[j] / closes[i] - 1.0
-                direction = direction_from_return(r, flat_threshold)
-                dir_arr[i] = DIR_TO_IDX[direction]
-                if direction in ("long", "short"):
+                direction = direction_from_return(r)
+                if direction is not None:
+                    dir_arr[i] = DIR_TO_IDX[direction]
                     bin_idx = assign_depth_bin(abs(r) * 100.0, depth_bins)
                     if bin_idx is not None:
                         depth_arr[i] = bin_idx
@@ -206,6 +230,7 @@ def predict_gru(
     # We retrain once per calendar month to balance speed vs. freshness
     current_train_month = None
     models_cache: dict[str, Any] = {}
+    calibrator_cache: dict[str, TemperatureCalibrator] = {}
     depth_cache: dict[str, dict[str, dict[str, float]]] = {}
     X_norm_current: np.ndarray | None = None
 
@@ -244,7 +269,19 @@ def predict_gru(
                     models_cache[h.name] = None
                     continue
 
-                loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
+                # Hold out the newest sequences of the training region for the
+                # calibrator. They still end before `train_end`, so their
+                # labels are realised — invariant 6 is untouched.
+                split, _ = calibration_split(0, len(ds))
+                fit_ds: Any = ds
+                cal_range: list[int] = []
+                if split < len(ds):
+                    fit_ds = Subset(ds, list(range(split)))
+                    cal_range = list(range(split, len(ds)))
+                    if len({int(ds[k][1]) for k in range(split)}) <= 1:
+                        fit_ds, cal_range = ds, []
+
+                loader = DataLoader(fit_ds, batch_size=batch_size, shuffle=True, drop_last=False)
                 m = GRUClassifier(len(feature_cols), hidden_size, num_layers, dropout).to(device)
                 opt = torch.optim.Adam(m.parameters(), lr=lr)
                 loss_fn = nn.CrossEntropyLoss()
@@ -259,6 +296,7 @@ def predict_gru(
                         opt.step()
 
                 models_cache[h.name] = m
+                calibrator_cache[h.name] = _fit_gru_calibrator(m, ds, cal_range, device)
                 # The GRU head only models direction; depth comes from the
                 # realised conditional distribution over the same window.
                 depth_cache[h.name] = _empirical_depth(
@@ -288,14 +326,16 @@ def predict_gru(
             )
             m.eval()
             with torch.no_grad():
-                logits = m(x_seq)  # (1, 3)
+                logits = m(x_seq)  # (1, len(DIRECTION_CLASSES))
                 probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
+            probs = calibrator_cache.get(h.name, TemperatureCalibrator(1.0)).apply(probs)
 
             depths = depth_cache.get(h.name, {})
             out[h.name] = {
-                "P_long": float(probs[2]),
-                "P_flat": float(probs[1]),
-                "P_short": float(probs[0]),
+                **{
+                    f"P_{IDX_TO_DIR[k]}": float(probs[k])
+                    for k in range(len(DIRECTION_CLASSES))
+                },
                 "depth_long_bins": depths.get("long", _uniform_depth(depth_labels)),
                 "depth_short_bins": depths.get("short", _uniform_depth(depth_labels)),
                 "trained": True,

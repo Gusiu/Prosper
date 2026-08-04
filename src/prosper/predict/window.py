@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from prosper.domain import DEPTH_BIN_LABELS, HorizonSpec, days_to_steps
+from prosper.domain import DEPTH_BIN_LABELS, DIRECTION_CLASSES, HorizonSpec, days_to_steps
 
 # Below this many leakage-free labels a fitted classifier is noise, not a model.
 MIN_TRAIN_SAMPLES = 30
@@ -102,11 +102,15 @@ def untrained_horizon_payload(
     """
     labels = list(depth_labels)
     uniform_depth = {label: 1.0 / len(labels) for label in labels}
-    return {
-        "P_long": 1.0 / 3.0,
-        "P_flat": 1.0 / 3.0,
-        "P_short": 1.0 / 3.0,
-        "depth_long_bins": dict(uniform_depth),
-        "depth_short_bins": dict(uniform_depth),
-        "trained": False,
+    uniform_direction = 1.0 / len(DIRECTION_CLASSES)
+    payload: dict[str, object] = {
+        f"P_{direction}": uniform_direction for direction in DIRECTION_CLASSES
     }
+    payload.update(
+        {
+            "depth_long_bins": dict(uniform_depth),
+            "depth_short_bins": dict(uniform_depth),
+            "trained": False,
+        }
+    )
+    return payload

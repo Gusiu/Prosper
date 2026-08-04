@@ -63,6 +63,11 @@ export const api = {
     }
     return request(`/api/ai/predictions?${params}`);
   },
+  predictionMonths: ({ symbol, model_type, timestamp, interval }) =>
+    request(
+      `/api/ai/predictions/months?symbol=${q(symbol)}&model_type=${q(model_type)}` +
+        `&timestamp=${q(timestamp)}&interval=${q(interval)}`,
+    ),
   featureImportances: ({ symbol, model_type, timestamp, interval }) =>
     request(
       `/api/ai/feature_importances?symbol=${q(symbol)}&model_type=${q(model_type)}` +

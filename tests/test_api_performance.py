@@ -46,7 +46,11 @@ def _evaluated_run(tmp_path, rows: int = 300) -> Settings:
                 "open": [100.0 + i for i in range(rows + 40)],
                 "high": [101.0 + i for i in range(rows + 40)],
                 "low": [99.0 + i for i in range(rows + 40)],
-                "close": [100.0 + (i % 7) * 3 for i in range(rows + 40)],
+                # A trend under the 7-day cycle. Without it close[i + 28] equals
+                # close[i] exactly — 28 and 182 are both multiples of 7 — so
+                # every short and medium outcome had a zero forward return and
+                # no side to be scored against.
+                "close": [100.0 + i * 0.5 + (i % 7) * 3 for i in range(rows + 40)],
                 "volume": [1000.0 + i for i in range(rows + 40)],
             }
         ),
@@ -62,7 +66,6 @@ def _evaluated_run(tmp_path, rows: int = 300) -> Settings:
         ts = start + timedelta(days=i)
         horizon = {
             "P_long": 0.8 if i % 2 else 0.1,
-            "P_flat": 0.1,
             "P_short": 0.1 if i % 2 else 0.8,
             "depth_long_bins": _depth(),
             "depth_short_bins": _depth(),
@@ -206,3 +209,49 @@ def test_task_log_buffer_is_bounded_and_cursor_stays_absolute() -> None:
     lines, next_idx = runner.read_logs(total - 10)
     assert lines == [f"line {i}" for i in range(total - 10, total)]
     assert next_idx == total
+
+
+def test_prediction_responses_are_capped(tmp_path, monkeypatch) -> None:
+    """A whole run must not be serialised into one response.
+
+    Asking for every bar of a 1d run returned 5 MB; a 1h run over the same
+    span is 24x that. The endpoint accepted no `limit` at all, so the only
+    protection was a docstring asking callers to pass year/month.
+    """
+    from prosper.api.routes.runs import get_ai_predictions
+
+    settings = _evaluated_run(tmp_path, rows=300)
+    monkeypatch.setattr("prosper.api.routes.runs.get_settings", lambda: settings)
+
+    payload = get_ai_predictions(
+        symbol=SYMBOL, model_type="ml", timestamp=TIMESTAMP, interval="1d", limit=5
+    )
+
+    assert len(payload["predictions"]) == 5
+    assert payload["matched"] == 300
+    assert payload["truncated"] is True
+
+
+def test_the_cap_cannot_be_raised_from_the_query_string(tmp_path, monkeypatch) -> None:
+    from prosper.api.routes.runs import MAX_PREDICTION_ROWS, get_ai_predictions
+
+    settings = _evaluated_run(tmp_path, rows=50)
+    monkeypatch.setattr("prosper.api.routes.runs.get_settings", lambda: settings)
+
+    payload = get_ai_predictions(
+        symbol=SYMBOL, model_type="ml", timestamp=TIMESTAMP, interval="1d", limit=10**9
+    )
+
+    assert payload["limit"] == MAX_PREDICTION_ROWS
+
+
+def test_an_untruncated_response_says_so(tmp_path, monkeypatch) -> None:
+    from prosper.api.routes.runs import get_ai_predictions
+
+    settings = _evaluated_run(tmp_path, rows=20)
+    monkeypatch.setattr("prosper.api.routes.runs.get_settings", lambda: settings)
+
+    payload = get_ai_predictions(symbol=SYMBOL, model_type="ml", timestamp=TIMESTAMP, interval="1d")
+
+    assert payload["truncated"] is False
+    assert payload["count"] == payload["matched"] == 20

@@ -14,10 +14,17 @@ from prosper.config import Settings, get_settings
 from prosper.domain import (
     DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
+    DIR_TO_IDX,
+    DIRECTION_CLASSES,
     IDX_TO_DIR,
     assign_depth_bin,
     direction_from_return,
     parse_depth_bins,
+)
+from prosper.predict.calibration import (
+    TemperatureCalibrator,
+    calibration_split,
+    fit_temperature,
 )
 from prosper.predict.window import (
     days_to_steps,
@@ -36,17 +43,21 @@ def _robust_normalize(X: np.ndarray, med: np.ndarray, iqr: np.ndarray) -> np.nda
     return np.clip(np.nan_to_num(X_norm, nan=0.0, posinf=3.0, neginf=-3.0), -5.0, 5.0)
 
 
-def _logits_to_probs(logits: np.ndarray) -> tuple[float, float, float]:
-    """Softmax a raw output row into (P_short, P_flat, P_long)."""
-    flat = np.asarray(logits).reshape(-1)
+def _logits_to_probs(logits: np.ndarray) -> tuple[float, ...]:
+    """Softmax a raw output row into one probability per direction class.
+
+    Returned in `DIRECTION_CLASSES` order, so the caller never has to know how
+    many classes there are.
+    """
+    row = np.asarray(logits).reshape(-1)
     # NaNLabelEncoder(add_nan=True) prepends an "unknown" class; drop it so the
-    # three direction classes line up.
-    if flat.shape[0] == len(IDX_TO_DIR) + 1:
-        flat = flat[1:]
-    shifted = flat - np.max(flat)
+    # direction classes line up.
+    if row.shape[0] == len(DIRECTION_CLASSES) + 1:
+        row = row[1:]
+    shifted = row - np.max(row)
     exp = np.exp(shifted)
     probs = exp / exp.sum()
-    return float(probs[0]), float(probs[1]), float(probs[2])
+    return tuple(float(v) for v in probs)
 
 
 def _unwrap_prediction(raw: Any) -> Any:
@@ -84,7 +95,7 @@ def _predict_month(
     forward_steps: int,
     cutoff: int,
     trainer_kwargs: dict[str, Any] | None = None,
-) -> dict[int, tuple[float, float, float]]:
+) -> dict[int, tuple[float, ...]]:
     """Predict every bar of a retraining month in one batched pass.
 
     Building a TimeSeriesDataSet and a DataLoader per bar — which is what this
@@ -150,12 +161,62 @@ def _predict_month(
     predictions = _unwrap_prediction(raw)
 
     wanted = set(bar_indices)
-    out: dict[int, tuple[float, float, float]] = {}
+    out: dict[int, tuple[float, ...]] = {}
     for position, decoder_start in enumerate(index["time_idx"].tolist()):
         bar = int(decoder_start)
         if bar in wanted:
             out[bar] = _logits_to_probs(predictions[position, 0].cpu().numpy())
     return out
+
+
+def _fit_tft_calibrator(
+    model: Any,
+    dataset_ref: Any,
+    dataset_cls: Any,
+    *,
+    X_norm: np.ndarray,
+    y_dir: np.ndarray,
+    feature_cols: list[str],
+    symbol: str,
+    bar_indices: list[int],
+    seq_len: int,
+    forward_steps: int,
+    trainer_kwargs: dict[str, Any] | None = None,
+) -> TemperatureCalibrator:
+    """Score the held-out trainable bars and fit a temperature on the result.
+
+    The cutoff is the first held-out bar, so the encoder cannot read a label
+    from the very region being scored — the same masking rule inference uses.
+    """
+    if not bar_indices:
+        return TemperatureCalibrator(1.0)
+
+    try:
+        scored = _predict_month(
+            model,
+            dataset_ref,
+            dataset_cls,
+            X_norm=X_norm,
+            y_dir=y_dir,
+            feature_cols=feature_cols,
+            symbol=symbol,
+            bar_indices=bar_indices,
+            seq_len=seq_len,
+            forward_steps=forward_steps,
+            cutoff=min(bar_indices),
+            trainer_kwargs=trainer_kwargs,
+        )
+    except Exception:
+        # Calibration is an improvement, never a prerequisite for a forecast.
+        return TemperatureCalibrator(1.0)
+
+    bars = [bar for bar in bar_indices if bar in scored and y_dir[bar] >= 0]
+    if not bars:
+        return TemperatureCalibrator(1.0)
+
+    probs = np.array([scored[bar] for bar in bars], dtype=float)
+    labels = np.array([int(y_dir[bar]) for bar in bars], dtype=int)
+    return fit_temperature(probs, labels)
 
 
 def predict_tft(
@@ -169,7 +230,6 @@ def predict_tft(
     max_epochs: int = 10,
     hidden_size: int = 32,
     attention_head_size: int = 2,
-    flat_threshold: float = 0.01,
     learning_rate: float = 1e-3,
 ) -> dict[str, Any]:
     """
@@ -248,7 +308,7 @@ def predict_tft(
     end_dt = parse_date(end).date()
 
     # ── 2. Pre-compute forward labels ─────────────────────────────────────────
-    dir_map = {"short": 0, "flat": 1, "long": 2}
+    dir_map = DIR_TO_IDX
     depth_bins, depth_labels = parse_depth_bins(DEFAULT_DEPTH_BINS_STR)
     y_dir_all: dict[str, np.ndarray] = {}
     y_depth_all: dict[str, np.ndarray] = {}
@@ -260,9 +320,9 @@ def predict_tft(
             j = i + forward_steps
             if closes[i] and closes[j]:
                 r = closes[j] / closes[i] - 1.0
-                direction = direction_from_return(r, flat_threshold)
-                dir_arr[i] = dir_map[direction]
-                if direction in ("long", "short"):
+                direction = direction_from_return(r)
+                if direction is not None:
+                    dir_arr[i] = dir_map[direction]
                     bin_idx = assign_depth_bin(abs(r) * 100.0, depth_bins)
                     if bin_idx is not None:
                         depth_arr[i] = bin_idx
@@ -286,8 +346,9 @@ def predict_tft(
     current_train_month = None
     tft_model: dict[str, Any] = {}
     dataset_cache: dict[str, Any] = {}
+    calibrator_cache: dict[str, TemperatureCalibrator] = {}
     depth_cache: dict[str, dict[str, dict[str, float]]] = {}
-    # bar index -> (p_short, p_flat, p_long), filled once per retraining month
+    # bar index -> one probability per direction class, filled once per month
     month_predictions: dict[str, dict[int, tuple[float, float, float]]] = {}
     X_norm_all: np.ndarray | None = None
 
@@ -330,8 +391,17 @@ def predict_tft(
                     tft_model[h_name] = None
                     continue
 
+                # Hold out the newest trainable bars to calibrate on. They sit
+                # inside `training_bounds`, so their labels are realised and
+                # invariant 6 is untouched; the model simply never fits them.
+                split, _ = calibration_split(0, len(valid_idx))
+                fit_idx = valid_idx[:split]
+                cal_idx = valid_idx[split:]
+                if len(fit_idx) < seq_len + 10 or len(set(y_dir[fit_idx])) < 2:
+                    fit_idx, cal_idx = valid_idx, []
+
                 rows = []
-                for k in valid_idx:
+                for k in fit_idx:
                     row = {"time_idx": k, "group": symbol, "target": IDX_TO_DIR[int(y_dir[k])]}
                     for fi, fc in enumerate(feature_cols):
                         row[fc] = float(X_norm_all[k, fi])
@@ -395,6 +465,19 @@ def predict_tft(
                     trainer.fit(tft, train_dataloaders=loader)
                     tft_model[h_name] = tft
                     dataset_cache[h_name] = ds
+                    calibrator_cache[h_name] = _fit_tft_calibrator(
+                        tft,
+                        ds,
+                        TimeSeriesDataSet,
+                        X_norm=X_norm_all,
+                        y_dir=y_dir,
+                        feature_cols=feature_cols,
+                        symbol=symbol,
+                        bar_indices=cal_idx,
+                        seq_len=seq_len,
+                        forward_steps=forward_steps,
+                        trainer_kwargs=inference_trainer_kwargs,
+                    )
                     depth_cache[h_name] = _empirical_depth(
                         y_dir_all[h_name][train_start:train_end],
                         y_depth_all[h_name][train_start:train_end],
@@ -452,12 +535,10 @@ def predict_tft(
                 untrained_counts[h.name] += 1
                 continue
 
-            p_short, p_flat, p_long = probs
+            probs = calibrator_cache.get(h.name, TemperatureCalibrator(1.0)).apply(probs)
             depths = depth_cache.get(h.name, {})
             out[h.name] = {
-                "P_long": p_long,
-                "P_flat": p_flat,
-                "P_short": p_short,
+                **{f"P_{IDX_TO_DIR[k]}": p for k, p in enumerate(probs)},
                 "depth_long_bins": depths.get("long", _uniform_depth(depth_labels)),
                 "depth_short_bins": depths.get("short", _uniform_depth(depth_labels)),
                 "trained": True,

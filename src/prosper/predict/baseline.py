@@ -8,6 +8,7 @@ from prosper.config import Settings, get_settings
 from prosper.domain import (
     DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
+    DIRECTION_CLASSES,
     assign_depth_bin,
     direction_from_return,
     parse_depth_bins,
@@ -33,8 +34,8 @@ def predict_baseline(
     start: str,
     end: str,
     settings: Settings | None = None,
+    interval: str = "1d",
     rolling_window_days: int | None = None,
-    flat_threshold: float = 0.01,
     depth_bins_str: str = DEFAULT_DEPTH_BINS_STR,
     alpha: float = 1.0,
 ) -> dict[str, Any]:
@@ -53,8 +54,9 @@ def predict_baseline(
     if rolling_window_days is None:
         rolling_window_days = settings.baseline_rolling_window_days
 
-    # The baseline reads daily klines directly, so its bar size is fixed at 1d.
-    interval = "1d"
+    # The benchmark has to be available wherever the models are. Everything
+    # below is already expressed in bars of *interval*, so pinning it to 1d
+    # only meant a 1h comparison had no buy-and-hold to be measured against.
     horizons = list(DEFAULT_HORIZONS)
     steps_by_horizon = validate_train_window(rolling_window_days, interval, horizons)
     window_steps = days_to_steps(rolling_window_days, interval)
@@ -71,25 +73,25 @@ def predict_baseline(
     # weaker the narrower the range you asked for — while the ML models, which
     # read all features and filter on output, did not.
     base_path = settings.processed_binance_spot_klines_dir / interval / f"symbol={symbol}"
-    daily_parts = [
+    kline_parts = [
         load_parquet(path)
         for path in sorted(base_path.glob("**/*.parquet"))
         if path.is_file() and path.stat().st_size > 0
     ]
 
-    if not daily_parts:
-        return {"error": f"No daily parquet found for {symbol} at {interval}", "symbol": symbol}
+    if not kline_parts:
+        return {"error": f"No {interval} parquet found for {symbol}", "symbol": symbol}
 
-    df_daily = pl.concat(daily_parts).sort("open_time").unique(subset=["open_time"], keep="first")
-    df_daily = df_daily.with_columns(pl.col("open_time").dt.date().alias("_date"))
+    df_bars = pl.concat(kline_parts).sort("open_time").unique(subset=["open_time"], keep="first")
+    df_bars = df_bars.with_columns(pl.col("open_time").dt.date().alias("_date"))
 
-    if df_daily.is_empty():
-        return {"error": f"No daily rows found for {symbol}", "symbol": symbol}
+    if df_bars.is_empty():
+        return {"error": f"No {interval} rows found for {symbol}", "symbol": symbol}
 
-    open_times = df_daily["open_time"].to_list()
-    dates = df_daily["_date"].to_list()
-    closes = df_daily["close"].to_list()
-    n = len(df_daily)
+    open_times = df_bars["open_time"].to_list()
+    dates = df_bars["_date"].to_list()
+    closes = df_bars["close"].to_list()
+    n = len(df_bars)
 
     def horizon_labels(forward_steps: int) -> dict[str, list[Any]]:
         directions: list[str | None] = [None] * n
@@ -100,8 +102,8 @@ def predict_baseline(
             if j >= n:
                 continue
             r = closes[j] / closes[i] - 1.0
-            directions[i] = direction_from_return(r, flat_threshold)
-            if directions[i] in ("long", "short"):
+            directions[i] = direction_from_return(r)
+            if directions[i] is not None:
                 depth_bins_idx[i] = assign_depth_bin(abs(r) * 100.0, depth_bins)
         return {"direction": directions, "depth_bin_idx": depth_bins_idx}
 
@@ -137,14 +139,16 @@ def predict_baseline(
                 continue
 
             total_dir = len(window_idx)
-            c_long = sum(1 for j in window_idx if dirs[j] == "long")
-            c_flat = sum(1 for j in window_idx if dirs[j] == "flat")
-            c_short = sum(1 for j in window_idx if dirs[j] == "short")
-
-            k_dir = 3
-            p_long = _laplace_prob(c_long, total_dir, k_dir, alpha)
-            p_flat = _laplace_prob(c_flat, total_dir, k_dir, alpha)
-            p_short = _laplace_prob(c_short, total_dir, k_dir, alpha)
+            k_dir = len(DIRECTION_CLASSES)
+            direction_probs = {
+                direction: _laplace_prob(
+                    sum(1 for j in window_idx if dirs[j] == direction),
+                    total_dir,
+                    k_dir,
+                    alpha,
+                )
+                for direction in DIRECTION_CLASSES
+            }
 
             def depth_probs_for(direction: str, window_idx: list[int] = window_idx) -> dict[str, float]:
                 idxs = [
@@ -161,9 +165,7 @@ def predict_baseline(
                 }
 
             out[h.name] = {
-                "P_long": p_long,
-                "P_flat": p_flat,
-                "P_short": p_short,
+                **{f"P_{d}": prob for d, prob in direction_probs.items()},
                 "depth_long_bins": depth_probs_for("long"),
                 "depth_short_bins": depth_probs_for("short"),
                 "trained": True,

@@ -9,7 +9,16 @@ import { ANALYSIS_INTERVALS, state } from "../state.js";
 
 let aiModelRuns = [];
 let analysisDrawerContext = { symbol: null, model_type: null, timestamp: null };
-const predictionCalendarState = { rowsByDate: new Map(), year: 0, month: 0 };
+// The calendar shows one month, so it fetches one month. Loading the whole
+// run to page through it client-side pulled ~5 MB for a 1d run and 24x that
+// for 1h — the endpoint has always supported year/month narrowing.
+const predictionCalendarState = {
+  rowsByDate: new Map(),
+  year: 0,
+  month: 0,
+  context: null,
+  months: [],
+};
 
 export function updateTrainDates() {
   const sym = document.getElementById("train-symbol").value;
@@ -231,13 +240,13 @@ export async function openPredictionCalendar(
     "Loading predictions...";
 
   try {
-    const data = await api.predictions({ symbol, model_type, timestamp, interval });
-    const rows = data.predictions || [];
-    document.getElementById("analysis-status").innerText =
-      `Loaded ${rows.length} prediction rows`;
+    const run = { symbol, model_type, timestamp, interval };
+    const { months = [] } = await api.predictionMonths(run);
+    predictionCalendarState.context = run;
+    predictionCalendarState.months = months;
 
     // Save context for download action
-    analysisDrawerContext = { symbol, model_type, timestamp, interval };
+    analysisDrawerContext = run;
 
     // Check whether feature_importances.json exists for this run and toggle download button
     const fiButton = document.getElementById("download-feature-imp-btn");
@@ -250,17 +259,17 @@ export async function openPredictionCalendar(
       }
     }
 
-    // Store data and render
-    predictionCalendarState.rowsByDate = new Map(
-      (rows || []).map((r) => [r.date, r]),
-    );
-    if (rows.length > 0) {
-      // Default to the last month with data (usually most recent)
-      const lastDate = new Date(rows[rows.length - 1].date);
-      predictionCalendarState.year = lastDate.getFullYear();
-      predictionCalendarState.month = lastDate.getMonth();
+    if (months.length === 0) {
+      predictionCalendarState.rowsByDate = new Map();
+      document.getElementById("analysis-status").innerText = "No predictions in this run";
+      renderPredictionCalendar();
+      return;
     }
-    renderPredictionCalendar();
+
+    const [lastYear, lastMonth] = months[months.length - 1].split("-").map(Number);
+    predictionCalendarState.year = lastYear;
+    predictionCalendarState.month = lastMonth - 1;
+    await loadPredictionMonth();
   } catch (e) {
     console.error(e);
     document.getElementById("analysis-status").innerText =
@@ -274,7 +283,25 @@ export async function openPredictionCalendar(
 }
 
 
-export function changePredictionMonth(delta) {
+async function loadPredictionMonth() {
+  const { context, year, month } = predictionCalendarState;
+  if (!context) return;
+  const status = document.getElementById("analysis-status");
+  try {
+    const data = await api.predictions({ ...context, year, month: month + 1 });
+    const rows = data.predictions || [];
+    predictionCalendarState.rowsByDate = new Map(rows.map((r) => [r.date, r]));
+    if (status) status.innerText = `Loaded ${rows.length} rows for ${year}-${String(month + 1).padStart(2, "0")}`;
+  } catch (e) {
+    console.error(e);
+    predictionCalendarState.rowsByDate = new Map();
+    if (status) status.innerText = "Error loading predictions";
+  }
+  renderPredictionCalendar();
+}
+
+
+export async function changePredictionMonth(delta) {
   let { year, month } = predictionCalendarState;
   month += delta;
   if (month > 11) {
@@ -286,7 +313,7 @@ export function changePredictionMonth(delta) {
   }
   predictionCalendarState.month = month;
   predictionCalendarState.year = year;
-  renderPredictionCalendar();
+  await loadPredictionMonth();
 }
 
 
@@ -380,7 +407,8 @@ export function renderPredictionCalendar() {
     if (!isNaN(m) && !isNaN(y)) {
       predictionCalendarState.month = Math.max(0, Math.min(11, m));
       predictionCalendarState.year = y;
-      renderPredictionCalendar();
+      // Jumping to a month must fetch it — only the current month is in memory.
+      loadPredictionMonth();
     }
   };
 
@@ -444,16 +472,15 @@ export function renderPredictionCalendar() {
 
         const rowData = rowsByDate.get(dateStr);
         if (rowData) {
-          const pLong = Math.max(
-            rowData.short?.P_long || 0,
-            rowData.medium?.P_long || 0,
-            rowData.long?.P_long || 0,
-          );
-          const pShort = Math.max(
-            rowData.short?.P_short || 0,
-            rowData.medium?.P_short || 0,
-            rowData.long?.P_short || 0,
-          );
+          // One horizon, not a maximum across three. Taking max(P_long) and
+          // max(P_short) separately pulled the two numbers from different
+          // horizons, so the pair never summed to 100 and a day could be
+          // coloured bullish while another horizon read 99% short. The cell is
+          // one day wide, so the shortest horizon is the one it can speak for;
+          // the popover still shows all three.
+          const summary = rowData.short || rowData.medium || rowData.long || {};
+          const pLong = summary.P_long || 0;
+          const pShort = summary.P_short || 0;
 
           if (pLong >= 0.6) {
             dayDiv.style.background = "rgba(0,230,118,0.08)";
@@ -468,7 +495,7 @@ export function renderPredictionCalendar() {
           const mini = document.createElement("div");
           mini.style.fontSize = "0.7rem";
           mini.style.color = "#94a3b8";
-          mini.innerText = `L:${Math.round(pLong * 100)}% S:${Math.round(pShort * 100)}%`;
+          mini.innerText = `4w  L:${Math.round(pLong * 100)}% S:${Math.round(pShort * 100)}%`;
           dayDiv.appendChild(mini);
 
           dayDiv.style.cursor = "pointer";
@@ -516,12 +543,16 @@ export function showPredictionPopover(e, row) {
   }
   try {
     function _horizonHtml(label, obj, durationTxt) {
+      // Read whichever direction classes the run carries. Two-class runs have
+      // no P_flat; a legacy three-class run still does, and its middle band
+      // should keep rendering rather than silently vanish into the bar.
       const P_long = (obj && obj.P_long) || 0;
-      const P_flat = (obj && obj.P_flat) || 0;
       const P_short = (obj && obj.P_short) || 0;
+      const P_flat = (obj && obj.P_flat) || 0;
       const pL = Math.round(P_long * 100);
       const pF = Math.round(P_flat * 100);
       const pS = Math.round(P_short * 100);
+      const hasFlat = obj && obj.P_flat != null;
 
       // Depth bins visualization (vertical micro-bars + labels)
       let depthHtml = "";
@@ -570,10 +601,10 @@ export function showPredictionPopover(e, row) {
           <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
             <div style="flex:1; max-width:160px; background:rgba(255,255,255,0.06); height:8px; border-radius:6px; overflow:hidden; position:relative;">
               <div style="position:absolute; left:0; top:0; height:8px; background:rgba(0,230,118,0.85); width:${pL}%;"></div>
-              <div style="position:absolute; left:${pL}%; top:0; height:8px; background:rgba(255,189,46,0.85); width:${pF}%;"></div>
-              <div style="position:absolute; left:${pL + pF}%; top:0; height:8px; background:rgba(255,23,68,0.85); width:${pS}%;"></div>
+              ${hasFlat ? `<div style="position:absolute; left:${pL}%; top:0; height:8px; background:rgba(255,189,46,0.85); width:${pF}%;"></div>` : ""}
+              <div style="position:absolute; left:${pL + (hasFlat ? pF : 0)}%; top:0; height:8px; background:rgba(255,23,68,0.85); width:${pS}%;"></div>
             </div>
-            <div style="width:86px; font-size:0.82rem; color:#cbd5e1; text-align:right;">L:${pL}% F:${pF}% S:${pS}%</div>
+            <div style="width:86px; font-size:0.82rem; color:#cbd5e1; text-align:right;">L:${pL}%${hasFlat ? ` F:${pF}%` : ""} S:${pS}%</div>
           </div>
           ${depthHtml}
         </div>`;

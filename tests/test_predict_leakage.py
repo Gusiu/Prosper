@@ -7,7 +7,7 @@ medium and long horizons at all.
 """
 
 import pytest
-from prosper.domain import DEFAULT_HORIZONS, HorizonSpec, days_to_steps
+from prosper.domain import DEFAULT_HORIZONS, DIRECTION_CLASSES, HorizonSpec, days_to_steps
 from prosper.predict.window import (
     MIN_TRAIN_SAMPLES,
     training_bounds,
@@ -92,5 +92,7 @@ def test_untrained_payload_is_flagged_and_normalised() -> None:
     payload = untrained_horizon_payload()
 
     assert payload["trained"] is False
-    assert payload["P_long"] + payload["P_flat"] + payload["P_short"] == pytest.approx(1.0)
+    direction_mass = sum(v for k, v in payload.items() if k.startswith("P_"))
+    assert direction_mass == pytest.approx(1.0)
+    assert set(DIRECTION_CLASSES) == {k[2:] for k in payload if k.startswith("P_")}
     assert sum(payload["depth_long_bins"].values()) == pytest.approx(1.0)

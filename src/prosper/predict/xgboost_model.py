@@ -10,9 +10,17 @@ from prosper.config import Settings, get_settings
 from prosper.domain import (
     DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
+    DIR_TO_IDX,
+    DIRECTION_CLASSES,
+    IDX_TO_DIR,
     assign_depth_bin,
     direction_from_return,
     parse_depth_bins,
+)
+from prosper.predict.calibration import (
+    TemperatureCalibrator,
+    calibration_split,
+    fit_calibrator_from_model,
 )
 from prosper.predict.window import (
     days_to_steps,
@@ -35,7 +43,6 @@ def predict_xgboost(
     n_estimators: int = 100,
     max_depth: int = 6,
     learning_rate: float = 0.1,
-    flat_threshold: float = 0.01,
 ) -> dict[str, Any]:
     """
     XGBoost probabilistic direction predictions (short/medium/long).
@@ -104,17 +111,17 @@ def predict_xgboost(
             j = i + forward_steps
             if j < n:
                 r = closes[j] / closes[i] - 1.0
-                d = direction_from_return(r, flat_threshold)
+                d = direction_from_return(r)
                 directions[i] = d
-                if d in ("long", "short"):
+                if d is not None:
                     depths[i] = assign_depth_bin(abs(r) * 100.0, depth_bins)
         horizon_targets[h.name] = {"direction": directions, "depth": depths}
 
     predictions: list[dict[str, Any]] = []
     untrained_counts: dict[str, int] = {h.name: 0 for h in horizons}
 
-    dir_map = {"short": 0, "flat": 1, "long": 2}
-    inv_dir_map = {0: "short", 1: "flat", 2: "long"}
+    dir_map = DIR_TO_IDX
+    inv_dir_map = IDX_TO_DIR
 
     current_train_month = None
     models_cache: dict[str, Any] = {}
@@ -153,8 +160,19 @@ def predict_xgboost(
                 # the resulting failure used to disable the horizon entirely.
                 # Remap to a dense range and keep the original class order to
                 # map the probabilities back.
-                present_classes = sorted(set(y_train_valid))
+                # The newest slice of the training region is held out to fit
+                # the calibrator; both halves end before `train_end`, so no
+                # unrealised label reaches either (invariant 6).
+                split, _ = calibration_split(0, len(valid_idx))
+                fit_rows = list(range(split))
+                cal_rows = list(range(split, len(valid_idx)))
+                y_fit = [y_train_valid[k] for k in fit_rows] if fit_rows else y_train_valid
+                if len(set(y_fit)) <= 1:
+                    y_fit, fit_rows, cal_rows = y_train_valid, list(range(len(valid_idx))), []
+
+                present_classes = sorted(set(y_fit))
                 clf = None
+                calibrator = TemperatureCalibrator(1.0)
                 if len(present_classes) > 1:
                     dense = {label: idx for idx, label in enumerate(present_classes)}
                     try:
@@ -165,10 +183,17 @@ def predict_xgboost(
                             random_state=effective_seed,
                             eval_metric="mlogloss",
                         )
-                        clf.fit(X_train_valid, [dense[y] for y in y_train_valid])
+                        clf.fit(X_train_valid[fit_rows], [dense[y] for y in y_fit])
                     except Exception as e:
                         print(f"[xgboost] {h.name} training failed at {row_date}: {e}")
                         clf = None
+                    if clf is not None and cal_rows:
+                        calibrator = fit_calibrator_from_model(
+                            clf,
+                            X_train_valid[cal_rows],
+                            [y_train_valid[k] for k in cal_rows],
+                            present_classes=present_classes,
+                        )
 
                 # Empirical depth distributions conditioned on realised direction.
                 emp_long = [0] * len(depth_labels)
@@ -185,6 +210,7 @@ def predict_xgboost(
                     "clf": clf,
                     # Column j of predict_proba corresponds to present_classes[j].
                     "classes": present_classes if clf is not None else [],
+                    "calibrator": calibrator,
                     "depth_long": _to_prob_dict(emp_long, depth_labels),
                     "depth_short": _to_prob_dict(emp_short, depth_labels),
                 }
@@ -205,14 +231,13 @@ def predict_xgboost(
                 continue
 
             probs = cache["clf"].predict_proba(X_test)[0]
-            p_dict = {"short": 0.0, "flat": 0.0, "long": 0.0}
+            p_dict = dict.fromkeys(DIRECTION_CLASSES, 0.0)
             for cls_idx, prob in zip(cache["classes"], probs, strict=True):
                 p_dict[inv_dir_map[cls_idx]] = prob
+            p_dict = cache["calibrator"].apply_to_mapping(p_dict)
 
             out[h.name] = {
-                "P_long": p_dict["long"],
-                "P_flat": p_dict["flat"],
-                "P_short": p_dict["short"],
+                **{f"P_{d}": p_dict[d] for d in DIRECTION_CLASSES},
                 "depth_long_bins": cache["depth_long"],
                 "depth_short_bins": cache["depth_short"],
                 "trained": True,

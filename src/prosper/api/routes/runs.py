@@ -15,6 +15,11 @@ from prosper.storage.layout import (
 )
 from prosper.storage.runs import list_runs
 
+# A 1d run is ~2000 bars; a 1h run over the same span is 24x that. The cap
+# is a ceiling on the response, not a paging scheme — narrow with
+# year/month to walk a run.
+MAX_PREDICTION_ROWS = 5000
+
 router = APIRouter()
 
 
@@ -79,11 +84,15 @@ def get_ai_predictions(
     interval: str = "1d",
     year: int | None = None,
     month: int | None = None,
+    limit: int = MAX_PREDICTION_ROWS,
 ):
     """Return a run's predictions, optionally narrowed to one calendar month.
 
-    A full sub-daily run is tens of megabytes, so callers that only render one
-    month should pass ``year``/``month`` rather than filtering client-side.
+    The response is capped. Asking for a whole run used to serialise every bar
+    — 5 MB for a 1d run and far more for a sub-daily one — and the docstring
+    telling callers to pass ``year``/``month`` was the only thing standing
+    between the browser and that payload. `truncated` says when the cap bit,
+    and the month narrowing is still the right way to page through a run.
     """
     settings = get_settings()
     symbol = symbol.upper()
@@ -100,8 +109,10 @@ def get_ai_predictions(
     if year is not None and month is not None:
         month_prefix = f"{year:04d}-{month:02d}"
 
+    capped = max(1, min(int(limit), MAX_PREDICTION_ROWS))
     try:
         rows = []
+        matched = 0
         with open(path, encoding="utf-8") as f:
             for line in f:
                 if not line.strip():
@@ -112,8 +123,17 @@ def get_ai_predictions(
                     continue
                 if month_prefix and str(row.get("date", ""))[:7] != month_prefix:
                     continue
-                rows.append(row)
-        return {"predictions": rows, "month": month_prefix, "count": len(rows)}
+                matched += 1
+                if len(rows) < capped:
+                    rows.append(row)
+        return {
+            "predictions": rows,
+            "month": month_prefix,
+            "count": len(rows),
+            "matched": matched,
+            "truncated": matched > len(rows),
+            "limit": capped,
+        }
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -196,9 +216,31 @@ def delete_ai_model(
     if not run_dir.exists():
         raise HTTPException(status_code=404, detail="Model run not found")
 
+    # Every derived artifact names its source run (invariant 5), so once the
+    # run is gone they are unattributable — and worse, still readable. A
+    # deleted run left its backtest and recommendations behind, and a reader
+    # globbing those directories happily reported its numbers alongside
+    # current ones.
+    slug = run_dir.name
+    removed = [run_dir]
+    for base in (
+        settings.reports_dir / "backtests",
+        settings.reports_dir / "evaluations",
+        settings.reports_recommendations_dir,
+        settings.reports_eval_dir,
+    ):
+        derived = base / symbol / slug
+        if derived.is_dir():
+            removed.append(derived)
+
     try:
-        shutil.rmtree(run_dir)
+        for path in removed:
+            shutil.rmtree(path)
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
-    return {"status": "deleted", "path": str(run_dir)}
+    return {
+        "status": "deleted",
+        "path": str(run_dir),
+        "removed": [str(path) for path in removed],
+    }

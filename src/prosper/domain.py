@@ -11,7 +11,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # ── Direction constants ──────────────────────────────────────────────────────
-DIRECTION_CLASSES: list[str] = ["short", "flat", "long"]
+# Two classes, not three. `flat` used to absorb every move under 1%, which was
+# a *cost* threshold wearing a label's clothes: it destroyed the difference
+# between +0.2% and +0.9%, baked one venue's fees into the training data, and
+# degenerated with horizon (6.7% of short-horizon labels but 0.23% of
+# long-horizon ones, so the long head was really answering a two-class
+# question anyway). The cost hurdle now lives at the decision layer as
+# `Settings.planner_round_trip_cost`, and how far a move goes is the depth
+# head's job — its `0-1` bin holds exactly the rows `flat` used to.
+DIRECTION_CLASSES: list[str] = ["short", "long"]
 DIR_TO_IDX: dict[str, int] = {c: i for i, c in enumerate(DIRECTION_CLASSES)}
 IDX_TO_DIR: dict[int, str] = {i: c for i, c in enumerate(DIRECTION_CLASSES)}
 
@@ -78,17 +86,19 @@ DEFAULT_HORIZONS: tuple[HorizonSpec, ...] = (
 
 
 # ── Direction helper ─────────────────────────────────────────────────────────
-def direction_from_return(r: float, flat_threshold: float) -> str | None:
-    """Classify a forward return into long / flat / short.
+def direction_from_return(r: float | None) -> str | None:
+    """Classify a forward return into long / short by sign.
 
-    Returns ``None`` when *r* is ``None`` (convenience for callers that pass
-    nullable values).
+    There is no threshold and no flat class: the label states what the market
+    did, and whether that is worth trading after costs is a decision, not a
+    label. An exactly zero return is not classifiable, so it returns ``None``
+    and the row is excluded rather than being silently assigned a side.
+
+    Returns ``None`` when *r* is ``None`` too, for callers passing nullables.
     """
-    if r is None:
+    if r is None or r == 0.0:
         return None
-    if abs(r) <= flat_threshold:
-        return "flat"
-    return "long" if r > flat_threshold else "short"
+    return "long" if r > 0.0 else "short"
 
 
 # ── Depth-bin helpers ────────────────────────────────────────────────────────
@@ -132,7 +142,10 @@ def assign_depth_bin(value_pct: float, bins: list[tuple[float, float | None]]) -
 # long-horizon labels and the depth head degenerated into a constant. The
 # extended tail restores its resolution — measured on 2020-09..2026-06, the
 # effective number of bins used at the long horizon goes from 2.75 to 7.22.
-DEFAULT_DEPTH_BINS_STR = "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34-55,55-89,89-144,144+"
+# It starts at 0 because there is no flat class to absorb the sub-1% moves any
+# more: the depth head now covers the whole magnitude axis, and `0-1` holds
+# exactly the rows that used to be labelled flat.
+DEFAULT_DEPTH_BINS_STR = "0-1,1-2,2-3,3-5,5-8,8-13,13-21,21-34,34-55,55-89,89-144,144+"
 
 # Runs produced before 2026-07-29 used this scheme. Their artifacts name their
 # own bins, so nothing needs migrating — but a reader that assumes the current

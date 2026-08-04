@@ -5,7 +5,13 @@ from typing import Any
 import polars as pl
 
 from prosper.config import Settings, get_settings
-from prosper.domain import DEFAULT_DEPTH_BINS_STR, assign_depth_bin, parse_depth_bins
+from prosper.domain import (
+    DEFAULT_DEPTH_BINS_STR,
+    DIRECTION_CLASSES,
+    assign_depth_bin,
+    direction_from_return,
+    parse_depth_bins,
+)
 from prosper.storage.layout import get_labels_parquet_path
 from prosper.storage.parquet import load_parquet, save_parquet
 
@@ -14,28 +20,22 @@ def build_labels(
     symbol: str,
     base_interval: str = "1d",
     forward_days: int = 1,
-    flat_threshold: float = 0.01,
     depth_bins_str: str = DEFAULT_DEPTH_BINS_STR,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     """
-    Build direction and depth labels from daily klines.
+    Build direction and depth labels from klines.
 
-    direction labels for forward horizon:
-    - flat: |r_fwd| <= flat_threshold
-    - long: r_fwd > flat_threshold
-    - short: r_fwd < -flat_threshold
-
-    Depth labels (conditional):
-    - If long: bin based on |r_fwd|
-    - If short: bin based on |r_fwd|
-    - If flat: depth = None
+    Direction is the sign of the forward return: `long` or `short`. There is no
+    flat class and no threshold — a label says what the market did, and whether
+    that is worth trading after costs is a decision made later, against
+    `Settings.planner_round_trip_cost`. How far the move went is the depth
+    label's job, and its lowest bin covers what `flat` used to absorb.
 
     Args:
         symbol: Trading symbol
         base_interval: Base interval for labels (e.g., "1d")
         forward_days: Forward horizon in days (N)
-        flat_threshold: Threshold for flat label (default 0.01 = 1%)
         depth_bins_str: Comma-separated depth bin definitions
         settings: Settings instance (defaults to global)
 
@@ -88,22 +88,14 @@ def build_labels(
     depth_bins, _depth_labels = parse_depth_bins(depth_bins_str)
 
     # Build labels
-    def assign_direction(return_val: float) -> str:
-        """Assign direction label."""
-        abs_return = abs(return_val)
-        if abs_return <= flat_threshold:
-            return "flat"
-        elif return_val > flat_threshold:
-            return "long"
-        else:
-            return "short"
+    def assign_direction(return_val: float) -> str | None:
+        return direction_from_return(return_val)
 
-    def assign_depth(return_val: float, direction: str) -> int | None:
-        """Assign depth bin."""
-        if direction == "flat":
+    def assign_depth(return_val: float, direction: str | None) -> int | None:
+        """Assign a depth bin. Every classifiable row has one."""
+        if direction is None:
             return None
-        abs_return_pct = abs(return_val) * 100.0  # Convert to percentage
-        return assign_depth_bin(abs_return_pct, depth_bins)
+        return assign_depth_bin(abs(return_val) * 100.0, depth_bins)
 
     # Assign direction labels
     df_labels = df_all.with_columns(
@@ -116,8 +108,7 @@ def build_labels(
     def assign_depth_wrapper(row: dict[str, Any]) -> int | None:
         """Wrapper for assign_depth to work with map_elements."""
         return_val = row.get("return_fwd", 0.0)
-        direction = row.get("direction", "flat")
-        return assign_depth(return_val, direction)
+        return assign_depth(return_val, row.get("direction"))
 
     df_labels = df_labels.with_columns(
         pl.struct(["return_fwd", "direction"])
@@ -150,17 +141,10 @@ def build_labels(
         "symbol": symbol,
         "base_interval": base_interval,
         "forward_days": forward_days,
-        "flat_threshold": flat_threshold,
         "total_labels": total,
-        "direction_distribution": {
-            "long": direction_stats.get("long", 0),
-            "flat": direction_stats.get("flat", 0),
-            "short": direction_stats.get("short", 0),
-        },
+        "direction_distribution": {d: direction_stats.get(d, 0) for d in DIRECTION_CLASSES},
         "direction_percentages": {
-            "long": direction_stats.get("long", 0) / total * 100.0,
-            "flat": direction_stats.get("flat", 0) / total * 100.0,
-            "short": direction_stats.get("short", 0) / total * 100.0,
+            d: direction_stats.get(d, 0) / total * 100.0 for d in DIRECTION_CLASSES
         },
         "depth_distribution": depth_stats,
         "imbalance_ratio": (

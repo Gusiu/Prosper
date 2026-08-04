@@ -15,6 +15,7 @@ import numpy as np
 import polars as pl
 import pytest
 from prosper.config import Settings
+from prosper.domain import DIR_TO_IDX, DIRECTION_CLASSES
 from prosper.features.build import build_features
 from prosper.predict.tft import (
     _logits_to_probs,
@@ -28,24 +29,25 @@ SYMBOL = "TESTUSDT"
 
 
 def test_logits_become_a_valid_distribution() -> None:
-    p_short, p_flat, p_long = _logits_to_probs(np.array([2.0, 1.0, 0.5]))
+    probs = _logits_to_probs(np.array([2.0, 0.5]))
 
-    assert p_short + p_flat + p_long == pytest.approx(1.0)
-    assert p_short > p_flat > p_long
+    assert len(probs) == len(DIRECTION_CLASSES)
+    assert sum(probs) == pytest.approx(1.0)
+    assert probs[0] > probs[1]
 
 
 def test_the_unknown_class_is_dropped_before_softmax() -> None:
     """NaNLabelEncoder(add_nan=True) prepends a class that is not a direction."""
-    four = _logits_to_probs(np.array([9.0, 2.0, 1.0, 0.5]))
-    three = _logits_to_probs(np.array([2.0, 1.0, 0.5]))
+    with_unknown = _logits_to_probs(np.array([9.0, 2.0, 0.5]))
+    without = _logits_to_probs(np.array([2.0, 0.5]))
 
     # The leading "unknown" logit is ignored, however large it is.
-    assert four == pytest.approx(three)
+    assert with_unknown == pytest.approx(without)
 
 
 def test_logits_survive_a_large_magnitude() -> None:
     """Softmax is shifted by the max, so big logits must not overflow."""
-    probs = _logits_to_probs(np.array([1000.0, 999.0, 998.0]))
+    probs = _logits_to_probs(np.array([1000.0, 999.0]))
     assert sum(probs) == pytest.approx(1.0)
     assert all(math.isfinite(p) for p in probs)
 
@@ -78,7 +80,7 @@ class _FakeModel:
         import torch
 
         rows = len(self.time_indices)
-        output = {"prediction": torch.zeros((rows, 1, 3))}
+        output = {"prediction": torch.zeros((rows, 1, len(DIRECTION_CLASSES)))}
         index = pd.DataFrame({"time_idx": self.time_indices})
         return output, index
 
@@ -132,7 +134,7 @@ def test_target_history_is_masked_at_the_month_cutoff() -> None:
         dataset_ref=None,
         dataset_cls=CapturingDataset,
         X_norm=np.zeros((200, 1), dtype=np.float32),
-        y_dir=np.full(200, 2, dtype=np.int64),  # every label is "long"
+        y_dir=np.full(200, DIR_TO_IDX["long"], dtype=np.int64),
         feature_cols=["a"],
         symbol=SYMBOL,
         bar_indices=bars,

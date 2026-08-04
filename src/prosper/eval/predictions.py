@@ -17,6 +17,7 @@ from prosper.config import Settings, get_settings
 from prosper.domain import (
     DEFAULT_HORIZONS,
     DEPTH_BIN_LABELS,
+    DIRECTION_CLASSES,
     assign_depth_bin,
     depth_scheme_of,
     direction_from_return,
@@ -38,7 +39,11 @@ from prosper.storage.layout import (
 from prosper.storage.parquet import load_parquet
 
 EPS = 1e-12
-DIRECTION_ORDER = ("short", "flat", "long")
+# Scored over the classes a run actually used, not a fixed tuple: a run
+# written before the flat class was dropped names a `flat` probability, and
+# reading it under today's two classes would renormalise its mass into the
+# other two and silently rescore it.
+DIRECTION_ORDER: tuple[str, ...] = tuple(DIRECTION_CLASSES)
 INTERVAL_SECONDS = {
     "1m": 60,
     "3m": 180,
@@ -80,7 +85,6 @@ FEATURE_SNAPSHOT_COLUMNS = (
 class EvaluationSettings:
     """Tunable thresholds used by prediction-quality evaluation."""
 
-    flat_threshold: float = 0.01
     calibration_bins: int = 10
     low_confidence_threshold: float = 0.45
     high_entropy_ratio: float = 0.92
@@ -100,17 +104,24 @@ def _finite_float(value: Any, default: float = 0.0) -> float:
     return out if math.isfinite(out) else default
 
 
-def normalize_probabilities(values: dict[str, Any]) -> dict[str, float]:
-    """Return normalized direction probabilities in ``short/flat/long`` order."""
-    raw = {
-        "short": max(0.0, _finite_float(values.get("P_short"))),
-        "flat": max(0.0, _finite_float(values.get("P_flat"))),
-        "long": max(0.0, _finite_float(values.get("P_long"))),
-    }
+def direction_scheme_of(values: dict[str, Any]) -> tuple[str, ...]:
+    """The direction classes a stored prediction carries, as `P_<class>` keys."""
+    present = tuple(
+        key[2:] for key in values if key.startswith("P_") and values.get(key) is not None
+    )
+    return present or DIRECTION_ORDER
+
+
+def normalize_probabilities(
+    values: dict[str, Any], classes: Iterable[str] | None = None
+) -> dict[str, float]:
+    """Return normalized direction probabilities over the run's own classes."""
+    names = tuple(classes) if classes is not None else direction_scheme_of(values)
+    raw = {name: max(0.0, _finite_float(values.get(f"P_{name}"))) for name in names}
     total = sum(raw.values())
     if total <= EPS:
-        return {direction: 1.0 / len(DIRECTION_ORDER) for direction in DIRECTION_ORDER}
-    return {direction: prob / total for direction, prob in raw.items()}
+        return {name: 1.0 / max(1, len(names)) for name in names}
+    return {name: prob / total for name, prob in raw.items()}
 
 
 def normalize_distribution(values: dict[str, Any], labels: Iterable[str]) -> dict[str, float]:
@@ -124,8 +135,10 @@ def normalize_distribution(values: dict[str, Any], labels: Iterable[str]) -> dic
 
 
 def brier_score(probs: dict[str, float], y_true: str) -> float:
-    """Multiclass Brier score for direction probabilities."""
-    return sum((probs[direction] - (1.0 if direction == y_true else 0.0)) ** 2 for direction in DIRECTION_ORDER)
+    """Multiclass Brier score over whatever classes *probs* carries."""
+    return sum(
+        (prob - (1.0 if direction == y_true else 0.0)) ** 2 for direction, prob in probs.items()
+    )
 
 
 def negative_log_likelihood(probs: dict[str, float], y_true: str) -> float:
@@ -605,7 +618,6 @@ QUALITY_COLUMNS: tuple[str, ...] = (
     "pred_direction",
     "pred_confidence",
     "pred_p_short",
-    "pred_p_flat",
     "pred_p_long",
     "pred_edge",
     "pred_risk",
@@ -659,7 +671,6 @@ def flatten_quality_row(row: dict[str, Any]) -> dict[str, Any]:
         "pred_direction": prediction.get("direction"),
         "pred_confidence": prediction.get("confidence"),
         "pred_p_short": probabilities.get("short"),
-        "pred_p_flat": probabilities.get("flat"),
         "pred_p_long": probabilities.get("long"),
         "pred_edge": prediction.get("edge"),
         "pred_risk": prediction.get("risk"),
@@ -749,9 +760,7 @@ def evaluate_predictions(
 ) -> dict[str, Any]:
     """Evaluate a versioned prediction run and write quality artifacts."""
     settings = settings or get_settings()
-    eval_settings = eval_settings or EvaluationSettings(
-        flat_threshold=settings.label_flat_threshold_default
-    )
+    eval_settings = eval_settings or EvaluationSettings()
     symbol = symbol.upper()
     model_type = model_type.lower()
 
@@ -866,13 +875,38 @@ def evaluate_predictions(
             target_close = _finite_float(ohlc_rows[target_index].get("close"))
             realized_return = (target_close / start_close - 1.0) if start_close > EPS else 0.0
             realized_return_pct = realized_return * 100.0
-            actual_direction = direction_from_return(realized_return, eval_settings.flat_threshold) or "flat"
+            actual_direction = direction_from_return(realized_return)
             target_date = _date_key(ohlc_rows[target_index].get("open_time"))
-            actual_depth_idx = (
-                assign_depth_bin(abs(realized_return_pct), depth_ranges)
-                if actual_direction in {"long", "short"}
-                else None
-            )
+
+            # A forward return of exactly zero has no side, so there is nothing
+            # to score the forecast against. Excluding it is the same rule an
+            # untrained horizon follows: never invent an outcome.
+            if actual_direction is None:
+                base_row.update(
+                    {
+                        "status": "unclassifiable_outcome",
+                        "target_date": target_date,
+                        "actual": {
+                            "direction": None,
+                            "return": realized_return,
+                            "return_pct": realized_return_pct,
+                        },
+                        "metrics": {
+                            "correct": False,
+                            "brier": None,
+                            "nll": None,
+                            "entropy": entropy,
+                        },
+                        "quality_score": 0.0,
+                        "error_score": 0.0,
+                        "flags": ["zero_return"],
+                    }
+                )
+                base_row["reason"] = _quality_reason(base_row)
+                quality_rows.append(base_row)
+                continue
+
+            actual_depth_idx = assign_depth_bin(abs(realized_return_pct), depth_ranges)
             actual_depth_bin = depth_labels[actual_depth_idx] if actual_depth_idx is not None else None
 
             predicted_depth_distribution = None

@@ -11,10 +11,14 @@ from prosper.config import Settings, get_settings
 from prosper.domain import (
     DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
+    DIR_TO_IDX,
+    DIRECTION_CLASSES,
+    IDX_TO_DIR,
     assign_depth_bin,
     direction_from_return,
     parse_depth_bins,
 )
+from prosper.predict.calibration import calibration_split, fit_calibrator_from_model
 from prosper.predict.window import (
     days_to_steps,
     training_bounds,
@@ -26,11 +30,11 @@ from prosper.storage.predictions import write_versioned_predictions
 from prosper.utils.time import parse_date
 
 
-def _direction_from_return_safe(r: float, flat_threshold: float) -> str | None:
+def _direction_from_return_safe(r: float) -> str | None:
     """Wrapper that also handles NaN values from sklearn."""
     if r is None or math.isnan(r):
         return None
-    return direction_from_return(r, flat_threshold)
+    return direction_from_return(r)
 
 
 def predict_ml(
@@ -40,7 +44,6 @@ def predict_ml(
     settings: Settings | None = None,
     interval: str = "1d",
     train_window_days: int = 730,
-    flat_threshold: float = 0.01,
     depth_bins_str: str = DEFAULT_DEPTH_BINS_STR,
 ) -> dict[str, Any]:
     """
@@ -115,18 +118,18 @@ def predict_ml(
             j = i + forward_steps
             if j < n:
                 r = closes[j] / closes[i] - 1.0
-                d = _direction_from_return_safe(r, flat_threshold)
+                d = _direction_from_return_safe(r)
                 directions[i] = d
-                if d in ("long", "short"):
+                if d is not None:
                     depths[i] = assign_depth_bin(abs(r) * 100.0, depth_bins)
         horizon_targets[h.name] = {"direction": directions, "depth": depths}
 
     predictions: list[dict[str, Any]] = []
     untrained_counts: dict[str, int] = {h.name: 0 for h in horizons}
 
-    # Helper to map labels to int for classifier
-    dir_map = {"short": 0, "flat": 1, "long": 2}
-    inv_dir_map = {0: "short", 1: "flat", 2: "long"}
+    # Label <-> index mapping comes from the domain, not a local literal.
+    dir_map = DIR_TO_IDX
+    inv_dir_map = IDX_TO_DIR
 
     # Retrain once per calendar month to balance freshness against runtime.
     current_train_month = None
@@ -168,15 +171,36 @@ def predict_ml(
                 X_train_valid = X_train[valid_idx]
                 y_train_valid = [dir_map[y_dirs[k]] for k in valid_idx]
 
+                # Reserve the most recent slice of the *training* region to
+                # calibrate on. Holding out later bars instead would break
+                # invariant 6: their labels need closes the forecast cannot see.
+                split, _ = calibration_split(0, len(valid_idx))
+                fit_idx = list(range(split))
+                cal_idx = list(range(split, len(valid_idx)))
+
                 # Direction classifier
                 clf_dir = HistGradientBoostingClassifier(
                     random_state=effective_seed, max_iter=50, max_leaf_nodes=15
                 )
                 # Need at least 2 classes
-                if len(set(y_train_valid)) > 1:
+                y_fit = [y_train_valid[k] for k in fit_idx] if fit_idx else y_train_valid
+                X_fit = X_train_valid[fit_idx] if fit_idx else X_train_valid
+                if len(set(y_fit)) > 1:
+                    clf_dir.fit(X_fit, y_fit)
+                elif len(set(y_train_valid)) > 1:
+                    # The held-out split left a single-class fit set; train on
+                    # everything and skip calibration rather than lose the bar.
                     clf_dir.fit(X_train_valid, y_train_valid)
+                    cal_idx = []
                 else:
                     clf_dir = None  # fallback
+
+                calibrator = fit_calibrator_from_model(
+                    clf_dir,
+                    X_train_valid[cal_idx] if cal_idx else np.empty((0, X_train_valid.shape[1])),
+                    [y_train_valid[k] for k in cal_idx],
+                    present_classes=list(clf_dir.classes_) if clf_dir is not None else None,
+                )
 
                 # Depth classifiers (long and short separately)
                 idx_long = [k for k in valid_idx if y_dirs[k] == "long"]
@@ -216,6 +240,7 @@ def predict_ml(
                     "clf_depth_short": clf_depth_short,
                     "fallback_depth_long": to_prob_dict(emp_long),
                     "fallback_depth_short": to_prob_dict(emp_short),
+                    "calibrator": calibrator,
                     "classes_dir": clf_dir.classes_ if clf_dir else [],
                     "classes_long": clf_depth_long.classes_ if clf_depth_long else [],
                     "classes_short": clf_depth_short.classes_ if clf_depth_short else [],
@@ -235,9 +260,10 @@ def predict_ml(
 
             probs_dir = cache["clf_dir"].predict_proba(X_test)[0]
             # map correctly
-            p_dict = {"short": 0.0, "flat": 0.0, "long": 0.0}
+            p_dict = dict.fromkeys(DIRECTION_CLASSES, 0.0)
             for cls_idx, prob in zip(cache["classes_dir"], probs_dir, strict=True):
                 p_dict[inv_dir_map[cls_idx]] = prob
+            p_dict = cache["calibrator"].apply_to_mapping(p_dict)
 
             # Long depth
             if cache["clf_depth_long"]:
@@ -258,9 +284,7 @@ def predict_ml(
                 ds_dict = cache["fallback_depth_short"]
 
             out[h.name] = {
-                "P_long": p_dict["long"],
-                "P_flat": p_dict["flat"],
-                "P_short": p_dict["short"],
+                **{f"P_{d}": p_dict[d] for d in DIRECTION_CLASSES},
                 "depth_long_bins": dl_dict,
                 "depth_short_bins": ds_dict,
                 "trained": True,

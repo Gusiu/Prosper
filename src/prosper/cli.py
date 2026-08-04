@@ -112,6 +112,11 @@ def backfill_cmd(
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM format"),
     workers: int = typer.Option(4, "--workers", "-w", help="Number of parallel workers"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Dry run mode (simulate only)"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Reprocess months that already have Parquet (needed after a schema change)",
+    ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
     save_metadata: bool = typer.Option(
@@ -130,7 +135,10 @@ def backfill_cmd(
             end=end,
             workers=workers,
             dry_run=dry_run,
-            skip_existing=True,
+            # Without this there is no way to pick up a widened kline schema:
+            # every month already has a Parquet, so every month is skipped and
+            # the new columns never appear.
+            skip_existing=not force,
             settings=settings,
         )
 
@@ -274,9 +282,6 @@ def labels_build(
         "--forward_days",
         help="Forward horizon in days (N) for r_fwd",
     ),
-    flat_threshold: float = typer.Option(
-        0.01, "--flat-threshold", help="Flat threshold (e.g., 0.01 = 1%)"
-    ),
     depth_bins: str = typer.Option(
         DEFAULT_DEPTH_BINS_STR,
         "--depth-bins",
@@ -289,7 +294,7 @@ def labels_build(
     ),
 ) -> None:
     """
-    Build direction (long/flat/short) and depth labels from daily klines.
+    Build direction (long/short) and depth labels from daily klines.
     """
     settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
 
@@ -298,7 +303,6 @@ def labels_build(
             symbol=symbol,
             base_interval=base_interval,
             forward_days=forward_days,
-            flat_threshold=flat_threshold,
             depth_bins_str=depth_bins,
             settings=settings,
         )
@@ -364,6 +368,7 @@ def predict_baseline_cmd(
     symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
+    interval: str = typer.Option("1d", "--interval", help="Bar interval (1d, 1h, ...)"),
     window_days: int = typer.Option(
         730,
         "--window-days",
@@ -372,12 +377,22 @@ def predict_baseline_cmd(
     ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
+    deterministic: bool = typer.Option(
+        False, "--deterministic", help="Enable deterministic training"
+    ),
+    seed: int = typer.Option(42, "--seed", help="Random seed for reproducibility"),
     save_metadata: bool = typer.Option(
         False, "--save-metadata", help="Save meta.json alongside artifacts"
     ),
 ) -> None:
     """Generate baseline probabilistic predictions for short/medium/long horizons."""
-    settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
+    settings = get_settings(
+        data_root=root,
+        strict=strict,
+        deterministic=deterministic,
+        seed=seed,
+        save_metadata=save_metadata,
+    )
 
     try:
         results = predict_baseline_3horizons(
@@ -385,6 +400,7 @@ def predict_baseline_cmd(
             start=start,
             end=end,
             settings=settings,
+            interval=interval,
             rolling_window_days=window_days,
         )
         if "error" in results:
