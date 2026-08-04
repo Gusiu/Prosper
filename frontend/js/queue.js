@@ -40,13 +40,23 @@ export function renderQueue(snapshot) {
     }
 
     tbody.innerHTML = "";
+    // A pending task's position among the other pending ones decides which
+    // arrows can do anything. Rendering both unconditionally meant ▲ on the
+    // first row and ▼ on the last always came back 404 and surfaced as a
+    // console error for a click that was never going to work.
+    const pending = rows.filter((row) => !row.running);
     for (const item of rows) {
       const tr = document.createElement("tr");
+      const at = pending.indexOf(item);
+      const arrow = (direction, glyph, enabled) =>
+        enabled
+          ? `<button class="action-btn" style="padding: 2px 4px; color: #2962ff;" data-action="queue-move" data-id="${item.id}" data-direction="${direction}">${glyph}</button>`
+          : `<button class="action-btn" style="padding: 2px 4px; opacity: 0.3;" disabled>${glyph}</button>`;
       const controls = item.running
         ? `<span class="text-muted" style="font-size:0.7rem;">running</span>`
         : `
-            <button class="action-btn" style="padding: 2px 4px; color: #2962ff;" data-action="queue-move" data-id="${item.id}" data-direction="-1">▲</button>
-            <button class="action-btn" style="padding: 2px 4px; color: #2962ff;" data-action="queue-move" data-id="${item.id}" data-direction="1">▼</button>
+            ${arrow(-1, "▲", at > 0)}
+            ${arrow(1, "▼", at >= 0 && at < pending.length - 1)}
             <button class="action-btn" style="padding: 2px 4px; color: var(--red-main);" data-action="queue-remove" data-id="${item.id}">X</button>`;
       tr.innerHTML = `
             <td style="font-size: 0.75rem; word-break: break-all;">${escapeHtml(item.name)}</td>

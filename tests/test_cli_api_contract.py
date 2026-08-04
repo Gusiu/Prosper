@@ -85,3 +85,23 @@ def test_the_api_never_invents_a_model_type() -> None:
     """The CLI is the authority on which predictors exist."""
     cli_models = set(typer.main.get_command(app).commands["predict"].commands)  # type: ignore[attr-defined]
     assert set(MODEL_TYPES) <= cli_models
+
+
+def test_the_ui_offers_every_model_the_api_accepts() -> None:
+    """The baseline was missing from the dropdown, so the benchmark model
+    could not be trained from the dashboard at all — even though the API
+    accepts it, the CLI implements it, and every comparison depends on it.
+    """
+    import re
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[1] / "frontend" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    select = re.search(r'id="model-select".*?</select>', html, re.S)
+    assert select, "model-select not found in index.html"
+    offered = set(re.findall(r'<option value="([^"]+)"', select.group()))
+
+    assert set(MODEL_TYPES) == offered, (
+        f"dropdown offers {sorted(offered)}, API accepts {sorted(MODEL_TYPES)}"
+    )

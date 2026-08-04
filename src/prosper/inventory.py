@@ -523,18 +523,33 @@ class DataManager:
         return None
 
     def _symbol_paths(self, symbol: str) -> list[Path]:
+        """Every path in the lake that belongs to *symbol*.
+
+        Used both to delete a symbol and to measure it, so a missing entry
+        leaks twice: deletion strands the files and the reported size
+        understates them. Features and labels are enumerated per interval for
+        that reason — asking only for the 1d ones left every other interval on
+        disk, invisible afterwards because the inventory keys off klines.
+        """
         paths = [
             self.settings.raw_binance_spot_klines_1m_dir / symbol,
             self.settings.reports_predictions_dir / symbol,
             self.settings.reports_recommendations_dir / symbol,
             self.settings.reports_eval_dir / symbol,
             self.settings.reports_qa_dir / symbol,
-            self._features_path(symbol),
-            self._labels_path(symbol),
+            self.settings.reports_dir / "evaluations" / symbol,
+            self.settings.reports_dir / "backtests" / symbol,
         ]
-        processed_dir = self.settings.processed_binance_spot_klines_dir
-        if processed_dir.exists():
-            for interval_dir in processed_dir.iterdir():
+
+        derived_roots = [
+            self.settings.processed_binance_spot_klines_dir,
+            self.settings.processed_data_dir / "binance" / "spot" / "features",
+            self.settings.processed_binance_spot_labels_dir,
+        ]
+        for root in derived_roots:
+            if not root.exists():
+                continue
+            for interval_dir in root.iterdir():
                 if interval_dir.is_dir():
                     paths.append(interval_dir / f"symbol={symbol}")
                     paths.append(interval_dir / symbol)
@@ -845,8 +860,15 @@ class DataManager:
             return (INTERVAL_ORDER.index(interval), interval)
         return (len(INTERVAL_ORDER), interval)
 
+    # How far below each root the fingerprint walks. The tree is
+    # root/<interval>/symbol=X/year=Y/month=Z, and a lost or added month shows
+    # up as an mtime change on its `year=` directory — three levels down. The
+    # original fingerprint stopped at the first level, so it never noticed:
+    # deleting three months of 1d klines left the cached inventory reporting
+    # "Complete" indefinitely, and the Refresh button could not clear it.
+    _FINGERPRINT_DEPTH = 3
+
     def _fingerprint(self) -> dict[str, int]:
-        # Fast fingerprint: only mtime of main directories and file count directly in symbol folders
         roots = [
             self.settings.raw_binance_spot_klines_1m_dir,
             self.settings.processed_binance_spot_klines_dir,
@@ -854,24 +876,29 @@ class DataManager:
             self.settings.processed_binance_spot_labels_dir,
             self.settings.reports_dir,
         ]
-        file_count = 0
+        entry_count = 0
         latest_mtime = 0
-        for root in roots:
-            if not root.exists():
-                continue
-            # only direct subfolders (e.g. symbol)
-            for sub in root.iterdir():
+
+        def walk(directory: Path, depth: int) -> None:
+            nonlocal entry_count, latest_mtime
+            try:
+                entries = list(directory.iterdir())
+            except OSError:
+                return
+            for entry in entries:
                 try:
-                    stat = sub.stat()
+                    stat = entry.stat()
                 except OSError:
                     continue
+                entry_count += 1
                 latest_mtime = max(latest_mtime, stat.st_mtime_ns)
-                if sub.is_dir():
-                    # count only files directly in the symbol folder
-                    file_count += sum(1 for f in sub.iterdir() if f.is_file())
-                elif sub.is_file():
-                    file_count += 1
-        return {"file_count": file_count, "latest_mtime_ns": latest_mtime}
+                if entry.is_dir() and depth < self._FINGERPRINT_DEPTH:
+                    walk(entry, depth + 1)
+
+        for root in roots:
+            if root.exists():
+                walk(root, 1)
+        return {"file_count": entry_count, "latest_mtime_ns": latest_mtime}
 
     def _read_cache(self, fingerprint: dict[str, int]) -> list[dict[str, Any]] | None:
         try:
