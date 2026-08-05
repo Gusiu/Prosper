@@ -27,15 +27,23 @@ from prosper.pipeline.aggregate import aggregate, normalize_target_intervals
 from prosper.pipeline.backfill import backfill
 from prosper.planner.windows import plan_windows
 from prosper.predict.baseline import predict_baseline as predict_baseline_3horizons
+from prosper.predict.defaults import (
+    DEFAULT_EPOCH_BUDGET,
+    DEFAULT_TRAIN_WINDOW_DAYS,
+    HORIZON_NAMES,
+)
 from prosper.predict.gru import predict_gru
 from prosper.predict.ml import predict_ml
 from prosper.predict.xgboost_model import predict_xgboost
 from prosper.qa.checks import run_qa_checks
 from prosper.storage.layout import get_eval_walkforward_summary_path
 
+# Read the settings rather than repeat their values: a `log_level` field that
+# nothing consults is worse than none, because it looks configurable.
+_log_settings = get_settings()
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=getattr(logging, _log_settings.log_level.upper(), logging.INFO),
+    format=_log_settings.log_format,
     handlers=[RichHandler(rich_tracebacks=True)],
 )
 
@@ -110,7 +118,12 @@ def backfill_cmd(
     symbol: str = typer.Option(..., "--symbol", help="Trading symbol (e.g., BTCUSDT)"),
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM format"),
-    workers: int = typer.Option(4, "--workers", "-w", help="Number of parallel workers"),
+    workers: int = typer.Option(
+        get_settings().download_workers,
+        "--workers",
+        "-w",
+        help="Number of parallel workers",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Dry run mode (simulate only)"),
     force: bool = typer.Option(
         False,
@@ -369,8 +382,13 @@ def predict_baseline_cmd(
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
     interval: str = typer.Option("1d", "--interval", help="Bar interval (1d, 1h, ...)"),
+    horizons: str = typer.Option(
+        None,
+        "--horizons",
+        help="Comma-separated horizons to train (default: all). Unlisted ones are written as untrained and skipped downstream.",
+    ),
     window_days: int = typer.Option(
-        730,
+        DEFAULT_TRAIN_WINDOW_DAYS,
         "--window-days",
         "--window_days",
         help="Rolling window in calendar days; must exceed the longest horizon (365d)",
@@ -401,6 +419,7 @@ def predict_baseline_cmd(
             end=end,
             settings=settings,
             interval=interval,
+            horizons_selected=horizons,
             rolling_window_days=window_days,
         )
         if "error" in results:
@@ -419,8 +438,13 @@ def predict_ml_cmd(
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
     interval: str = typer.Option("1d", "--interval", "-i", help="Feature interval (1m, 1h, 1d)"),
+    horizons: str = typer.Option(
+        None,
+        "--horizons",
+        help="Comma-separated horizons to train (default: all). Unlisted ones are written as untrained and skipped downstream.",
+    ),
     train_window_days: int = typer.Option(
-        730,
+        DEFAULT_TRAIN_WINDOW_DAYS,
         "--train-window-days",
         "--train_window_days",
         help="Training window in calendar days; must exceed the longest horizon (365d)",
@@ -451,6 +475,7 @@ def predict_ml_cmd(
             end=end,
             settings=settings,
             interval=interval,
+            horizons_selected=horizons,
             train_window_days=train_window_days,
         )
         if "error" in results:
@@ -469,8 +494,13 @@ def predict_xgboost_cmd(
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
     interval: str = typer.Option("1d", "--interval", "-i", help="Feature interval (1m, 1h, 1d)"),
+    horizons: str = typer.Option(
+        None,
+        "--horizons",
+        help="Comma-separated horizons to train (default: all). Unlisted ones are written as untrained and skipped downstream.",
+    ),
     train_window_days: int = typer.Option(
-        730,
+        DEFAULT_TRAIN_WINDOW_DAYS,
         "--train-window-days",
         "--train_window_days",
         help="Training window in calendar days; must exceed the longest horizon (365d)",
@@ -504,6 +534,7 @@ def predict_xgboost_cmd(
             end=end,
             settings=settings,
             interval=interval,
+            horizons_selected=horizons,
             train_window_days=train_window_days,
             n_estimators=n_estimators,
             max_depth=max_depth,
@@ -527,11 +558,27 @@ def predict_gru_cmd(
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
     interval: str = typer.Option("1d", "--interval", "-i", help="Feature interval (1m, 1h, 1d)"),
+    horizons: str = typer.Option(
+        None,
+        "--horizons",
+        help="Comma-separated horizons to train (default: all). Unlisted ones are written as untrained and skipped downstream.",
+    ),
     train_window_days: int = typer.Option(
-        730, "--train-window-days", help="Training window in calendar days; must exceed 365d"
+        DEFAULT_TRAIN_WINDOW_DAYS,
+        "--train-window-days",
+        help="Training window in calendar days; must exceed the longest horizon",
     ),
     seq_len: int = typer.Option(30, "--seq-len", help="Sequence length for GRU input"),
-    epochs: int = typer.Option(20, "--epochs", help="Training epochs per window"),
+    epochs: int = typer.Option(
+        DEFAULT_EPOCH_BUDGET["gru"],
+        "--epochs",
+        help="Epoch budget per window; early stopping usually ends training sooner",
+    ),
+    epochs_by_horizon: str = typer.Option(
+        None,
+        "--epochs-per-horizon",
+        help="Per-horizon epoch ceilings, e.g. 'short=20,medium=5'. Overrides the budget.",
+    ),
     hidden_size: int = typer.Option(64, "--hidden-size", help="GRU hidden layer size"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
@@ -559,8 +606,10 @@ def predict_gru_cmd(
             settings=settings,
             interval=interval,
             seq_len=seq_len,
+            horizons_selected=horizons,
             train_window_days=train_window_days,
             epochs=epochs,
+            epochs_by_horizon=epochs_by_horizon,
             hidden_size=hidden_size,
         )
         if "error" in results:
@@ -580,11 +629,27 @@ def predict_tft_cmd(
     start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD format"),
     interval: str = typer.Option("1d", "--interval", "-i", help="Feature interval (1m, 1h, 1d)"),
+    horizons: str = typer.Option(
+        None,
+        "--horizons",
+        help="Comma-separated horizons to train (default: all). Unlisted ones are written as untrained and skipped downstream.",
+    ),
     train_window_days: int = typer.Option(
-        730, "--train-window-days", help="Training window in calendar days; must exceed 365d"
+        DEFAULT_TRAIN_WINDOW_DAYS,
+        "--train-window-days",
+        help="Training window in calendar days; must exceed the longest horizon",
     ),
     seq_len: int = typer.Option(60, "--seq-len", help="Encoder sequence length"),
-    max_epochs: int = typer.Option(10, "--max-epochs", help="Training epochs per window"),
+    max_epochs: int = typer.Option(
+        DEFAULT_EPOCH_BUDGET["tft"],
+        "--max-epochs",
+        help="Epoch budget per window; early stopping usually ends training sooner",
+    ),
+    epochs_by_horizon: str = typer.Option(
+        None,
+        "--epochs-per-horizon",
+        help="Per-horizon epoch ceilings, e.g. 'short=20,medium=5'. Overrides the budget.",
+    ),
     hidden_size: int = typer.Option(32, "--hidden-size", help="TFT hidden layer size"),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
@@ -614,8 +679,10 @@ def predict_tft_cmd(
             settings=settings,
             interval=interval,
             seq_len=seq_len,
+            horizons_selected=horizons,
             train_window_days=train_window_days,
             max_epochs=max_epochs,
+            epochs_by_horizon=epochs_by_horizon,
             hidden_size=hidden_size,
         )
         if "error" in results:
@@ -632,11 +699,6 @@ def predict_tft_cmd(
 @planner_app.command("windows")
 def planner_windows(
     symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
-    short_weeks: str = typer.Option("1-26", "--short-weeks", help="Short horizon weeks (min-max)"),
-    medium_weeks: str = typer.Option(
-        "13-52", "--medium-weeks", help="Medium horizon weeks (min-max)"
-    ),
-    long_weeks: str = typer.Option("26-104", "--long-weeks", help="Long horizon weeks (min-max)"),
     start: str = typer.Option(None, "--start", help="Start date in YYYY-MM-DD format"),
     end: str = typer.Option(None, "--end", help="End date in YYYY-MM-DD format"),
     model_type: str = typer.Option(
@@ -659,21 +721,8 @@ def planner_windows(
 
     try:
 
-        def parse_weeks(weeks_str: str) -> tuple[int, int]:
-            parts = weeks_str.split("-")
-            if len(parts) != 2:
-                raise ValueError(f"Invalid week range format: {weeks_str}")
-            return (int(parts[0]), int(parts[1]))
-
-        short_range = parse_weeks(short_weeks)
-        medium_range = parse_weeks(medium_weeks)
-        long_range = parse_weeks(long_weeks)
-
         results = plan_windows(
             symbol=symbol,
-            short_weeks=short_range,
-            medium_weeks=medium_range,
-            long_weeks=long_range,
             start=start,
             end=end,
             settings=settings,
@@ -908,7 +957,7 @@ def eval_compare_cmd(
     for column in ("#", "Symbol", "Model", "Int.", "Run", "Score", "Acc", "Brier", "ECE"):
         table.add_column(column)
     table.add_column("Untrained", justify="right")
-    for column in ("short", "medium", "long"):
+    for column in HORIZON_NAMES:
         table.add_column(f"acc {column}", justify="right")
 
     def fmt(value: Any, digits: int = 3) -> str:

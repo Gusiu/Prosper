@@ -8,6 +8,10 @@ import { submitTask } from "../queue.js";
 import { ANALYSIS_INTERVALS, state } from "../state.js";
 
 let aiModelRuns = [];
+// Defaults come from the API, never from a value typed into the HTML: the form
+// showed 5 epochs while the CLI used 20, so the same model trained from here
+// ran a different configuration than the same command run by hand.
+let trainingDefaults = { horizons: [], epoch_budget: {}, epochless_models: [] };
 let analysisDrawerContext = { symbol: null, model_type: null, timestamp: null };
 // The calendar shows one month, so it fetches one month. Loading the whole
 // run to page through it client-side pulled ~5 MB for a 1d run and 24x that
@@ -19,6 +23,52 @@ const predictionCalendarState = {
   context: null,
   months: [],
 };
+
+export async function loadTrainingDefaults() {
+  try {
+    trainingDefaults = await api.trainingDefaults();
+  } catch (e) {
+    console.error("Failed to load training defaults", e);
+    return;
+  }
+  renderHorizonControls();
+  updateTrainModelUI();
+}
+
+
+function renderHorizonControls() {
+  const box = document.getElementById("train-horizons");
+  const overrides = document.getElementById("train-epoch-overrides");
+  if (!box || !overrides) return;
+  box.innerHTML = "";
+  overrides.innerHTML = "";
+
+  for (const name of trainingDefaults.horizons) {
+    const label = document.createElement("label");
+    label.style.cssText = "display:flex; align-items:center; gap:5px; cursor:pointer;";
+    label.innerHTML =
+      `<input type="checkbox" id="train-horizon-${name}" value="${name}" checked />` +
+      `<span>${name}</span>`;
+    box.appendChild(label);
+
+    const field = document.createElement("label");
+    field.style.cssText =
+      "display:flex; flex-direction:column; gap:3px; font-size:0.72rem; color:var(--text-muted);";
+    field.innerHTML =
+      `<span>${name}</span>` +
+      `<input type="number" min="1" id="train-epochs-${name}" class="glass-input" ` +
+      `placeholder="budget" style="width:82px" />`;
+    overrides.appendChild(field);
+  }
+}
+
+
+export function selectedHorizons() {
+  return trainingDefaults.horizons.filter(
+    (name) => document.getElementById(`train-horizon-${name}`)?.checked,
+  );
+}
+
 
 export function updateTrainDates() {
   const sym = document.getElementById("train-symbol").value;
@@ -92,9 +142,19 @@ export function populateTrainIntervals(symbol) {
 export function updateTrainModelUI() {
   const model = document.getElementById("model-select")?.value;
   const wrapper = document.getElementById("train-epochs-wrapper");
-  if (!wrapper) return;
-  if (model === "gru" || model === "tft") wrapper.style.display = "flex";
-  else wrapper.style.display = "none";
+  const advanced = document.getElementById("train-advanced");
+  const epochless = trainingDefaults.epochless_models || [];
+  const hasEpochs = model && !epochless.includes(model);
+
+  if (wrapper) wrapper.style.display = hasEpochs ? "flex" : "none";
+  if (advanced) advanced.style.display = hasEpochs ? "block" : "none";
+
+  // Show the budget this model would actually use, rather than a number
+  // hardcoded in the markup.
+  const input = document.getElementById("train-epochs");
+  if (input && hasEpochs) {
+    input.placeholder = String(trainingDefaults.epoch_budget?.[model] ?? "");
+  }
 }
 
 
@@ -182,13 +242,30 @@ export function runTrain() {
   const model = document.getElementById("model-select").value;
   const interval = document.getElementById("train-interval")?.value || "1d";
 
+  const horizons = selectedHorizons();
+  if (horizons.length === 0) {
+    return alert("Select at least one horizon to train");
+  }
+
+  // An empty field means "no opinion" and must stay absent, so the CLI's own
+  // default applies. Sending a number the user never chose is exactly what
+  // made the dashboard and the CLI disagree.
+  const budget = Number(document.getElementById("train-epochs").value);
+  const epochsByHorizon = {};
+  for (const name of horizons) {
+    const value = Number(document.getElementById(`train-epochs-${name}`)?.value);
+    if (value > 0) epochsByHorizon[name] = value;
+  }
+
   submitTask(`Train ${model.toUpperCase()} on ${symbol}`, "/api/train/run", {
     symbol,
     model_type: model,
     interval,
     start: document.getElementById("train-start").value,
     end: document.getElementById("train-end").value,
-    epochs: Number(document.getElementById("train-epochs").value) || 5,
+    ...(budget > 0 ? { epochs: budget } : {}),
+    ...(Object.keys(epochsByHorizon).length ? { epochs_by_horizon: epochsByHorizon } : {}),
+    horizons,
     flags: getResearchFlags(),
   });
 }

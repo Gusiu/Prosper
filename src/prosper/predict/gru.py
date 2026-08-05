@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import numpy as np
@@ -25,6 +26,16 @@ from prosper.predict.calibration import (
     TemperatureCalibrator,
     calibration_split,
     fit_temperature,
+    usable_split,
+)
+from prosper.predict.defaults import (
+    DEFAULT_EPOCH_BUDGET,
+    DEFAULT_TRAIN_WINDOW_DAYS,
+    EARLY_STOPPING_PATIENCE,
+    MIN_EARLY_STOPPING_SAMPLES,
+    parse_epoch_overrides,
+    parse_horizons,
+    resolve_epochs,
 )
 from prosper.predict.window import (
     days_to_steps,
@@ -91,6 +102,93 @@ class GRUClassifier(nn.Module):
         return self.head(last)  # (B, C)
 
 
+def _holdout_loss(
+    model: nn.Module,
+    dataset: Dataset,
+    indices: list[int],
+    loss_fn: nn.Module,
+    device: torch.device,
+) -> float:
+    """Cross-entropy on the held-out sequences, without touching the gradients."""
+    model.eval()
+    with torch.no_grad():
+        xs = torch.stack([dataset[k][0] for k in indices]).to(device)
+        ys = torch.stack([dataset[k][1] for k in indices]).to(device)
+        loss = float(loss_fn(model(xs), ys).item())
+    model.train()
+    return loss
+
+
+def _train_gru(
+    model: nn.Module,
+    loader: DataLoader,
+    optimiser: torch.optim.Optimizer,
+    loss_fn: nn.Module,
+    *,
+    dataset: Dataset,
+    holdout: list[int],
+    max_epochs: int,
+    device: torch.device,
+) -> int:
+    """Train until the held-out loss stops improving, or the budget runs out.
+
+    `max_epochs` is a ceiling, not a target. A retraining window holds only a
+    few hundred sequences against ~45k parameters, and how long that takes to
+    saturate differs by horizon: measured on BTCUSDT, the short horizon still
+    gained accuracy at 20 epochs while medium and long stopped gaining after
+    about five and their NLL degraded monotonically past it — they were not
+    getting more often right, only more confidently wrong.
+
+    The best weights are restored on the way out. Stopping without that would
+    hand back the *worst* model of the patience window, which is the opposite
+    of the intent.
+
+    The held-out slice is the same one the calibrator uses. Splitting it again
+    would drop each half under the sample floor at the long horizon, so the
+    stopping decision and the temperature fit share it; the contamination is
+    one scalar's worth and is preferable to calibrating on 40 rows.
+    """
+    if len(holdout) < MIN_EARLY_STOPPING_SAMPLES:
+        model.train()
+        for _ in range(max_epochs):
+            for xb, yb in loader:
+                xb, yb = xb.to(device), yb.to(device)
+                optimiser.zero_grad()
+                loss_fn(model(xb), yb).backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimiser.step()
+        return max_epochs
+
+    best_loss = float("inf")
+    best_state: dict[str, Any] | None = None
+    since_improved = 0
+    epochs_run = 0
+
+    model.train()
+    for epoch in range(max_epochs):
+        for xb, yb in loader:
+            xb, yb = xb.to(device), yb.to(device)
+            optimiser.zero_grad()
+            loss_fn(model(xb), yb).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimiser.step()
+        epochs_run = epoch + 1
+
+        loss = _holdout_loss(model, dataset, holdout, loss_fn, device)
+        if loss < best_loss - 1e-6:
+            best_loss = loss
+            best_state = copy.deepcopy(model.state_dict())
+            since_improved = 0
+        else:
+            since_improved += 1
+            if since_improved >= EARLY_STOPPING_PATIENCE:
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return epochs_run
+
+
 def _fit_gru_calibrator(
     model: nn.Module,
     dataset: Dataset,
@@ -134,11 +232,13 @@ def predict_gru(
     settings: Settings | None = None,
     interval: str = "1d",
     seq_len: int = 30,
-    train_window_days: int = 730,
+    train_window_days: int = DEFAULT_TRAIN_WINDOW_DAYS,
+    horizons_selected: str | None = None,
     hidden_size: int = 64,
     num_layers: int = 2,
     dropout: float = 0.2,
-    epochs: int = 20,
+    epochs: int = DEFAULT_EPOCH_BUDGET["gru"],
+    epochs_by_horizon: str | None = None,
     batch_size: int = 32,
     lr: float = 1e-3,
 ) -> dict[str, Any]:
@@ -150,6 +250,8 @@ def predict_gru(
         settings = get_settings()
 
     horizon_specs = list(DEFAULT_HORIZONS)
+    selected = set(parse_horizons(horizons_selected))
+    epoch_budget = resolve_epochs(epochs, parse_epoch_overrides(epochs_by_horizon))
     steps_by_horizon = validate_train_window(train_window_days, interval, horizon_specs)
     train_window_steps = days_to_steps(train_window_days, interval)
 
@@ -251,6 +353,9 @@ def predict_gru(
             X_norm_current = _robust_normalise(X_all_raw[max(0, i - train_window_steps) : i], X_all_raw)
 
             for h in horizon_specs:
+                if h.name not in selected:
+                    models_cache[h.name] = None
+                    continue
                 forward_steps = steps_by_horizon[h.name]
                 train_start, train_end = training_bounds(i, train_window_steps, forward_steps)
                 if train_end - train_start < seq_len + 10:
@@ -270,30 +375,40 @@ def predict_gru(
                     continue
 
                 # Hold out the newest sequences of the training region for the
-                # calibrator. They still end before `train_end`, so their
-                # labels are realised — invariant 6 is untouched.
+                # calibrator and the stopping rule. They still end before
+                # `train_end`, so their labels are realised — invariant 6 is
+                # untouched.
                 split, _ = calibration_split(0, len(ds))
                 fit_ds: Any = ds
                 cal_range: list[int] = []
                 if split < len(ds):
-                    fit_ds = Subset(ds, list(range(split)))
-                    cal_range = list(range(split, len(ds)))
-                    if len({int(ds[k][1]) for k in range(split)}) <= 1:
-                        fit_ds, cal_range = ds, []
+                    seq_labels = [int(ds[k][1]) for k in range(len(ds))]
+                    if len(set(seq_labels[:split])) <= 1:
+                        # Nothing to learn from a single-class fit half. Look
+                        # for a nearby split that works before giving up: doing
+                        # neither cost 5 of the 13 affected windows their
+                        # holdout, and with it early stopping and calibration.
+                        alternative = usable_split(seq_labels, split)
+                        split = len(ds) if alternative is None else alternative
+                    if split < len(ds):
+                        fit_ds = Subset(ds, list(range(split)))
+                        cal_range = list(range(split, len(ds)))
 
                 loader = DataLoader(fit_ds, batch_size=batch_size, shuffle=True, drop_last=False)
                 m = GRUClassifier(len(feature_cols), hidden_size, num_layers, dropout).to(device)
                 opt = torch.optim.Adam(m.parameters(), lr=lr)
                 loss_fn = nn.CrossEntropyLoss()
 
-                m.train()
-                for _ in range(epochs):
-                    for xb, yb in loader:
-                        xb, yb = xb.to(device), yb.to(device)
-                        opt.zero_grad()
-                        loss_fn(m(xb), yb).backward()
-                        torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0)
-                        opt.step()
+                _train_gru(
+                    m,
+                    loader,
+                    opt,
+                    loss_fn,
+                    dataset=ds,
+                    holdout=cal_range,
+                    max_epochs=epoch_budget[h.name],
+                    device=device,
+                )
 
                 models_cache[h.name] = m
                 calibrator_cache[h.name] = _fit_gru_calibrator(m, ds, cal_range, device)

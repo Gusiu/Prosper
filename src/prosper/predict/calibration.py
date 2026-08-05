@@ -29,6 +29,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from prosper.domain import DIRECTION_CLASSES
+from prosper.predict.defaults import MIN_EARLY_STOPPING_SAMPLES
 
 # Below this many held-out rows a calibrator fits noise, so the raw
 # probabilities are passed through unchanged instead.
@@ -185,3 +186,41 @@ def fit_calibrator_from_model(
     dense /= dense.sum(axis=1, keepdims=True)
 
     return fit_temperature(dense, np.asarray(list(y_holdout), dtype=int))
+
+
+def usable_split(
+    labels: Sequence[int],
+    default_split: int,
+    min_holdout: int = MIN_EARLY_STOPPING_SAMPLES,
+) -> int | None:
+    """A split point where both halves carry more than one class.
+
+    `calibration_split` divides by position alone, which is right for the
+    look-ahead rule but blind to what the labels contain. When the older part
+    turns out to be single-class — common at the long horizon, where a whole
+    year of start dates can share one sign — the model cannot be fitted on it,
+    and the caller's only recourse was to train on everything and drop the
+    holdout, losing early stopping and calibration for that window.
+
+    Often a nearby split works: on BTCUSDT, 5 of the 13 affected windows have a
+    valid one, some with more than fifty candidates. This returns the candidate
+    closest to *default_split*, keeping the held-out fraction near what was
+    asked for, or ``None`` when no split satisfies both halves — in which case
+    dropping the holdout really is the only option.
+
+    A single-class *holdout* is deliberately rejected too. Cross-entropy over
+    one class is minimised by predicting it with certainty, so stopping on it
+    would reward exactly the overconfidence the calibrator exists to undo.
+    """
+    total = len(labels)
+    if total <= 0 or min_holdout <= 0:
+        return None
+
+    candidates = [
+        split
+        for split in range(1, total - min_holdout + 1)
+        if len(set(labels[:split])) > 1 and len(set(labels[split:])) > 1
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda split: (abs(split - default_split), split))

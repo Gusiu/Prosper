@@ -27,6 +27,7 @@ from rich.console import Console
 
 from prosper.config import Settings, get_settings
 from prosper.planner.windows import calculate_edge, calculate_risk_metric, map_to_recommendation
+from prosper.predict.defaults import HORIZON_NAMES
 from prosper.storage.layout import get_backtest_report_path
 from prosper.storage.runs import load_run_predictions, resolve_run
 from prosper.utils.time import parse_date
@@ -146,7 +147,7 @@ def run_backtest(
     """Simulate the exposure-scaled strategy over a single prediction run."""
     if settings is None:
         settings = get_settings()
-    if horizon not in ("short", "medium", "long"):
+    if horizon not in HORIZON_NAMES:
         return {"error": f"Unknown horizon: {horizon}"}
 
     config = BacktestConfig.from_settings(

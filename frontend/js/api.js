@@ -63,6 +63,7 @@ export const api = {
     }
     return request(`/api/ai/predictions?${params}`);
   },
+  trainingDefaults: () => request(`/api/meta/training-defaults`),
   predictionMonths: ({ symbol, model_type, timestamp, interval }) =>
     request(
       `/api/ai/predictions/months?symbol=${q(symbol)}&model_type=${q(model_type)}` +

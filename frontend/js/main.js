@@ -53,6 +53,7 @@ import {
   deleteModelRun,
   downloadFeatureImportances,
   loadAIInventory,
+  loadTrainingDefaults,
   openPredictionCalendar,
   runTrain,
   updateTrainDates,
@@ -167,6 +168,7 @@ function bootstrap() {
 
   initializeDates();
   loadSymbolMetadata();
+  loadTrainingDefaults();
   loadInventory();
   loadAIInventory();
   loadEvaluations();

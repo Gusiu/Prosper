@@ -6,6 +6,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from prosper.config import get_settings
+from prosper.predict.defaults import (
+    DEFAULT_EPOCH_BUDGET,
+    EPOCHLESS_MODELS,
+    HORIZON_NAMES,
+)
 
 router = APIRouter()
 
@@ -65,4 +70,19 @@ def get_symbol_metadata() -> dict[str, Any]:
         "symbols": sorted(symbols),
         "base_assets": sorted(base_assets),
         "quote_assets": sorted(quote_assets),
+    }
+
+
+@router.get("/api/meta/training-defaults")
+def get_training_defaults() -> dict[str, Any]:
+    """Defaults the training form should pre-fill from.
+
+    The form used to carry `value="5"` in the HTML while the CLI defaulted to
+    20, so the same model trained from the dashboard ran a different
+    configuration. There is one definition now and the browser reads it.
+    """
+    return {
+        "horizons": list(HORIZON_NAMES),
+        "epoch_budget": dict(DEFAULT_EPOCH_BUDGET),
+        "epochless_models": sorted(EPOCHLESS_MODELS),
     }

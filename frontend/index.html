@@ -510,19 +510,62 @@
                     width: 100%;
                   "
                 >
-                  <span>Epochs (DL only)</span>
+                  <span>Epoch budget (DL only)</span>
                   <input
                     type="number"
                     id="train-epochs"
                     class="glass-input"
                     placeholder="Epochs"
-                    value="5"
-                    title="Epochs (DL only)"
-                    aria-label="Epochs"
+                    min="1"
+                    title="Upper limit; training stops earlier when the held-out loss stops improving"
+                    aria-label="Epoch budget"
                     style="width: 100%; min-width: 0"
                   />
                 </label>
               </div>
+
+              <div style="margin-top: 10px">
+                <span
+                  style="
+                    font-size: 0.75rem;
+                    color: var(--text-muted);
+                    display: block;
+                    margin-bottom: 4px;
+                  "
+                  >Horizons to train</span
+                >
+                <div
+                  id="train-horizons"
+                  style="display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.78rem"
+                ></div>
+              </div>
+
+              <details id="train-advanced" style="margin-top: 10px">
+                <summary
+                  style="
+                    font-size: 0.75rem;
+                    color: var(--text-muted);
+                    cursor: pointer;
+                    user-select: none;
+                  "
+                >
+                  Advanced: epoch ceiling per horizon
+                </summary>
+                <div
+                  id="train-epoch-overrides"
+                  style="display: flex; gap: 10px; margin-top: 8px; flex-wrap: wrap"
+                ></div>
+                <span
+                  style="
+                    font-size: 0.7rem;
+                    color: var(--text-muted);
+                    display: block;
+                    margin-top: 6px;
+                  "
+                  >Leave blank to use the budget above. Each horizon trains its own
+                  model, so they need not agree.</span
+                >
+              </details>
               <button class="glow-btn full-width mt-2" data-action="train-run">
                 Train & Predict
               </button>

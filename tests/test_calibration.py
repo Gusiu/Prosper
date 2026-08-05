@@ -191,3 +191,57 @@ def test_apply_to_mapping_keeps_the_class_names() -> None:
     assert set(out) == {"short", "long"}
     assert sum(out.values()) == pytest.approx(1.0)
     assert out["short"] > out["long"]
+
+
+def test_max_entropy_follows_the_class_count() -> None:
+    """Scoring normalised NLL against ln(3) after direction became two classes.
+
+    A coin-flip forecast over two classes has NLL ln 2 = 0.693. Divided by
+    ln 3 = 1.099 it scored 0.37 of the "skill" it was meant to earn zero of,
+    so every run in the table was credited for guessing.
+    """
+    import math
+
+    from prosper.eval.predictions import max_entropy
+
+    assert max_entropy(2) == pytest.approx(math.log(2))
+    assert max_entropy(3) == pytest.approx(math.log(3))
+    # A degenerate count must not make the divisor zero or negative.
+    assert max_entropy(1) == pytest.approx(math.log(2))
+    assert max_entropy(0) == pytest.approx(math.log(2))
+
+
+def test_a_coin_flip_earns_no_nll_points() -> None:
+    """The component exists to reward beating ignorance, not reaching it."""
+    import math
+
+    from prosper.eval.predictions import _score_prediction
+
+    guess = _score_prediction(
+        correct=False, confidence=0.5, brier=0.5,
+        nll=math.log(2), depth_abs_error=None, n_classes=2,
+    )
+    skilled = _score_prediction(
+        correct=False, confidence=0.5, brier=0.5,
+        nll=0.2, depth_abs_error=None, n_classes=2,
+    )
+    assert skilled > guess
+    # 45 direction + 25*(1-0.25) + 20*0 + 10*0.5 + 10 depth
+    assert guess == pytest.approx(0.0 + 18.75 + 0.0 + 5.0 + 10.0)
+
+
+def test_a_legacy_three_class_run_keeps_its_own_reference() -> None:
+    import math
+
+    from prosper.eval.predictions import _score_prediction
+
+    nll = math.log(3)
+    assert _score_prediction(
+        correct=True, confidence=0.6, brier=0.4,
+        nll=nll, depth_abs_error=None, n_classes=3,
+    ) == pytest.approx(
+        _score_prediction(
+            correct=True, confidence=0.6, brier=0.4,
+            nll=math.log(2), depth_abs_error=None, n_classes=2,
+        )
+    )

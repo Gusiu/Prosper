@@ -268,7 +268,9 @@ def main() -> None:
     if not lines:
         raise SystemExit("Predictions file is empty")
     first = json.loads(lines[0])
-    s = first["short"]["P_long"] + first["short"]["P_flat"] + first["short"]["P_short"]
+    # Sum whatever direction classes the run carries. Naming them meant this
+    # raised KeyError the moment `flat` was dropped.
+    s = sum(v for k, v in first["short"].items() if k.startswith("P_"))
     if abs(s - 1.0) > 1e-6:
         raise SystemExit(f"Probability sum != 1.0 for first row: {s}")
 

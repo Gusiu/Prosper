@@ -20,6 +20,7 @@ from prosper.api.models import (
     ResearchFlags,
     TrainRequest,
 )
+from prosper.predict.defaults import HORIZON_NAMES
 
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,30}$")
 
@@ -153,8 +154,24 @@ def build_train_command(req: TrainRequest) -> list[list[str]]:
     ]
 
     # Add model-specific params
+    # Only pass a horizon list when it is actually a subset; sending the full
+    # set on every call would make every argv differ from the CLI's own default.
+    selected = [h for h in HORIZON_NAMES if h in set(req.horizons or HORIZON_NAMES)]
+    if selected and len(selected) < len(HORIZON_NAMES):
+        cmd.extend(["--horizons", ",".join(selected)])
+
     if model_type in ("gru", "tft"):
-        cmd.extend(["--epochs" if model_type == "gru" else "--max-epochs", str(req.epochs)])
+        # Silence, not a default, when the caller did not choose one.
+        if req.epochs is not None:
+            cmd.extend(["--epochs" if model_type == "gru" else "--max-epochs", str(req.epochs)])
+        if req.epochs_by_horizon:
+            pairs = ",".join(
+                f"{name}={count}"
+                for name, count in req.epochs_by_horizon.items()
+                if name in HORIZON_NAMES
+            )
+            if pairs:
+                cmd.extend(["--epochs-per-horizon", pairs])
         if "seq_len" in req.params:
             cmd.extend(["--seq-len", str(req.params["seq_len"])])
         if "hidden_size" in req.params:

@@ -25,6 +25,16 @@ from prosper.predict.calibration import (
     TemperatureCalibrator,
     calibration_split,
     fit_temperature,
+    usable_split,
+)
+from prosper.predict.defaults import (
+    DEFAULT_EPOCH_BUDGET,
+    DEFAULT_TRAIN_WINDOW_DAYS,
+    EARLY_STOPPING_PATIENCE,
+    MIN_EARLY_STOPPING_SAMPLES,
+    parse_epoch_overrides,
+    parse_horizons,
+    resolve_epochs,
 )
 from prosper.predict.window import (
     days_to_steps,
@@ -226,8 +236,10 @@ def predict_tft(
     settings: Settings | None = None,
     interval: str = "1d",
     seq_len: int = 60,
-    train_window_days: int = 730,
-    max_epochs: int = 10,
+    train_window_days: int = DEFAULT_TRAIN_WINDOW_DAYS,
+    horizons_selected: str | None = None,
+    max_epochs: int = DEFAULT_EPOCH_BUDGET["tft"],
+    epochs_by_horizon: str | None = None,
     hidden_size: int = 32,
     attention_head_size: int = 2,
     learning_rate: float = 1e-3,
@@ -240,6 +252,8 @@ def predict_tft(
         settings = get_settings()
 
     horizon_specs = list(DEFAULT_HORIZONS)
+    selected = set(parse_horizons(horizons_selected))
+    epoch_budget = resolve_epochs(max_epochs, parse_epoch_overrides(epochs_by_horizon))
     steps_by_horizon = validate_train_window(train_window_days, interval, horizon_specs)
     train_window_steps = days_to_steps(train_window_days, interval)
 
@@ -332,6 +346,7 @@ def predict_tft(
     # ── 3. Rolling-month train + inference ───────────────────────────────────
     try:
         import lightning as L
+        from lightning.pytorch.callbacks import EarlyStopping
         from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
         from pytorch_forecasting.data.encoders import NaNLabelEncoder
         from pytorch_forecasting.metrics import CrossEntropy
@@ -382,6 +397,9 @@ def predict_tft(
 
             for h in horizon_specs:
                 h_name = h.name
+                if h_name not in selected:
+                    tft_model[h_name] = None
+                    continue
                 forward_steps = steps_by_horizon[h_name]
                 y_dir = y_dir_all[h_name]
                 train_start, train_end = training_bounds(i, train_window_steps, forward_steps)
@@ -395,19 +413,31 @@ def predict_tft(
                 # inside `training_bounds`, so their labels are realised and
                 # invariant 6 is untouched; the model simply never fits them.
                 split, _ = calibration_split(0, len(valid_idx))
+                window_labels = [int(y_dir[k]) for k in valid_idx]
+                if len(set(window_labels[:split])) < 2:
+                    # Same rescue as the GRU: a single-class fit half is
+                    # unlearnable, but a nearby split usually is not.
+                    alternative = usable_split(window_labels, split)
+                    split = len(valid_idx) if alternative is None else alternative
                 fit_idx = valid_idx[:split]
                 cal_idx = valid_idx[split:]
                 if len(fit_idx) < seq_len + 10 or len(set(y_dir[fit_idx])) < 2:
                     fit_idx, cal_idx = valid_idx, []
 
-                rows = []
-                for k in fit_idx:
-                    row = {"time_idx": k, "group": symbol, "target": IDX_TO_DIR[int(y_dir[k])]}
-                    for fi, fc in enumerate(feature_cols):
-                        row[fc] = float(X_norm_all[k, fi])
-                    rows.append(row)
+                def _frame(bars: list[int]) -> pd.DataFrame:
+                    built = []
+                    for k in bars:
+                        row = {
+                            "time_idx": k,
+                            "group": symbol,
+                            "target": IDX_TO_DIR[int(y_dir[k])],
+                        }
+                        for fi, fc in enumerate(feature_cols):
+                            row[fc] = float(X_norm_all[k, fi])
+                        built.append(row)
+                    return pd.DataFrame(built)
 
-                df_pd = pd.DataFrame(rows)
+                df_pd = _frame(fit_idx)
 
                 max_enc = min(seq_len, len(df_pd) - seq_len)
                 if max_enc < 5:
@@ -433,6 +463,25 @@ def predict_tft(
 
                     loader = ds.to_dataloader(train=True, batch_size=32, num_workers=0)
 
+                    # A validation set built from the held-out slice. Without
+                    # one, `reduce_on_plateau_patience` above could never fire —
+                    # Lightning warns that val_loss is unavailable and skips the
+                    # schedule — and there was nothing to stop training on.
+                    # The encoder needs history before the first scored bar,
+                    # so the validation frame reaches back seq_len bars — all
+                    # of them still inside the training window.
+                    val_loader = None
+                    if len(cal_idx) >= MIN_EARLY_STOPPING_SAMPLES:
+                        lo = max(0, min(cal_idx) - seq_len)
+                        val_bars = [k for k in range(lo, max(cal_idx) + 1) if y_dir[k] >= 0]
+                        if len(val_bars) >= MIN_EARLY_STOPPING_SAMPLES + seq_len:
+                            val_ds = TimeSeriesDataSet.from_dataset(
+                                ds, _frame(val_bars), predict=False, stop_randomization=True
+                            )
+                            val_loader = val_ds.to_dataloader(
+                                train=False, batch_size=64, num_workers=0
+                            )
+
                     tft = TemporalFusionTransformer.from_dataset(
                         ds,
                         learning_rate=learning_rate,
@@ -451,7 +500,7 @@ def predict_tft(
                     # Trainer — a full run once left ~18k directories and
                     # 260 MB of dead artifacts in the repo root.
                     trainer_kwargs: dict[str, Any] = dict(
-                        max_epochs=max_epochs,
+                        max_epochs=epoch_budget[h_name],
                         enable_progress_bar=False,
                         enable_model_summary=False,
                         enable_checkpointing=False,
@@ -461,8 +510,16 @@ def predict_tft(
                     )
                     if settings.deterministic:
                         trainer_kwargs["deterministic"] = True
+                    if val_loader is not None:
+                        trainer_kwargs["callbacks"] = [
+                            EarlyStopping(
+                                monitor="val_loss",
+                                patience=EARLY_STOPPING_PATIENCE,
+                                mode="min",
+                            )
+                        ]
                     trainer = L.Trainer(**trainer_kwargs)
-                    trainer.fit(tft, train_dataloaders=loader)
+                    trainer.fit(tft, train_dataloaders=loader, val_dataloaders=val_loader)
                     tft_model[h_name] = tft
                     dataset_cache[h_name] = ds
                     calibrator_cache[h_name] = _fit_tft_calibrator(

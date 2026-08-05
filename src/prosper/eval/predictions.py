@@ -411,6 +411,18 @@ def _recommendation_payload(
     }
 
 
+def max_entropy(n_classes: int) -> float:
+    """Entropy of a uniform guess over *n_classes* — the "knows nothing" point.
+
+    Every normalisation below is expressed against it. It used to be written as
+    `math.log(3.0)` in three places, which was right while direction had three
+    classes and silently wrong afterwards: a coin-flip forecast over two classes
+    has NLL ln 2 = 0.693, and dividing that by ln 3 = 1.099 credited pure
+    guessing with 37% of the points meant for skill.
+    """
+    return math.log(max(2, n_classes))
+
+
 def _score_prediction(
     *,
     correct: bool,
@@ -418,10 +430,11 @@ def _score_prediction(
     brier: float,
     nll: float,
     depth_abs_error: float | None,
+    n_classes: int,
 ) -> float:
     direction_component = 45.0 if correct else 0.0
     brier_component = 25.0 * max(0.0, 1.0 - (brier / 2.0))
-    nll_component = 20.0 * max(0.0, 1.0 - (nll / math.log(3.0)))
+    nll_component = 20.0 * max(0.0, 1.0 - (nll / max_entropy(n_classes)))
     confidence_component = 10.0 * (confidence if correct else 1.0 - confidence)
     depth_component = 10.0
     if depth_abs_error is not None:
@@ -438,11 +451,12 @@ def _quality_flags(
     depth_abs_error: float | None,
     predicted_depth_bin: str | None,
     actual_depth_bin: str | None,
+    n_classes: int,
 ) -> list[str]:
     flags: list[str] = []
     if confidence < settings.low_confidence_threshold:
         flags.append("low_confidence")
-    if entropy > math.log(3.0) * settings.high_entropy_ratio:
+    if entropy > max_entropy(n_classes) * settings.high_entropy_ratio:
         flags.append("high_entropy")
     if not correct and confidence >= settings.confident_wrong_threshold:
         flags.append("calibration_mismatch")
@@ -514,12 +528,16 @@ def _aggregate_quality(
         avg_confidence = _safe_mean([float(row["prediction"]["confidence"]) for row in rows])
         mae_depth = _safe_mean(depth_errors)
         rmse_depth = _safe_rmse(depth_errors)
+        # Every row of a run carries the same classes, so the first is enough.
+        horizon_classes = len(rows[0]["prediction"]["probabilities"]) if rows else len(
+            DIRECTION_ORDER
+        )
         horizon_score = None
         if rows and accuracy is not None and avg_brier is not None and avg_nll is not None:
             horizon_score = 100.0 * (
                 0.35 * accuracy
                 + 0.25 * max(0.0, 1.0 - avg_brier / 2.0)
-                + 0.20 * max(0.0, 1.0 - avg_nll / math.log(3.0))
+                + 0.20 * max(0.0, 1.0 - avg_nll / max_entropy(horizon_classes))
                 + 0.10 * max(0.0, 1.0 - ece)
                 + 0.10 * (max(0.0, 1.0 - (rmse_depth or 0.0) / 25.0) if rmse_depth is not None else 1.0)
             )
@@ -569,7 +587,7 @@ def _aggregate_quality(
         "schema_version": 1,
         "metric_definitions": {
             "accuracy": "Share of horizons where predicted direction equals realized direction.",
-            "brier": "Multiclass Brier score for short/flat/long probabilities; lower is better.",
+            "brier": "Multiclass Brier score over the run's direction classes; lower is better.",
             "nll": "Negative log-likelihood of the realized direction; lower is better.",
             "ece": "Expected calibration error over confidence bins; lower is better.",
             "entropy": "Prediction entropy in natural-log units; lower means sharper predictions.",
@@ -935,6 +953,7 @@ def evaluate_predictions(
             row_brier = brier_score(probs, actual_direction)
             row_nll = negative_log_likelihood(probs, actual_direction)
             quality_score = _score_prediction(
+                n_classes=len(probs),
                 correct=correct,
                 confidence=confidence,
                 brier=row_brier,
@@ -942,6 +961,7 @@ def evaluate_predictions(
                 depth_abs_error=depth_abs_error,
             )
             flags = _quality_flags(
+                n_classes=len(probs),
                 correct=correct,
                 confidence=confidence,
                 entropy=entropy,

@@ -8,6 +8,7 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from prosper.domain import DEPTH_BIN_LABELS
+from prosper.predict.defaults import DEFAULT_TRAIN_WINDOW_DAYS
 
 _UNSET = Path()
 
@@ -58,7 +59,6 @@ class Settings(BaseSettings):
     download_retry_backoff: float = Field(default=2.0, ge=1.0)
 
     # API rate limiting
-    api_rate_limit_requests_per_minute: int = Field(default=1200, ge=1)
     api_rate_limit_backoff_base: float = Field(default=2.0, ge=1.0)
 
     # QA settings
@@ -70,19 +70,9 @@ class Settings(BaseSettings):
     # Baseline model settings. The window must stay wider than the longest
     # horizon (365d) plus a usable sample count, otherwise the long horizon has
     # no realised outcomes to count; see prosper.predict.window.
-    baseline_rolling_window_days: int = Field(default=730, ge=1)
-    baseline_min_samples: int = Field(default=30, ge=1)
+    baseline_rolling_window_days: int = Field(default=DEFAULT_TRAIN_WINDOW_DAYS, ge=1)
 
     # Planner settings
-    planner_short_weeks: tuple[int, int] = Field(
-        default=(1, 26), description="Short horizon weeks range"
-    )
-    planner_medium_weeks: tuple[int, int] = Field(
-        default=(13, 52), description="Medium horizon weeks range"
-    )
-    planner_long_weeks: tuple[int, int] = Field(
-        default=(26, 104), description="Long horizon weeks range"
-    )
     # The round trip a signal has to pay for before it is worth acting on.
     # This is a property of the market and the venue, not of the forecast, so
     # it belongs here rather than in the labels: moving markets is a config

@@ -153,9 +153,6 @@ def map_to_recommendation(edge: float, risk: float, *, cost_cleared: bool = True
 
 def plan_windows(
     symbol: str,
-    short_weeks: tuple[int, int] = (1, 26),
-    medium_weeks: tuple[int, int] = (13, 52),
-    long_weeks: tuple[int, int] = (26, 104),
     start: str | None = None,
     end: str | None = None,
     settings: Settings | None = None,
@@ -168,9 +165,6 @@ def plan_windows(
 
     Args:
         symbol: Trading symbol
-        short_weeks: Short horizon weeks range (min, max)
-        medium_weeks: Medium horizon weeks range (min, max)
-        long_weeks: Long horizon weeks range (min, max)
         start: Optional lower date bound (YYYY-MM-DD)
         end: Optional upper date bound (YYYY-MM-DD)
         settings: Settings instance (defaults to global)

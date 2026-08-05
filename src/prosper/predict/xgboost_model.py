@@ -22,6 +22,7 @@ from prosper.predict.calibration import (
     calibration_split,
     fit_calibrator_from_model,
 )
+from prosper.predict.defaults import DEFAULT_TRAIN_WINDOW_DAYS, parse_horizons
 from prosper.predict.window import (
     days_to_steps,
     training_bounds,
@@ -39,7 +40,8 @@ def predict_xgboost(
     end: str,
     settings: Settings | None = None,
     interval: str = "1d",
-    train_window_days: int = 730,
+    train_window_days: int = DEFAULT_TRAIN_WINDOW_DAYS,
+    horizons_selected: str | None = None,
     n_estimators: int = 100,
     max_depth: int = 6,
     learning_rate: float = 0.1,
@@ -63,6 +65,7 @@ def predict_xgboost(
         settings = get_settings()
 
     horizons = list(DEFAULT_HORIZONS)
+    selected = set(parse_horizons(horizons_selected))
     steps_by_horizon = validate_train_window(train_window_days, interval, horizons)
     train_window_steps = days_to_steps(train_window_days, interval)
 
@@ -140,6 +143,9 @@ def predict_xgboost(
             models_cache = {}
 
             for h in horizons:
+                if h.name not in selected:
+                    models_cache[h.name] = None
+                    continue
                 forward_steps = steps_by_horizon[h.name]
                 train_start, train_end = training_bounds(i, train_window_steps, forward_steps)
                 y_dirs = horizon_targets[h.name]["direction"][train_start:train_end]

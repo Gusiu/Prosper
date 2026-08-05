@@ -270,17 +270,6 @@ def resolve_evaluation_run_dir(
     return candidates[0]
 
 
-def get_evaluation_metrics_path(
-    symbol: str,
-    model_type: str,
-    timestamp: str,
-    settings: Settings | None = None,
-    interval: str | None = "1d",
-) -> Path:
-    """Return path to ``metrics.json`` for a versioned evaluation run."""
-    return resolve_evaluation_run_dir(symbol, model_type, timestamp, settings, interval) / "metrics.json"
-
-
 KNOWN_PREDICTION_INTERVALS = frozenset({"1m", "1h", "1d", "1w"})
 
 

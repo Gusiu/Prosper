@@ -43,16 +43,6 @@ def parse_date(date_str: str) -> datetime:
     return dt.replace(tzinfo=UTC)
 
 
-def get_year_week(dt: datetime) -> tuple[int, int]:
-    """Get ``(ISO year, ISO week)`` tuple for a datetime."""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    iso_year, iso_week, _ = dt.isocalendar()
-    return (iso_year, iso_week)
-
-
-# ── Month iteration ─────────────────────────────────────────────────────────
-
 
 def generate_month_range(
     start: str | _dt.date,

@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from prosper.predict.defaults import HORIZON_NAMES
+
 
 class ResearchFlags(BaseModel):
     """Research mode flags for reproducibility."""
@@ -33,7 +35,13 @@ class TrainRequest(BaseModel):
     interval: str = "1d"
     start: str
     end: str
-    epochs: int = 5
+    # No default of its own. Sending a value the caller never chose is what
+    # made the dashboard train 5 epochs where the CLI trained 20: Typer's
+    # default only applies when the flag is absent, and the API used to append
+    # it unconditionally. `None` means "say nothing and let the CLI decide".
+    epochs: int | None = None
+    epochs_by_horizon: dict[str, int] = Field(default_factory=dict)
+    horizons: list[str] = Field(default_factory=lambda: list(HORIZON_NAMES))
     params: dict[str, Any] = Field(default_factory=dict)
     flags: ResearchFlags = Field(default_factory=ResearchFlags)
 

@@ -105,3 +105,101 @@ def test_the_ui_offers_every_model_the_api_accepts() -> None:
     assert set(MODEL_TYPES) == offered, (
         f"dropdown offers {sorted(offered)}, API accepts {sorted(MODEL_TYPES)}"
     )
+
+
+def _typer_default(command: str, option: str):
+    click_app = typer.main.get_command(app)
+    cmd = click_app.commands["predict"].commands[command]  # type: ignore[attr-defined]
+    for param in cmd.params:
+        if option in getattr(param, "opts", []):
+            return param.default
+    raise AssertionError(f"{command} has no {option}")
+
+
+def test_the_api_does_not_impose_an_epoch_count_the_caller_never_chose() -> None:
+    """This is why the dashboard trained 5 epochs where the CLI trained 20.
+
+    Typer's default applies only when the flag is absent, and the API used to
+    append `--epochs` on every call, so its own default always won. Two
+    definitions of one value; the API's silently overrode the other.
+    """
+    for model_type in ("gru", "tft"):
+        argv = build_train_command(
+            TrainRequest(
+                symbol="BTCUSDT", model_type=model_type,
+                start="2024-01-01", end="2024-06-30",
+            )
+        )[0]
+        assert "--epochs" not in argv
+        assert "--max-epochs" not in argv
+
+
+def test_an_explicit_epoch_count_is_passed_through() -> None:
+    argv = build_train_command(
+        TrainRequest(
+            symbol="BTCUSDT", model_type="gru", epochs=8,
+            start="2024-01-01", end="2024-06-30",
+        )
+    )[0]
+    assert argv[argv.index("--epochs") + 1] == "8"
+
+
+def test_cli_epoch_defaults_come_from_the_shared_module() -> None:
+    from prosper.predict.defaults import DEFAULT_EPOCH_BUDGET
+
+    assert _typer_default("gru", "--epochs") == DEFAULT_EPOCH_BUDGET["gru"]
+    assert _typer_default("tft", "--max-epochs") == DEFAULT_EPOCH_BUDGET["tft"]
+
+
+def test_the_full_horizon_set_is_not_spelled_out() -> None:
+    """Sending every horizon on each call would make the API's argv differ
+    from a plain CLI invocation for no reason."""
+    argv = build_train_command(
+        TrainRequest(symbol="BTCUSDT", model_type="ml", start="2024-01-01", end="2024-06-30")
+    )[0]
+    assert "--horizons" not in argv
+
+
+def test_a_horizon_subset_reaches_the_command() -> None:
+    argv = build_train_command(
+        TrainRequest(
+            symbol="BTCUSDT", model_type="ml", horizons=["long", "short"],
+            start="2024-01-01", end="2024-06-30",
+        )
+    )[0]
+    # Canonical order, whatever the caller listed.
+    assert argv[argv.index("--horizons") + 1] == "short,long"
+
+
+def test_every_predictor_accepts_a_horizon_selection() -> None:
+    for model_type in MODEL_TYPES:
+        assert "--horizons" in _cli_options("predict", model_type), model_type
+
+
+def test_the_training_form_has_no_hardcoded_epoch_value() -> None:
+    """It carried `value="5"` while the CLI defaulted to 20.
+
+    The number must come from /api/meta/training-defaults, so the form and the
+    command line cannot drift apart again.
+    """
+    import re
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[1] / "frontend" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    field = re.search(r'id="train-epochs"[^>]*>', html)
+    assert field, "train-epochs input not found"
+    assert 'value="' not in field.group(), (
+        "the epoch field must not carry a hardcoded default: " + field.group()
+    )
+
+
+def test_the_form_exposes_a_horizon_control() -> None:
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[1] / "frontend" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'id="train-horizons"' in html
+    assert 'id="train-epoch-overrides"' in html

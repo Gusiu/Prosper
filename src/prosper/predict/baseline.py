@@ -13,6 +13,7 @@ from prosper.domain import (
     direction_from_return,
     parse_depth_bins,
 )
+from prosper.predict.defaults import parse_horizons
 from prosper.predict.window import (
     MIN_TRAIN_SAMPLES,
     days_to_steps,
@@ -35,6 +36,7 @@ def predict_baseline(
     end: str,
     settings: Settings | None = None,
     interval: str = "1d",
+    horizons_selected: str | None = None,
     rolling_window_days: int | None = None,
     depth_bins_str: str = DEFAULT_DEPTH_BINS_STR,
     alpha: float = 1.0,
@@ -58,6 +60,7 @@ def predict_baseline(
     # below is already expressed in bars of *interval*, so pinning it to 1d
     # only meant a 1h comparison had no buy-and-hold to be measured against.
     horizons = list(DEFAULT_HORIZONS)
+    selected = set(parse_horizons(horizons_selected))
     steps_by_horizon = validate_train_window(rolling_window_days, interval, horizons)
     window_steps = days_to_steps(rolling_window_days, interval)
 
@@ -123,6 +126,10 @@ def predict_baseline(
         }
 
         for h in horizons:
+            if h.name not in selected:
+                out[h.name] = untrained_horizon_payload(depth_labels)
+                untrained_counts[h.name] += 1
+                continue
             labels = horizon_data[h.name]
             dirs = labels["direction"]
             d_idx = labels["depth_bin_idx"]
