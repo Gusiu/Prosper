@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 import polars as pl
 import pytest
 from prosper.config import Settings
+from prosper.domain import HORIZON_NAMES
 from prosper.eval.backtest import run_backtest
 from prosper.planner.windows import plan_windows
 from prosper.storage.layout import get_parquet_file_path, get_recommendation_report_path
@@ -56,9 +57,7 @@ def _write_run(
             "open_time": (start + timedelta(days=i)).isoformat(),
             "date": (start + timedelta(days=i)).date().isoformat(),
             "symbol": SYMBOL,
-            "short": _horizon(p_long, p_short, trained),
-            "medium": _horizon(p_long, p_short, trained),
-            "long": _horizon(p_long, p_short, trained),
+            **{name: _horizon(p_long, p_short, trained) for name in HORIZON_NAMES},
         }
         for i in range(days)
     ]

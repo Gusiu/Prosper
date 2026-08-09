@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from prosper.config import Settings
+from prosper.domain import HORIZON_NAMES
 from prosper.planner.windows import (
     RISK_WARMUP_WINDOWS,
     STATIC_RISK_GATES,
@@ -60,9 +61,7 @@ def _run_with_rising_risk(tmp_path, days: int = 700) -> Settings:
                 "open_time": moment.isoformat(),
                 "date": moment.date().isoformat(),
                 "symbol": SYMBOL,
-                "short": dict(horizon),
-                "medium": dict(horizon),
-                "long": dict(horizon),
+                **{name: dict(horizon) for name in HORIZON_NAMES},
             }
         )
     (run_dir / "predictions.jsonl").write_text(
@@ -133,7 +132,7 @@ def test_a_window_does_not_influence_its_own_gate(tmp_path) -> None:
     result = plan_windows(SYMBOL, settings=settings, model_type="ml", interval="1d")
 
     short = sorted(
-        (w for w in result["windows"] if w["horizon"] == "short"),
+        (w for w in result["windows"] if w["horizon"] == HORIZON_NAMES[0]),
         key=lambda w: w["start_date"],
     )
     assert len(short) > RISK_WARMUP_WINDOWS, "not enough windows to leave warm-up"

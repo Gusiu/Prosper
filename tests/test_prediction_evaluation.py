@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 from prosper.config import Settings
+from prosper.domain import DEFAULT_HORIZONS, HORIZON_NAMES
 from prosper.eval.predictions import (
     brier_score,
     evaluate_predictions,
@@ -18,6 +19,8 @@ from prosper.eval.predictions import (
 )
 from prosper.storage.layout import resolve_versioned_prediction_dir
 from prosper.storage.parquet import save_parquet
+
+SHORTEST, LONGEST = HORIZON_NAMES[0], HORIZON_NAMES[-1]
 
 
 def test_prediction_metric_functions_are_stable() -> None:
@@ -84,30 +87,17 @@ def test_evaluate_predictions_writes_quality_artifacts(tmp_path) -> None:
         "21-34": 0.1,
         "34+": 0.8,
     }
+    payload = {
+        "P_long": 0.8,
+        "P_flat": 0.1,
+        "P_short": 0.1,
+        "depth_long_bins": depth,
+        "depth_short_bins": depth,
+    }
     prediction = {
         "date": "2024-01-01",
         "symbol": symbol,
-        "short": {
-            "P_long": 0.8,
-            "P_flat": 0.1,
-            "P_short": 0.1,
-            "depth_long_bins": depth,
-            "depth_short_bins": depth,
-        },
-        "medium": {
-            "P_long": 0.8,
-            "P_flat": 0.1,
-            "P_short": 0.1,
-            "depth_long_bins": depth,
-            "depth_short_bins": depth,
-        },
-        "long": {
-            "P_long": 0.8,
-            "P_flat": 0.1,
-            "P_short": 0.1,
-            "depth_long_bins": depth,
-            "depth_short_bins": depth,
-        },
+        **{name: dict(payload) for name in HORIZON_NAMES},
     }
     (run_dir / "predictions.jsonl").write_text(json.dumps(prediction) + "\n", encoding="utf-8")
 
@@ -120,11 +110,13 @@ def test_evaluate_predictions_writes_quality_artifacts(tmp_path) -> None:
     )
 
     artifacts = result["artifacts"]
-    assert result["metrics"]["overall"]["samples"] == 3
+    # One scored row per horizon, so this follows the specs rather than a literal.
+    assert result["metrics"]["overall"]["samples"] == len(HORIZON_NAMES)
     assert result["metrics"]["overall"]["accuracy"] == 1.0
     assert result["metrics"]["overall"]["model_score"] > 70.0
-    assert len(result["worst_predictions"]) == 3
-    assert len(result["recommendations"]) == 3
+    # Every scored row is a candidate, so this is the horizon count again.
+    assert len(result["worst_predictions"]) == len(HORIZON_NAMES)
+    assert len(result["recommendations"]) == len(HORIZON_NAMES)
 
     for artifact_path in artifacts.values():
         assert artifact_path
@@ -133,7 +125,7 @@ def test_evaluate_predictions_writes_quality_artifacts(tmp_path) -> None:
     quality_path = Path(artifacts["predictions_quality"])
     assert quality_path.suffix == ".parquet"
     written = pl.read_parquet(quality_path)
-    assert len(written) == 3
+    assert len(written) == len(HORIZON_NAMES)
     # Flattened, not nested: the API scans this file lazily.
     assert {"pred_direction", "actual_direction", "quality_score"} <= set(written.columns)
 
@@ -198,9 +190,8 @@ def test_untrained_horizons_are_excluded_from_metrics(tmp_path) -> None:
                 "open_time": "2024-01-01T00:00:00+00:00",
                 "date": "2024-01-01",
                 "symbol": symbol,
-                "short": _horizon_payload(trained=True),
-                "medium": _horizon_payload(trained=False),
-                "long": _horizon_payload(trained=False),
+                SHORTEST: _horizon_payload(trained=True),
+                **{n: _horizon_payload(trained=False) for n in HORIZON_NAMES[1:]},
             }
         )
         + "\n",
@@ -217,13 +208,14 @@ def test_untrained_horizons_are_excluded_from_metrics(tmp_path) -> None:
 
     metrics = result["metrics"]
     assert metrics["overall"]["samples"] == 1
-    assert metrics["overall"]["untrained_rows"] == 2
-    assert metrics["by_horizon"]["short"]["samples"] == 1
-    assert metrics["by_horizon"]["medium"]["samples"] == 0
-    assert metrics["by_horizon"]["medium"]["untrained_rows"] == 1
-    assert metrics["by_horizon"]["long"]["untrained_rows"] == 1
+    # The fixture trains only the shortest horizon; the rest are placeholders.
+    assert metrics["overall"]["untrained_rows"] == len(HORIZON_NAMES) - 1
+    assert metrics["by_horizon"][SHORTEST]["samples"] == 1
+    assert metrics["by_horizon"][HORIZON_NAMES[1]]["samples"] == 0
+    assert metrics["by_horizon"][HORIZON_NAMES[1]]["untrained_rows"] == 1
+    assert metrics["by_horizon"][LONGEST]["untrained_rows"] == 1
     # The composite score must come from the trained horizon alone.
-    assert metrics["by_horizon"]["medium"]["score"] is None
+    assert metrics["by_horizon"][HORIZON_NAMES[1]]["score"] is None
 
 
 def test_sub_daily_predictions_score_against_their_own_bar(tmp_path) -> None:
@@ -262,9 +254,8 @@ def test_sub_daily_predictions_score_against_their_own_bar(tmp_path) -> None:
             "open_time": (start + timedelta(hours=hour)).isoformat(),
             "date": "2024-01-01",
             "symbol": symbol,
-            "short": _horizon_payload(trained=True),
-            "medium": _horizon_payload(trained=False),
-            "long": _horizon_payload(trained=False),
+            SHORTEST: _horizon_payload(trained=True),
+            **{n: _horizon_payload(trained=False) for n in HORIZON_NAMES[1:]},
         }
         for hour in range(3)
     ]
@@ -284,5 +275,8 @@ def test_sub_daily_predictions_score_against_their_own_bar(tmp_path) -> None:
     # Three distinct bars, each resolved to its own timestamp rather than all
     # collapsing onto the first bar of 2024-01-01.
     assert {row["open_time"] for row in quality_rows} == {row["open_time"] for row in rows}
-    # The short horizon spans 28 calendar days = 672 hourly bars at this interval.
-    assert {row["forward_steps"] for row in quality_rows} == {28 * 24}
+    # The scored horizon's span in hourly bars, read from the spec rather than
+    # written down: it was "28 calendar days = 672 bars" and stopped being true
+    # the moment the shortest horizon became a week.
+    shortest = next(h for h in DEFAULT_HORIZONS if h.name == SHORTEST)
+    assert {row["forward_steps"] for row in quality_rows} == {shortest.forward_days * 24}

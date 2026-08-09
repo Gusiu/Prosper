@@ -13,7 +13,11 @@ from rich.table import Table
 
 from prosper.binance.rest import BinanceRESTClient
 from prosper.config import get_settings
-from prosper.domain import DEFAULT_DEPTH_BINS_STR, DEFAULT_HORIZONS
+from prosper.domain import (
+    DEFAULT_DEPTH_BINS_STR,
+    DEFAULT_HORIZONS,
+    DEFAULT_TRADED_HORIZON,
+)
 from prosper.eval.backtest import run_backtest
 from prosper.eval.predictions import (
     collect_evaluation_summaries,
@@ -874,7 +878,9 @@ def eval_backtest_cmd(
         None, "--timestamp", help="Source run timestamp; latest run if omitted"
     ),
     interval: str = typer.Option(None, "--interval", help="Source run interval"),
-    horizon: str = typer.Option("short", "--horizon", help="Horizon driving the signal"),
+    horizon: str = typer.Option(
+        DEFAULT_TRADED_HORIZON, "--horizon", help="Horizon driving the signal"
+    ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
     save_metadata: bool = typer.Option(

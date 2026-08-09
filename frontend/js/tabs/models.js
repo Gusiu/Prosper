@@ -12,6 +12,17 @@ let aiModelRuns = [];
 // showed 5 epochs while the CLI used 20, so the same model trained from here
 // ran a different configuration than the same command run by hand.
 let trainingDefaults = { horizons: [], epoch_budget: {}, epochless_models: [] };
+
+// The horizon set, its order and its spans all come from the API. Writing "≈52w
+// (365d)" into markup was already wrong once the year became 364 days: a label
+// that restates a value is a second definition of it.
+export function horizonSpecs() {
+  return trainingDefaults.horizons || [];
+}
+
+export function horizonNames() {
+  return horizonSpecs().map((h) => h.name);
+}
 let analysisDrawerContext = { symbol: null, model_type: null, timestamp: null };
 // The calendar shows one month, so it fetches one month. Loading the whole
 // run to page through it client-side pulled ~5 MB for a 1d run and 24x that
@@ -43,7 +54,8 @@ function renderHorizonControls() {
   box.innerHTML = "";
   overrides.innerHTML = "";
 
-  for (const name of trainingDefaults.horizons) {
+  for (const spec of horizonSpecs()) {
+    const name = spec.name;
     const label = document.createElement("label");
     label.style.cssText = "display:flex; align-items:center; gap:5px; cursor:pointer;";
     label.innerHTML =
@@ -64,7 +76,7 @@ function renderHorizonControls() {
 
 
 export function selectedHorizons() {
-  return trainingDefaults.horizons.filter(
+  return horizonNames().filter(
     (name) => document.getElementById(`train-horizon-${name}`)?.checked,
   );
 }
@@ -555,7 +567,10 @@ export function renderPredictionCalendar() {
           // coloured bullish while another horizon read 99% short. The cell is
           // one day wide, so the shortest horizon is the one it can speak for;
           // the popover still shows all three.
-          const summary = rowData.short || rowData.medium || rowData.long || {};
+          // The first spec is the shortest horizon; taking it by name rather
+          // than by literal keeps this working when the set changes.
+          const shortest = horizonNames()[0];
+          const summary = rowData[shortest] || {};
           const pLong = summary.P_long || 0;
           const pShort = summary.P_short || 0;
 
@@ -689,9 +704,15 @@ export function showPredictionPopover(e, row) {
 
     const content = `
       <div style="font-weight:700;margin-bottom:6px;">${row.date}</div>
-      ${_horizonHtml("Short", row.short || {}, "≈4w (28d)")}
-      ${_horizonHtml("Medium", row.medium || {}, "≈26w (182d)")}
-      ${_horizonHtml("Long", row.long || {}, "≈52w (365d)")}
+      ${horizonSpecs()
+        .map((spec) =>
+          _horizonHtml(
+            spec.name,
+            row[spec.name] || {},
+            `${spec.label} (${spec.forward_days}d)`,
+          ),
+        )
+        .join("")}
     `;
     pop.innerHTML = content;
     const rect = e.currentTarget.getBoundingClientRect();

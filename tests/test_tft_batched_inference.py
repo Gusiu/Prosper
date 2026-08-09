@@ -15,7 +15,7 @@ import numpy as np
 import polars as pl
 import pytest
 from prosper.config import Settings
-from prosper.domain import DIR_TO_IDX, DIRECTION_CLASSES
+from prosper.domain import DIR_TO_IDX, DIRECTION_CLASSES, HORIZON_NAMES
 from prosper.features.build import build_features
 from prosper.predict.tft import (
     _logits_to_probs,
@@ -250,5 +250,5 @@ def test_tft_end_to_end_produces_trained_predictions(tmp_path) -> None:
     )
 
     assert "error" not in result
-    assert result["untrained_horizons"] == {"short": 0, "medium": 0, "long": 0}
+    assert result["untrained_horizons"] == {name: 0 for name in HORIZON_NAMES}
     assert result["predictions"] == 20

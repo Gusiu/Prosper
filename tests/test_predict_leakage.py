@@ -54,9 +54,8 @@ def test_validate_train_window_rejects_a_window_narrower_than_the_horizon() -> N
         validate_train_window(150, "1d", DEFAULT_HORIZONS)
 
     message = str(exc.value)
-    assert "medium (182d)" in message
     longest = max(DEFAULT_HORIZONS, key=lambda h: h.forward_days)
-    assert f"long ({longest.forward_days}d)" in message
+    assert f"{longest.name} ({longest.forward_days}d)" in message
     assert "--train-window-days" in message
 
 
@@ -95,12 +94,15 @@ def test_the_shipped_horizons_convert_exactly_to_whole_weeks() -> None:
         assert horizon.steps("1h") == horizon.forward_days * 24
 
 
-def test_medium_is_exactly_half_of_long() -> None:
-    """Not decoration: 365/2 is 182.5, so the two horizons were not
-    commensurate and no window arithmetic could make them so."""
+def test_the_longest_horizon_is_a_whole_number_of_the_others() -> None:
+    """Commensurate spans, so a horizon is always a clean multiple of a shorter
+    one. 365 could not do this: 365/2 is 182.5 and 365/7 is not an integer."""
     spans = {h.name: h.forward_days for h in DEFAULT_HORIZONS}
-    assert spans["medium"] * 2 == spans["long"]
-    assert spans["long"] == spans["short"] * 13
+
+    assert spans["year"] == 4 * spans["quarter"], "a year is four quarters"
+    assert spans["month"] == 4 * spans["week"]
+    assert spans["year"] == 52 * spans["week"]
+    assert all(span % spans["week"] == 0 for span in spans.values())
 
 
 def test_train_window_scales_with_interval() -> None:

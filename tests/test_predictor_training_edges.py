@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 import polars as pl
 import pytest
 from prosper.config import Settings
+from prosper.domain import HORIZON_NAMES
 from prosper.features.build import build_features
 from prosper.predict.baseline import predict_baseline
 from prosper.predict.xgboost_model import predict_xgboost
@@ -95,10 +96,10 @@ def test_xgboost_trains_when_a_window_lacks_one_direction(lake) -> None:
     )
 
     assert "error" not in result
-    assert result["untrained_horizons"] == {"short": 0, "medium": 0, "long": 0}
+    assert result["untrained_horizons"] == {name: 0 for name in HORIZON_NAMES}
 
     rows = _run_rows(lake, "xgboost")
-    for horizon in ("short", "medium", "long"):
+    for horizon in HORIZON_NAMES:
         payloads = [row[horizon] for row in rows]
         assert all(p["trained"] for p in payloads)
         # Probabilities stay a valid distribution after the class remapping.
@@ -122,13 +123,13 @@ def test_baseline_history_does_not_depend_on_the_requested_range(lake) -> None:
     )
 
     assert "error" not in narrow
-    assert narrow["untrained_horizons"] == {"short": 0, "medium": 0, "long": 0}
+    assert narrow["untrained_horizons"] == {name: 0 for name in HORIZON_NAMES}
 
     rows = _run_rows(lake, "baseline")
     first, last = rows[0], rows[-1]
     # Even the very first predicted bar has a full window behind it, so it is
     # not the uniform prior.
-    for horizon in ("short", "medium", "long"):
+    for horizon in HORIZON_NAMES:
         assert first[horizon]["trained"] is True
         assert first[horizon]["P_long"] != pytest.approx(1 / 3, abs=1e-9)
     assert first["date"] == "2023-01-01"

@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 import polars as pl
 import pytest
 from prosper.config import Settings
+from prosper.domain import DEFAULT_TRADED_HORIZON, HORIZON_NAMES
 from prosper.eval.backtest import run_backtest
 from prosper.storage.layout import get_parquet_file_path
 from prosper.storage.parquet import save_parquet
@@ -86,9 +87,7 @@ def _write_run(
                     "open_time": ts.isoformat(),
                     "date": ts.date().isoformat(),
                     "symbol": SYMBOL,
-                    "short": horizon,
-                    "medium": horizon,
-                    "long": horizon,
+                    **{name: horizon for name in HORIZON_NAMES},
                 }
             )
         )
@@ -194,9 +193,14 @@ def test_the_simulation_and_the_planner_agree_on_every_bar(tmp_path) -> None:
         SYMBOL, settings=settings, model_type="ml", interval="1d", timestamp=TIMESTAMP
     )
 
+    # The simulation trades one horizon; the plan covers them all, so the
+    # comparison has to name the same one rather than a literal that used to
+    # happen to be the default.
     simulated = {row["recommendation"] for row in result["chart_data"]}
     planned = {
-        window["recommendation"] for window in plan["windows"] if window["horizon"] == "short"
+        window["recommendation"]
+        for window in plan["windows"]
+        if window["horizon"] == DEFAULT_TRADED_HORIZON
     }
     # Identical inputs every bar, so the weekly means equal the bar values and
     # both paths must reach the same verdict.
@@ -291,9 +295,7 @@ def test_untrained_rows_are_not_traded(tmp_path) -> None:
                     "open_time": ts.isoformat(),
                     "date": ts.date().isoformat(),
                     "symbol": SYMBOL,
-                    "short": horizon,
-                    "medium": horizon,
-                    "long": horizon,
+                    **{name: horizon for name in HORIZON_NAMES},
                 }
             )
         )

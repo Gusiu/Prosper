@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 import polars as pl
 import pytest
 from prosper.config import Settings
+from prosper.domain import HORIZON_NAMES
 from prosper.features.build import build_features
 from prosper.predict.ml import predict_ml
 from prosper.storage.layout import get_parquet_file_path, parse_versioned_prediction_folder
@@ -118,7 +119,7 @@ def test_every_horizon_is_actually_trained(prepared_lake) -> None:
 
     _, rows = _read_versioned_rows(settings, symbol)
     uniform = 1.0 / 3.0
-    for horizon in ("short", "medium", "long"):
+    for horizon in HORIZON_NAMES:
         payloads = [row[horizon] for row in rows]
         assert all(p["trained"] for p in payloads), f"{horizon} emitted untrained payloads"
 

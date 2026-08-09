@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 import polars as pl
 import pytest
 from prosper.config import Settings
-from prosper.domain import direction_from_return
+from prosper.domain import HORIZON_NAMES, direction_from_return
 from prosper.eval.stability import (
     MIN_MONTH_SAMPLES,
     eval_stability,
@@ -27,6 +27,8 @@ from prosper.storage.layout import get_eval_stability_summary_path, get_parquet_
 from prosper.storage.parquet import save_parquet
 
 SYMBOL = "TESTUSDT"
+# Read from the specs so the tests survive the next change to the horizon set.
+SHORTEST, LONGEST = HORIZON_NAMES[0], HORIZON_NAMES[-1]
 
 
 def test_direction_is_the_sign_of_the_return() -> None:
@@ -115,9 +117,10 @@ def _lake(tmp_path, days: int = 200, rising: bool = True) -> Settings:
                 "open_time": moment.isoformat(),
                 "date": moment.date().isoformat(),
                 "symbol": SYMBOL,
-                "short": _horizon(p_long),
-                "medium": _horizon(p_long),
-                "long": _horizon(p_long, trained=False),
+                # Every horizon but the longest is trained; the longest stands
+                # in for one the model could not fit (invariant 3).
+                **{name: _horizon(p_long) for name in HORIZON_NAMES[:-1]},
+                HORIZON_NAMES[-1]: _horizon(p_long, trained=False),
             }
         )
     (run_dir / "predictions.jsonl").write_text(
@@ -132,11 +135,11 @@ def test_a_regime_change_is_visible_month_by_month(tmp_path) -> None:
         SYMBOL, "2024-01-01", "2024-05-31", settings=settings, model_type="ml", interval="1d"
     )
 
-    by_month = {m["month"]: m["horizons"]["short"] for m in report["months"]}
+    by_month = {m["month"]: m["horizons"][SHORTEST] for m in report["months"]}
     assert by_month["2024-01"]["accuracy"] == 1.0, "confidently long on a rising series"
     assert by_month["2024-03"]["accuracy"] == 0.0, "confidently short on the same series"
     # The aggregate sits between the two and describes neither.
-    assert 0.0 < report["overall"]["short"]["accuracy"] < 1.0
+    assert 0.0 < report["overall"][SHORTEST]["accuracy"] < 1.0
     assert by_month["2024-01"]["logloss"] < by_month["2024-03"]["logloss"]
 
 
@@ -147,9 +150,9 @@ def test_an_untrained_horizon_contributes_nothing(tmp_path) -> None:
         SYMBOL, "2024-01-01", "2024-05-31", settings=settings, model_type="ml", interval="1d"
     )
 
-    assert report["overall"]["long"]["samples"] == 0
-    assert report["overall"]["long"]["logloss"] is None
-    assert all(m["horizons"]["long"]["samples"] == 0 for m in report["months"])
+    assert report["overall"][LONGEST]["samples"] == 0
+    assert report["overall"][LONGEST]["logloss"] is None
+    assert all(m["horizons"][LONGEST]["samples"] == 0 for m in report["months"])
 
 
 def test_a_thin_month_is_flagged_rather_than_dropped(tmp_path) -> None:
@@ -160,10 +163,10 @@ def test_a_thin_month_is_flagged_rather_than_dropped(tmp_path) -> None:
         SYMBOL, "2024-01-01", "2024-03-03", settings=settings, model_type="ml", interval="1d"
     )
 
-    march = next(m for m in report["months"] if m["month"] == "2024-03")["horizons"]["short"]
+    march = next(m for m in report["months"] if m["month"] == "2024-03")["horizons"][SHORTEST]
     assert 0 < march["samples"] < MIN_MONTH_SAMPLES
     assert march["sparse"] is True
-    january = next(m for m in report["months"] if m["month"] == "2024-01")["horizons"]["short"]
+    january = next(m for m in report["months"] if m["month"] == "2024-01")["horizons"][SHORTEST]
     assert january["sparse"] is False
 
 
@@ -214,7 +217,7 @@ def test_it_does_not_need_the_planner_to_have_run(tmp_path) -> None:
     report = eval_stability(
         SYMBOL, "2024-01-01", "2024-05-31", settings=settings, model_type="ml", interval="1d"
     )
-    assert report["overall"]["short"]["samples"] > 0
+    assert report["overall"][SHORTEST]["samples"] > 0
 
 
 # ── Sub-daily runs ───────────────────────────────────────────────────────────
@@ -261,9 +264,7 @@ def _hourly_lake(tmp_path, hours: int = 24 * 90) -> Settings:
             "open_time": moment.isoformat(),
             "date": moment.date().isoformat(),
             "symbol": SYMBOL,
-            "short": _horizon(0.8),
-            "medium": _horizon(0.8),
-            "long": _horizon(0.8),
+            **{name: _horizon(0.8) for name in HORIZON_NAMES},
         }
         for moment in times
     ]
@@ -284,14 +285,14 @@ def test_an_hourly_run_is_scored_bar_by_bar_not_date_by_date(tmp_path) -> None:
         SYMBOL, "2024-01-01", "2024-02-15", settings=settings, model_type="ml", interval="1h"
     )
 
-    scored = report["overall"]["short"]["samples"]
+    scored = report["overall"][SHORTEST]["samples"]
     # Far more scored rows than there are calendar dates in the window.
     assert scored > 46 * 20, f"only {scored} rows scored; dates collapsed"
 
     # The sawtooth makes the 28-day-ahead sign differ across bars of one date,
     # so accuracy must land strictly between the two degenerate values a
     # date-keyed lookup would produce.
-    accuracy = report["overall"]["short"]["accuracy"]
+    accuracy = report["overall"][SHORTEST]["accuracy"]
     assert 0.0 < accuracy < 1.0
 
 
@@ -308,8 +309,8 @@ def test_the_horizon_is_converted_to_the_run_s_own_interval(tmp_path) -> None:
         SYMBOL, "2024-01-01", "2024-02-15", settings=settings, model_type="ml", interval="1h"
     )
 
-    assert report["overall"]["long"]["samples"] == 0
-    assert report["overall"]["short"]["samples"] > 0
+    assert report["overall"][LONGEST]["samples"] == 0
+    assert report["overall"][SHORTEST]["samples"] > 0
 
 
 def test_the_bar_key_normalises_every_open_time_shape() -> None:

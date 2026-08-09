@@ -78,17 +78,33 @@ class HorizonSpec:
         return days_to_steps(self.forward_days, interval)
 
 
-# Whole weeks, on purpose: 4, 26 and 52. `days_to_steps` rounds, so a `long` of
-# 365 became 52 bars at the 1w interval — 364 days — while staying 365 at 1d, and
-# invariant 2 requires the two to ask the same question. 364 also makes `medium`
-# exactly half of `long` (365/2 is 182.5) and keeps every horizon commensurate
-# with the ISO weeks the planner buckets into. The 3d interval stays inexact
-# whatever the value; a week and three days have no common multiple here.
+# Whole weeks: 1, 4, 13 and 52, so `days_to_steps` needs no rounding at the 1w
+# interval — a 365-day `long` became 52 bars there (364 days) while staying 365
+# at 1d, which invariant 2 forbids. The year is exactly four quarters.
+#
+# The names state the span. The previous set was `short`/`medium`/`long`, which
+# was both vague — `short` was four weeks — and *colliding*: `short` and `long`
+# are also the two `DIRECTION_CLASSES`, so one word meant a horizon in one place
+# and "the price falls" in another.
+#
+# A quarter replaced the half-year for a measured reason. A 730-day training
+# window holds (730 - 91) / 91 = 7.0 independent observations at 91 days against
+# (730 - 182) / 182 = 3.0 at 182 — more than double, on the same data. The week
+# horizon carries 103. See `predict/window.py::training_window_power`; the year
+# has 1.0 and is reported as unmeasurable rather than quietly quoted.
 DEFAULT_HORIZONS: tuple[HorizonSpec, ...] = (
-    HorizonSpec("short", 28),
-    HorizonSpec("medium", 182),
-    HorizonSpec("long", 364),
+    HorizonSpec("week", 7),
+    HorizonSpec("month", 28),
+    HorizonSpec("quarter", 91),
+    HorizonSpec("year", 364),
 )
+
+
+HORIZON_NAMES: tuple[str, ...] = tuple(h.name for h in DEFAULT_HORIZONS)
+
+# The horizon a caller gets when it does not choose: the shortest, because it is
+# the one with enough independent observations to mean anything.
+DEFAULT_TRADED_HORIZON: str = DEFAULT_HORIZONS[0].name
 
 
 # ── Direction helper ─────────────────────────────────────────────────────────

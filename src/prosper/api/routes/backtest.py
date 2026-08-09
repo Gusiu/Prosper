@@ -18,7 +18,7 @@ def run_backtest_api(
     model_type: str | None = None,
     timestamp: str | None = None,
     interval: str | None = None,
-    horizon: str = "short",
+    horizon: str | None = None,
     capital: float = 10000.0,
 ) -> dict[str, Any]:
     """Simulate one prediction run and return its capital curve and stats.
@@ -44,7 +44,9 @@ def run_backtest_api(
             model_type=model_type,
             timestamp=timestamp,
             interval=interval,
-            horizon=horizon,
+            # None lets `run_backtest` apply its own default rather than the
+            # route carrying a second copy of it.
+            **({} if horizon is None else {"horizon": horizon}),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
