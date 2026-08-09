@@ -38,6 +38,7 @@ from prosper.predict.defaults import (
     parse_horizons,
     resolve_epochs,
     summarise_epochs,
+    window_seed,
 )
 from prosper.predict.window import (
     days_to_steps,
@@ -411,6 +412,15 @@ def predict_gru(
                     if split < len(ds):
                         fit_ds = Subset(ds, list(range(split)))
                         cal_range = list(range(split, len(ds)))
+
+                # Reseed from this window's own identity, so weight init, dropout
+                # and shuffling depend on which model this is and not on how many
+                # steps every earlier horizon and month happened to take. Without
+                # it, changing one horizon's epoch ceiling silently retrains the
+                # others — see `window_seed`.
+                if settings.deterministic or settings.seed is not None:
+                    base = settings.seed if settings.seed is not None else 42
+                    torch.manual_seed(window_seed(base, "gru", h.name, *month_key))
 
                 loader = DataLoader(fit_ds, batch_size=batch_size, shuffle=True, drop_last=False)
                 m = GRUClassifier(len(feature_cols), hidden_size, num_layers, dropout).to(device)

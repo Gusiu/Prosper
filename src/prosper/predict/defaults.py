@@ -14,6 +14,8 @@ rather than from a value typed into the HTML.
 
 from __future__ import annotations
 
+import hashlib
+
 from prosper.domain import DEFAULT_HORIZONS
 
 # Epoch budgets, not targets. With early stopping on the held-out slice inside
@@ -47,6 +49,35 @@ MIN_EARLY_STOPPING_SAMPLES = 20
 def epoch_budget(model_type: str) -> int:
     """Default epoch ceiling for *model_type*, 0 when it does not train epochs."""
     return DEFAULT_EPOCH_BUDGET.get(model_type.lower(), 0)
+
+
+def window_seed(base_seed: int, model_type: str, horizon: str, year: int, month: int) -> int:
+    """A seed belonging to one (model, horizon, retraining month) and nothing else.
+
+    Seeding once before the walk-forward loop makes a *single configuration*
+    reproducible but leaves every model downstream of every other one: all the
+    horizons and all the retraining windows draw from one continuous stream, so
+    the number of training steps taken anywhere shifts the weight initialisation,
+    dropout masks and shuffling of everything that follows.
+
+    That makes a controlled experiment impossible, and not in theory. Raising the
+    `long` ceiling from 10 to 20 on ETHUSDT tft moved the two horizons whose
+    ceiling had not changed: `medium` gained 0.070 accuracy while `long` — the one
+    actually changed — gained 0.022. Whatever the ceiling does, that run could not
+    measure it.
+
+    Deriving the seed from the window's own identity makes each model depend only
+    on which model it is, so two runs differing in one hyperparameter produce
+    identical results everywhere that hyperparameter does not reach.
+    """
+    # A real hash over the identity, not arithmetic on the characters: summing
+    # code points collides immediately — "tft" and "gru" both sum to 334, so the
+    # two models would have shared every seed. `hash()` is unusable here because
+    # Python salts it per process, which would make runs irreproducible.
+    identity = f"{base_seed}|{model_type.lower()}|{horizon.lower()}|{year:04d}-{month:02d}"
+    digest = hashlib.blake2b(identity.encode("utf-8"), digest_size=8).digest()
+    # Keep it inside the range torch.manual_seed accepts.
+    return int.from_bytes(digest, "big") % (2**31 - 1)
 
 
 def summarise_epochs(

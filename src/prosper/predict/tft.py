@@ -37,6 +37,7 @@ from prosper.predict.defaults import (
     parse_horizons,
     resolve_epochs,
     summarise_epochs,
+    window_seed,
 )
 from prosper.predict.window import (
     days_to_steps,
@@ -587,6 +588,16 @@ def predict_tft(
                             val_loader = val_ds.to_dataloader(
                                 train=False, batch_size=64, num_workers=0
                             )
+
+                    # Reseed from this window's own identity. Seeding once before
+                    # the walk-forward loop left every model downstream of every
+                    # other, so raising one horizon's epoch ceiling retrained the
+                    # rest — see `window_seed`.
+                    if settings.deterministic or settings.seed is not None:
+                        import torch as _torch
+
+                        base = settings.seed if settings.seed is not None else 42
+                        _torch.manual_seed(window_seed(base, "tft", h_name, *month_key))
 
                     tft = TemporalFusionTransformer.from_dataset(
                         ds,
