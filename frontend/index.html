@@ -865,18 +865,56 @@
               </label>
               <label class="evaluation-label">
                 <span>Capital (USDT)</span>
-                <input
-                  type="number"
-                  id="backtest-capital"
-                  class="glass-input"
-                  value="10000"
-                  min="1"
-                />
+                <input type="number" id="backtest-capital" class="glass-input" min="1" />
               </label>
               <button class="glow-btn accent-green" data-action="backtest-run">
                 Execute Backtest
               </button>
             </div>
+
+            <details id="backtest-assumptions" class="ops-card glass-panel mb-2">
+              <summary>
+                Execution assumptions
+                <span class="text-muted">— adjust to explore, not to improve</span>
+              </summary>
+              <p class="metric-desc">
+                Every one of these changes the result. None of them can change whether
+                the model forecasts: the four comparisons below travel with any
+                setting, and a configuration that lifts ROI while the no-model
+                momentum row stays negative is telling you about the market.
+                <button class="outline-btn" data-action="backtest-reset">
+                  Reset to defaults
+                </button>
+              </p>
+              <div class="evaluation-controls">
+                <label class="evaluation-label">
+                  <span>Fee per trade (%)</span>
+                  <input type="number" id="bt-fee" class="glass-input" step="0.001" min="0" />
+                </label>
+                <label class="evaluation-label">
+                  <span>Slippage per trade (%)</span>
+                  <input type="number" id="bt-slippage" class="glass-input" step="0.001" min="0" />
+                </label>
+                <label class="evaluation-label">
+                  <span>Cost hurdle (%)</span>
+                  <input type="number" id="bt-hurdle" class="glass-input" step="0.01" min="0" />
+                </label>
+                <label class="evaluation-label">
+                  <span>Min rebalance (%)</span>
+                  <input type="number" id="bt-rebalance" class="glass-input" step="0.5" min="0" />
+                </label>
+                <label class="evaluation-label">
+                  <span>Momentum benchmark (bars)</span>
+                  <input type="number" id="bt-momentum" class="glass-input" step="1" min="1" />
+                </label>
+              </div>
+              <p class="metric-desc">
+                Target share of equity per verdict. <strong>Hold</strong> is absent on
+                purpose — it keeps the previous exposure, which is the absence of a
+                target rather than a target of zero.
+              </p>
+              <div id="backtest-exposure" class="evaluation-controls"></div>
+            </details>
             <div id="backtest-status" class="analysis-status">
               Select a prediction run to simulate.
             </div>

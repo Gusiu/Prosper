@@ -20,6 +20,12 @@ def run_backtest_api(
     interval: str | None = None,
     horizon: str | None = None,
     capital: float = 10000.0,
+    fee_rate: float | None = None,
+    slippage_rate: float | None = None,
+    round_trip_cost: float | None = None,
+    min_rebalance: float | None = None,
+    momentum_lookback: int | None = None,
+    exposure: str | None = None,
 ) -> dict[str, Any]:
     """Simulate one prediction run and return its capital curve and stats.
 
@@ -32,7 +38,18 @@ def run_backtest_api(
 
     settings = get_settings()
     # Import lazily to avoid pulling heavy ML/runtime deps during module import
-    from prosper.eval.backtest import run_backtest
+    from prosper.eval.backtest import (
+        MOMENTUM_LOOKBACK_BARS,
+        parse_exposure_policy,
+        run_backtest,
+    )
+
+    # A malformed exposure string is the caller's mistake, not a server fault, so
+    # it must come back as 400 with the parser's own message rather than 500.
+    try:
+        policy = parse_exposure_policy(exposure)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     try:
         results = run_backtest(
@@ -47,6 +64,14 @@ def run_backtest_api(
             # None lets `run_backtest` apply its own default rather than the
             # route carrying a second copy of it.
             **({} if horizon is None else {"horizon": horizon}),
+            fee_rate=fee_rate,
+            slippage_rate=slippage_rate,
+            round_trip_cost=round_trip_cost,
+            min_rebalance_fraction=min_rebalance,
+            momentum_lookback=(
+                MOMENTUM_LOOKBACK_BARS if momentum_lookback is None else int(momentum_lookback)
+            ),
+            exposure_policy=policy,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -75,6 +100,7 @@ def run_backtest_api(
         # out of the response is how the CLI ends up the only honest surface.
         "nulls": results.get("nulls", {}),
         "mean_exposure": results.get("mean_exposure"),
+        "config": results.get("config", {}),
         "assumptions": results["assumptions"],
         "chart_data": {
             "dates": [h["date"] for h in history],

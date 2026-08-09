@@ -18,6 +18,7 @@ import math
 
 import numpy as np
 import pytest
+from prosper.domain import DEFAULT_HORIZONS
 from prosper.eval.significance import (
     MIN_BLOCKS,
     accuracy_interval,
@@ -26,6 +27,9 @@ from prosper.eval.significance import (
     effective_samples,
     mean_interval,
 )
+
+SHORTEST = DEFAULT_HORIZONS[0].name
+SHORTEST_STEPS = DEFAULT_HORIZONS[0].steps("1d")
 
 
 def _persistent_series(n: int, block: int, seed: int = 0) -> np.ndarray:
@@ -206,7 +210,8 @@ def test_the_evaluation_reports_an_interval_for_every_horizon() -> None:
 
     rng = np.random.default_rng(0)
     rows = []
-    for horizon, forward in (("short", 28), ("medium", 91), ("long", 364)):
+    spans = [(h.name, h.steps("1d")) for h in DEFAULT_HORIZONS]
+    for horizon, forward in spans:
         for i in range(1200):
             confidence = float(rng.uniform(0.5, 0.9))
             rows.append(
@@ -230,7 +235,7 @@ def test_the_evaluation_reports_an_interval_for_every_horizon() -> None:
     metrics, _ = _aggregate_quality(rows, EvaluationSettings())
     by_horizon = metrics["by_horizon"]
 
-    for horizon, forward in (("short", 28), ("medium", 91), ("long", 364)):
+    for horizon, forward in spans:
         stats = by_horizon[horizon]
         interval = stats["accuracy_ci"]
         assert interval is not None, horizon
@@ -247,8 +252,8 @@ def test_a_coin_flip_evaluation_never_claims_to_beat_chance() -> None:
     rows = [
         {
             "status": "scored",
-            "horizon": "short",
-            "forward_steps": 28,
+            "horizon": SHORTEST,
+            "forward_steps": SHORTEST_STEPS,
             "prediction": {"confidence": 0.6, "probabilities": {"a": 0.6, "b": 0.4}},
             "metrics": {
                 "correct": bool(rng.random() < 0.5),
@@ -261,7 +266,7 @@ def test_a_coin_flip_evaluation_never_claims_to_beat_chance() -> None:
 
     metrics, _ = _aggregate_quality(rows, EvaluationSettings())
     by_horizon = metrics["by_horizon"]
-    assert by_horizon["short"]["accuracy_beats_chance"] is False
+    assert by_horizon[SHORTEST]["accuracy_beats_chance"] is False
 
 
 def test_the_cli_prints_the_interval_and_the_verdict() -> None:

@@ -26,9 +26,11 @@ import {
 } from "./research.js";
 import { state } from "./state.js";
 import {
+  loadBacktestDefaults,
   onBacktestRunChange,
   populateBacktestRuns,
   renderBacktestHorizons,
+  resetBacktestAssumptions,
   runBacktest,
 } from "./tabs/backtest.js";
 import {
@@ -128,6 +130,7 @@ registerActions({
 
   // Backtest
   "backtest-run": () => runBacktest(),
+  "backtest-reset": () => resetBacktestAssumptions(),
 
   // Analysis drawer
   "analysis-load": () => loadAnalysisData(),
@@ -138,8 +141,10 @@ registerActions({
 
 function bootstrap() {
   startActionDispatch();
-  // Horizon options come from the API, never from the markup.
+  // Neither the horizon list nor the assumption values may live in the markup;
+  // both fill from the API.
   renderBacktestHorizons();
+  loadBacktestDefaults();
 
   // Tabs own their own pickers; the modules that reload data just announce it.
   on(EVENTS.TASK_FINISHED, () => {
