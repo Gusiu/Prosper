@@ -1,4 +1,4 @@
-﻿"""CLI entrypoint using Typer."""
+"""CLI entrypoint using Typer."""
 
 import json
 import logging
@@ -13,14 +13,14 @@ from rich.table import Table
 
 from prosper.binance.rest import BinanceRESTClient
 from prosper.config import get_settings
-from prosper.domain import DEFAULT_DEPTH_BINS_STR
+from prosper.domain import DEFAULT_DEPTH_BINS_STR, DEFAULT_HORIZONS
 from prosper.eval.backtest import run_backtest
 from prosper.eval.predictions import (
     collect_evaluation_summaries,
     evaluate_available_model_runs,
     evaluate_predictions,
 )
-from prosper.eval.walkforward import eval_walkforward
+from prosper.eval.stability import eval_stability
 from prosper.features.build import build_features
 from prosper.labels.build import build_labels
 from prosper.pipeline.aggregate import aggregate, normalize_target_intervals
@@ -36,7 +36,6 @@ from prosper.predict.gru import predict_gru
 from prosper.predict.ml import predict_ml
 from prosper.predict.xgboost_model import predict_xgboost
 from prosper.qa.checks import run_qa_checks
-from prosper.storage.layout import get_eval_walkforward_summary_path
 
 # Read the settings rather than repeat their values: a `log_level` field that
 # nothing consults is worse than none, because it looks configurable.
@@ -46,6 +45,9 @@ logging.basicConfig(
     format=_log_settings.log_format,
     handlers=[RichHandler(rich_tracebacks=True)],
 )
+
+# Repeated in three --help strings before this; the horizons are the authority.
+LONGEST_HORIZON_DAYS = max(h.forward_days for h in DEFAULT_HORIZONS)
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -57,7 +59,7 @@ labels_app = typer.Typer(help="Label building")
 predict_app = typer.Typer(help="Prediction generation")
 planner_app = typer.Typer(help="Action window planning")
 features_app = typer.Typer(help="Feature engineering")
-eval_app = typer.Typer(help="Prediction, walk-forward, and trading evaluation")
+eval_app = typer.Typer(help="Forecast quality, stability over time, and trading evaluation")
 
 app.add_typer(symbols_app, name="symbols")
 app.add_typer(qa_app, name="qa")
@@ -66,6 +68,39 @@ app.add_typer(predict_app, name="predict")
 app.add_typer(planner_app, name="planner")
 app.add_typer(features_app, name="features")
 app.add_typer(eval_app, name="eval")
+
+
+def _print_epoch_usage(results: dict[str, Any]) -> None:
+    """Show what early stopping actually decided.
+
+    `--epochs` is a ceiling, so the epochs a horizon used are a result of the
+    run. They were computed, returned, and then never printed — which is how
+    "did early stopping fire?" stayed a question needing a bespoke probe.
+    `hit_ceiling` is the one to read: a horizon reaching its budget in most
+    windows is limited by the budget, not by the signal.
+    """
+    usage = results.get("epochs_used") or {}
+    if not usage:
+        return
+    table = Table(title="Epochs used (--epochs is a ceiling, not a target)")
+    table.add_column("horizon")
+    table.add_column("windows", justify="right")
+    table.add_column("mean", justify="right")
+    table.add_column("min-max", justify="right")
+    table.add_column("ceiling", justify="right")
+    table.add_column("hit it", justify="right")
+    for name, stats in usage.items():
+        windows = int(stats["windows"])
+        hit = int(stats["hit_ceiling"])
+        table.add_row(
+            name,
+            str(windows),
+            f"{stats['mean']:.1f}",
+            f"{int(stats['min'])}-{int(stats['max'])}",
+            str(int(stats["ceiling"])),
+            f"{hit} ({hit / windows:.0%})" if windows else "-",
+        )
+    console.print(table)
 
 
 @symbols_app.command("list")
@@ -391,7 +426,7 @@ def predict_baseline_cmd(
         DEFAULT_TRAIN_WINDOW_DAYS,
         "--window-days",
         "--window_days",
-        help="Rolling window in calendar days; must exceed the longest horizon (365d)",
+        help=f"Rolling window in calendar days; must exceed the longest horizon ({LONGEST_HORIZON_DAYS}d)",
     ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
@@ -447,7 +482,7 @@ def predict_ml_cmd(
         DEFAULT_TRAIN_WINDOW_DAYS,
         "--train-window-days",
         "--train_window_days",
-        help="Training window in calendar days; must exceed the longest horizon (365d)",
+        help=f"Training window in calendar days; must exceed the longest horizon ({LONGEST_HORIZON_DAYS}d)",
     ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
@@ -503,7 +538,7 @@ def predict_xgboost_cmd(
         DEFAULT_TRAIN_WINDOW_DAYS,
         "--train-window-days",
         "--train_window_days",
-        help="Training window in calendar days; must exceed the longest horizon (365d)",
+        help=f"Training window in calendar days; must exceed the longest horizon ({LONGEST_HORIZON_DAYS}d)",
     ),
     n_estimators: int = typer.Option(100, "--n-estimators", help="XGBoost n_estimators"),
     max_depth: int = typer.Option(6, "--max-depth", help="XGBoost max_depth"),
@@ -618,6 +653,7 @@ def predict_gru_cmd(
         console.print(
             f"[green][OK][/green] GRU Predictions generated: {results['predictions']} rows (device: {results.get('device', 'cpu')})"
         )
+        _print_epoch_usage(results)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
@@ -691,6 +727,7 @@ def predict_tft_cmd(
         console.print(
             f"[green][OK][/green] TFT Predictions generated: {results['predictions']} rows"
         )
+        _print_epoch_usage(results)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
@@ -759,17 +796,11 @@ def planner_windows(
         raise typer.Exit(1)
 
 
-@eval_app.command("walkforward")
-def eval_walkforward_cmd(
+@eval_app.command("stability")
+def eval_stability_cmd(
     symbol: str = typer.Option(..., "--symbol", help="Trading symbol"),
-    train_months: int = typer.Option(
-        24, "--train-months", "--train_months", help="Train months for walk-forward"
-    ),
-    step_months: int = typer.Option(
-        1, "--step-months", "--step_months", help="Step months for walk-forward"
-    ),
-    start: str = typer.Option(..., "--start", help="Start month in YYYY-MM"),
-    end: str = typer.Option(..., "--end", help="End month in YYYY-MM"),
+    start: str = typer.Option(..., "--start", help="Start date in YYYY-MM-DD"),
+    end: str = typer.Option(..., "--end", help="End date in YYYY-MM-DD"),
     model_type: str = typer.Option(
         None, "--model-type", "--model_type", help="Source model; latest run if omitted"
     ),
@@ -783,31 +814,51 @@ def eval_walkforward_cmd(
         False, "--save-metadata", help="Save meta.json alongside artifacts"
     ),
 ) -> None:
-    """Evaluate predictions with walk-forward probabilistic + trading metrics (MVP)."""
+    """Track one run's forecast quality month by month, to see whether it holds up."""
     settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
 
     try:
-        report = eval_walkforward(
+        report = eval_stability(
             symbol=symbol,
             start=start,
             end=end,
-            train_months=train_months,
-            step_months=step_months,
             settings=settings,
             model_type=model_type,
             timestamp=timestamp,
             interval=interval,
         )
-
-        out_path = get_eval_walkforward_summary_path(
-            symbol, settings=settings, run_slug=report["run"]["slug"]
-        )
-        console.print(f"[green][OK][/green] Eval report saved to: {out_path}")
-        console.print(f"Source run: {report['run']['slug']}")
-        console.print(f"Horizons: {', '.join(report['horizons'].keys())}")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
+
+    console.print(f"[green][OK][/green] Stability report saved to: {report['report_path']}")
+    console.print(f"Source run: {report['run']['slug']}  months: {len(report['months'])}")
+
+    table = Table(title="Quality over time (mean logloss; lower is better)")
+    table.add_column("horizon")
+    table.add_column("samples", justify="right")
+    table.add_column("overall", justify="right")
+    table.add_column("best month", justify="right")
+    table.add_column("worst month", justify="right")
+    for name, overall in report["overall"].items():
+        if not overall["samples"]:
+            table.add_row(name, "0", "-", "-", "-")
+            continue
+        scored = [
+            (m["month"], m["horizons"][name]["logloss"])
+            for m in report["months"]
+            if m["horizons"][name]["samples"] and not m["horizons"][name]["sparse"]
+        ]
+        best = min(scored, key=lambda r: r[1]) if scored else None
+        worst = max(scored, key=lambda r: r[1]) if scored else None
+        table.add_row(
+            name,
+            str(overall["samples"]),
+            f"{overall['logloss']:.3f}",
+            f"{best[1]:.3f} ({best[0]})" if best else "-",
+            f"{worst[1]:.3f} ({worst[0]})" if worst else "-",
+        )
+    console.print(table)
 
 
 @eval_app.command("backtest")
@@ -877,6 +928,48 @@ def eval_backtest_cmd(
         console.print(
             f"Excess vs hold:  [{excess_color}]{bench['excess_roi_pct']:+.2f}%[/{excess_color}]"
         )
+
+        # Beating buy & hold is the weakest of four claims; printing only that
+        # one is how a reduced-beta position gets mistaken for a forecast.
+        nulls = res.get("nulls") or {}
+        if nulls:
+            table = Table(title="Did the model add anything?")
+            table.add_column("comparison")
+            table.add_column("result", justify="right")
+            table.add_column("what it rules out")
+
+            constant = nulls["constant_exposure"]
+            colour = "green" if constant["excess_roi_pct"] >= 0 else "red"
+            table.add_row(
+                f"constant {100 * constant['mean_exposure']:.0f}% exposure",
+                f"[{colour}]{constant['excess_roi_pct']:+.2f} pp[/{colour}]",
+                "carrying less beta",
+            )
+
+            timing = nulls["mistimed_replay"]
+            if timing.get("percentile") is not None:
+                # 50 is chance; the >=95 convention, and with many runs examined
+                # even that is generous.
+                colour = "green" if timing["percentile"] >= 95 else "yellow"
+                table.add_row(
+                    "vs its own mistimed copies",
+                    f"[{colour}]{timing['percentile']:.1f} pctile[/{colour}]",
+                    f"volatility timing ({timing['samples']} shifts)",
+                )
+
+            momentum = nulls["naive_momentum"]
+            if momentum.get("roi_pct") is not None:
+                replay = timing.get("replay_roi_pct")
+                delta = None if replay is None else replay - momentum["roi_pct"]
+                colour = "green" if (delta or 0) >= 0 else "red"
+                table.add_row(
+                    f"{momentum['lookback_bars']}-bar momentum rule",
+                    "n/a" if delta is None else f"[{colour}]{delta:+.2f} pp[/{colour}]",
+                    "a trend rule with no model in it",
+                )
+            console.print()
+            console.print(table)
+
         console.print(f"\nReport:          {res.get('report_path', 'n/a')}")
         console.print("\n[yellow]Execution assumptions:[/yellow]")
         for note in res["assumptions"]:

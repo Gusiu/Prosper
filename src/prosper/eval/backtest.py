@@ -26,7 +26,12 @@ import polars as pl
 from rich.console import Console
 
 from prosper.config import Settings, get_settings
-from prosper.planner.windows import calculate_edge, calculate_risk_metric, map_to_recommendation
+from prosper.planner.windows import (
+    SequenceGrader,
+    calculate_edge,
+    calculate_risk_metric,
+    expected_move,
+)
 from prosper.predict.defaults import HORIZON_NAMES
 from prosper.storage.layout import get_backtest_report_path
 from prosper.storage.runs import load_run_predictions, resolve_run
@@ -59,6 +64,9 @@ ASSUMPTIONS = [
     "Fees and slippage are charged on the traded notional at every rebalance.",
     "Orders are assumed to fill in full at the open price; market impact beyond "
     "the flat slippage rate is not modelled.",
+    "Buy and hold is the weakest of four comparisons. Also reported: the same "
+    "average exposure held throughout, the same exposure path mistimed by every "
+    "circular shift, and a 7-bar momentum rule containing no model at all.",
 ]
 
 
@@ -130,6 +138,111 @@ def _sharpe(returns: list[float]) -> float | None:
     return (mean / math.sqrt(variance)) * math.sqrt(TRADING_DAYS_PER_YEAR)
 
 
+# Bars of trailing price change the naive trend benchmark looks at. A week, so
+# it is the crudest rule anyone would try and no part of it is fitted.
+MOMENTUM_LOOKBACK_BARS = 7
+
+
+def _replay(prices: list[float], exposures: list[float], cost_rate: float) -> float:
+    """ROI of holding `exposures[t]` into the return of bar t+1, as a fraction.
+
+    Deliberately simpler than the simulation above — no rebalance floor, no
+    open/close distinction — because it exists to compare an exposure path
+    against alternatives, and every arm goes through this same function. Its
+    absolute value is not comparable to `roi_pct`.
+    """
+    if len(prices) < 2:
+        return 0.0
+    equity = 1.0
+    held_previous = 0.0
+    for i in range(len(prices) - 1):
+        if prices[i] <= 0:
+            continue
+        bar_return = prices[i + 1] / prices[i] - 1.0
+        turnover = abs(exposures[i] - held_previous)
+        equity *= 1.0 + exposures[i] * bar_return - turnover * cost_rate
+        held_previous = exposures[i]
+        if equity <= 0:
+            return -1.0
+    return equity - 1.0
+
+
+def _timing_test(prices: list[float], exposures: list[float], cost_rate: float) -> dict[str, Any]:
+    """Does this exposure path beat mistimed copies of itself?
+
+    Buy and hold is not a sufficient benchmark, which is what invariant 7 was
+    written before anyone had measured. A long-only strategy that sits flat
+    through high-volatility months finishes ahead of holding by compounding
+    alone: on ETHUSDT tft over a 2023-start window the strategy beat holding by
+    11.06 pp while its cumulative monthly excess was negative in all 40 months,
+    and it was flat during the largest months in *both* directions.
+
+    The null keeps the exposure sequence exactly as it is — same values, same
+    turnover, same average — and only changes when it applies, by circular
+    shift. `percentile` is the share of misalignments the real path beat: ~50
+    means the timing explained nothing.
+
+    A random permutation would be the wrong null. It destroys the exposure
+    autocorrelation and pays turnover the strategy never paid; at 1h, 51k bars
+    of churn drive it to total loss, so it measures "does this avoid
+    over-trading" instead.
+
+    Read it as necessary, not sufficient. A plain 7-bar momentum rule with no
+    model in it scores a median 90.5 across these runs, so clearing this bar is
+    the beginning of an argument and `naive_momentum` below is the rest of it.
+    """
+    if len(prices) < 3:
+        return {"samples": 0, "percentile": None, "median_roi_pct": None}
+
+    actual = _replay(prices, exposures, cost_rate)
+    shifted = [
+        _replay(prices, exposures[k:] + exposures[:k], cost_rate)
+        for k in range(1, len(exposures))
+    ]
+    # Mid-rank: ties count half. A constant exposure path is identical under
+    # every shift, so counting only strict wins reported it at percentile 0 —
+    # reading as "the worst possible timing" when the truth is that a path with
+    # no variation carries no timing information at all. Mid-rank puts it at 50,
+    # which is what "explains nothing" is supposed to look like here.
+    tolerance = 1e-12
+    beaten = sum(1 for roi in shifted if roi < actual - tolerance)
+    tied = sum(1 for roi in shifted if abs(roi - actual) <= tolerance)
+    ordered = sorted(shifted)
+    middle = len(ordered) // 2
+    median = (
+        ordered[middle]
+        if len(ordered) % 2
+        else 0.5 * (ordered[middle - 1] + ordered[middle])
+    )
+    return {
+        "samples": len(shifted),
+        "percentile": 100.0 * (beaten + 0.5 * tied) / len(shifted),
+        "median_roi_pct": median * 100.0,
+        "replay_roi_pct": actual * 100.0,
+    }
+
+
+def _naive_momentum(prices: list[float], cost_rate: float, lookback: int) -> dict[str, Any]:
+    """Fully invested when the last *lookback* bars rose, flat otherwise.
+
+    The comparison that matters most and was missing. It contains no forecast,
+    no training and no fitted parameter, so anything the models cannot beat here
+    they have not earned. Measured across the 1d runs it returns a median of
+    -147 pp against buy & hold where the models' own policy returns -246 pp.
+    """
+    if len(prices) < lookback + 2:
+        return {"roi_pct": None, "mean_exposure": None}
+    exposures = [
+        1.0 if i >= lookback and prices[i] > prices[i - lookback] else 0.0
+        for i in range(len(prices))
+    ]
+    return {
+        "roi_pct": _replay(prices, exposures, cost_rate) * 100.0,
+        "mean_exposure": sum(exposures) / len(exposures),
+        "lookback_bars": lookback,
+    }
+
+
 def run_backtest(
     symbol: str,
     start: str,
@@ -189,6 +302,9 @@ def run_backtest(
     units = 0.0
     exposure = 0.0
     cost_rate = config.fee_rate + config.slippage_rate
+    # One grader for the whole walk: its risk gates are quantiles of what it has
+    # already seen, so it has to be built once and fed in order.
+    grader = SequenceGrader(settings.planner_round_trip_cost)
 
     history: list[dict[str, Any]] = []
     equity_curve: list[float] = []
@@ -216,14 +332,22 @@ def run_backtest(
         if exec_price <= 0 or mark_price <= 0:
             continue
 
+        depth_long = payload.get("depth_long_bins", {})
+        depth_short = payload.get("depth_short_bins", {})
         edge = calculate_edge(payload["P_long"], payload["P_short"])
         risk = calculate_risk_metric(
-            payload["P_long"],
-            payload["P_short"],
-            payload.get("depth_long_bins", {}),
-            payload.get("depth_short_bins", {}),
+            payload["P_long"], payload["P_short"], depth_long, depth_short
         )
-        recommendation = map_to_recommendation(edge, risk)
+        # Graded by the same object the planner uses, so a bar cannot be
+        # `Strong Buy` in the recommendation report and `Buy` in the simulation
+        # that is supposed to be trading it. The grader also carries the cost
+        # gate, which this loop skipped entirely.
+        move = (
+            expected_move(payload["P_long"], payload["P_short"], depth_long, depth_short)
+            if depth_long and depth_short
+            else None
+        )
+        recommendation = grader.grade(edge, risk, move)
         # "Hold" is not a signal; it leaves the book untouched.
         target = config.exposure_policy.get(recommendation, exposure)
 
@@ -281,6 +405,16 @@ def run_backtest(
     hold_final = hold_units * last_price
     hold_roi = (hold_final - config.initial_capital) / config.initial_capital
 
+    # Three more comparisons, because buy & hold alone cannot separate a
+    # forecast from a reduced-beta position. See `_timing_test`.
+    marks = [float(row["price"]) for row in history]
+    path = [float(row["exposure"]) for row in history]
+    mean_exposure = sum(path) / len(path)
+    # Same average exposure, entered once and held: what carrying less beta
+    # explains on its own, with no timing at all.
+    constant_units = mean_exposure * (1.0 - cost_rate) / marks[0]
+    constant_roi = constant_units * marks[-1] + (1.0 - mean_exposure) - 1.0
+
     result = {
         "symbol": symbol,
         "run": run.to_dict(),
@@ -304,6 +438,20 @@ def run_backtest(
             "final_value": hold_final,
             "roi_pct": hold_roi * 100,
             "excess_roi_pct": (roi - hold_roi) * 100,
+        },
+        "mean_exposure": mean_exposure,
+        # Ordered weakest claim to strongest: beating buy & hold may be beta,
+        # beating constant exposure may be volatility, beating your own
+        # mistimed copies may still be a trend rule, and `naive_momentum` is
+        # what a trend rule with no model in it achieves.
+        "nulls": {
+            "constant_exposure": {
+                "roi_pct": constant_roi * 100,
+                "excess_roi_pct": (roi - constant_roi) * 100,
+                "mean_exposure": mean_exposure,
+            },
+            "mistimed_replay": _timing_test(marks, path, cost_rate),
+            "naive_momentum": _naive_momentum(marks, cost_rate, MOMENTUM_LOOKBACK_BARS),
         },
         "assumptions": ASSUMPTIONS,
         "chart_data": history,

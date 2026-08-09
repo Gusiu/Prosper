@@ -1,4 +1,4 @@
-﻿"""Prediction-quality evaluation for versioned model runs."""
+"""Prediction-quality evaluation for versioned model runs."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from prosper.domain import (
     parse_depth_bins,
 )
 from prosper.planner.windows import (
+    SequenceGrader,
     calculate_edge,
     calculate_risk_metric,
     clears_cost,
@@ -276,12 +277,20 @@ def _json_default(value: Any) -> Any:
 
 
 def _read_predictions(path: Path) -> list[dict[str, Any]]:
+    """Every prediction row, oldest first.
+
+    The predictors happen to write in order, but the risk gates downstream are
+    quantiles of what has already been seen, so a stateful grader walking these
+    rows must not depend on that. Sorting here makes the ordering a property of
+    the reader instead of a habit of five writers.
+    """
     rows: list[dict[str, Any]] = []
     with open(path, encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
             rows.append(json.loads(line))
+    rows.sort(key=lambda row: str(row.get("open_time") or row.get("date") or ""))
     return rows
 
 
@@ -387,7 +396,17 @@ def _recommendation_payload(
     horizon_pred: dict[str, Any],
     probs: dict[str, float],
     round_trip_cost: float,
+    grader: SequenceGrader | None = None,
 ) -> dict[str, Any]:
+    """Edge, risk, expected move and the verdict for one scored row.
+
+    *grader* must be the horizon's own `SequenceGrader`, fed in chronological
+    order: the risk gates are quantiles of the risk already seen. Passing None
+    falls back to the static gates, which is what this function did for every
+    row until the three decision paths were unified — the recommendation in the
+    evaluation artifacts disagreed with both the planner's report and the
+    simulation that traded it.
+    """
     # Normalise over the bins the run itself used, not the current constant:
     # runs written under the 8-bin scheme name a `34+` bin that no longer
     # exists, and normalising them against today's labels would drop the whole
@@ -400,12 +419,17 @@ def _recommendation_payload(
     risk = calculate_risk_metric(probs["long"], probs["short"], depth_long, depth_short)
     move = expected_move(probs["long"], probs["short"], depth_long, depth_short)
     cost_cleared = clears_cost(move, round_trip_cost)
+    verdict = (
+        grader.grade(edge, risk, move)
+        if grader is not None
+        else map_to_recommendation(edge, risk, cost_cleared=cost_cleared)
+    )
     return {
         "edge": edge,
         "risk": risk,
         "expected_move": move,
         "cost_cleared": cost_cleared,
-        "recommendation": map_to_recommendation(edge, risk, cost_cleared=cost_cleared),
+        "recommendation": verdict,
         "depth_long_bins": depth_long,
         "depth_short_bins": depth_short,
     }
@@ -544,6 +568,12 @@ def _aggregate_quality(
 
         metrics_by_horizon[horizon] = {
             "samples": len(rows),
+            # Published because entropy is only interpretable against the
+            # uniform forecast over the classes this horizon actually carries.
+            # The dashboard's sharpness bar divided by a hardcoded ln(3) and so
+            # credited a two-class coin flip with 0.37 of the sharpness it
+            # should earn none of.
+            "n_classes": horizon_classes,
             "accuracy": accuracy,
             "brier": avg_brier,
             "nll": avg_nll,
@@ -818,6 +848,11 @@ def evaluate_predictions(
     quality_rows: list[dict[str, Any]] = []
     matched_predictions = 0
     untrained_by_horizon: dict[str, int] = {h.name: 0 for h in DEFAULT_HORIZONS}
+    # One grader per horizon: each keeps its own risk history, and `predictions`
+    # is sorted so the walk is chronological.
+    graders = {
+        h.name: SequenceGrader(settings.planner_round_trip_cost) for h in DEFAULT_HORIZONS
+    }
 
     for prediction in predictions:
         pred_date = _date_key(prediction.get("open_time") or prediction.get("date"))
@@ -845,7 +880,10 @@ def evaluate_predictions(
             confidence = probs[predicted_direction]
             entropy = probability_entropy(probs)
             recommendation = _recommendation_payload(
-                horizon_pred, probs, settings.planner_round_trip_cost
+                horizon_pred,
+                probs,
+                settings.planner_round_trip_cost,
+                grader=graders[horizon.name],
             )
 
             base_row: dict[str, Any] = {

@@ -43,7 +43,10 @@ def test_usable_sample_count_is_zero_when_window_matches_horizon() -> None:
 def test_validate_train_window_accepts_a_sufficient_window() -> None:
     steps = validate_train_window(730, "1d", DEFAULT_HORIZONS)
 
-    assert steps == {"short": 28, "medium": 182, "long": 365}
+    # Read from the specs, not repeated: the horizons are whole weeks (4/26/52)
+    # and a literal here would silently disagree the next time they move.
+    assert steps == {h.name: h.forward_days for h in DEFAULT_HORIZONS}
+    assert all(h.forward_days % 7 == 0 for h in DEFAULT_HORIZONS), "whole weeks"
 
 
 def test_validate_train_window_rejects_a_window_narrower_than_the_horizon() -> None:
@@ -52,7 +55,8 @@ def test_validate_train_window_rejects_a_window_narrower_than_the_horizon() -> N
 
     message = str(exc.value)
     assert "medium (182d)" in message
-    assert "long (365d)" in message
+    longest = max(DEFAULT_HORIZONS, key=lambda h: h.forward_days)
+    assert f"long ({longest.forward_days}d)" in message
     assert "--train-window-days" in message
 
 
@@ -66,11 +70,37 @@ def test_validate_train_window_needs_headroom_beyond_the_horizon() -> None:
 
 
 def test_horizons_span_the_same_calendar_time_across_intervals() -> None:
-    long_horizon = HorizonSpec("long", 365)
+    long_horizon = HorizonSpec("long", 364)
 
-    assert long_horizon.steps("1d") == 365
-    assert long_horizon.steps("1h") == 365 * 24
-    assert long_horizon.steps("1w") == 52  # 365d / 7d, rounded
+    assert long_horizon.steps("1d") == 364
+    assert long_horizon.steps("1h") == 364 * 24
+    assert long_horizon.steps("1w") == 52
+
+
+def test_the_shipped_horizons_convert_exactly_to_whole_weeks() -> None:
+    """The reason `long` is 364 rather than 365.
+
+    `days_to_steps` rounds, so a 365-day horizon became 52 bars at the 1w
+    interval — 364 days — while staying 365 at 1d. Invariant 2 requires both to
+    ask the same question, and they did not: a 1w run's `long` was a day shorter
+    than a 1d run's. Whole weeks remove the rounding entirely.
+    """
+    for horizon in DEFAULT_HORIZONS:
+        assert horizon.forward_days % 7 == 0, f"{horizon.name} is not whole weeks"
+        weeks = horizon.forward_days // 7
+        assert horizon.steps("1w") == weeks
+        # Round-trip: the bar count means exactly the calendar span asked for.
+        assert horizon.steps("1w") * 7 == horizon.forward_days
+        assert horizon.steps("1d") == horizon.forward_days
+        assert horizon.steps("1h") == horizon.forward_days * 24
+
+
+def test_medium_is_exactly_half_of_long() -> None:
+    """Not decoration: 365/2 is 182.5, so the two horizons were not
+    commensurate and no window arithmetic could make them so."""
+    spans = {h.name: h.forward_days for h in DEFAULT_HORIZONS}
+    assert spans["medium"] * 2 == spans["long"]
+    assert spans["long"] == spans["short"] * 13
 
 
 def test_train_window_scales_with_interval() -> None:

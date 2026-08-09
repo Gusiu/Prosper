@@ -65,7 +65,7 @@ def list_prediction_runs(
 ) -> dict[str, list[dict[str, Any]]]:
     """List versioned prediction runs, newest first.
 
-    Every downstream artifact (windows, walk-forward, backtest) is keyed by one
+    Every downstream artifact (windows, stability, backtest) is keyed by one
     of these runs, so this is the canonical picker for the UI.
     """
     if symbol and not _is_valid_symbol(symbol.upper()):

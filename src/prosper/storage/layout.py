@@ -173,23 +173,23 @@ def get_recommendation_report_path(
     return settings.reports_recommendations_dir / symbol / folder / filename
 
 
-def get_eval_walkforward_summary_path(
+def get_eval_stability_summary_path(
     symbol: str,
     settings: Settings | None = None,
     run_slug: str | None = None,
 ) -> Path:
     """
-    Get path for walk-forward evaluation summary JSON.
+    Get path for the quality-over-time summary JSON.
 
     Layout:
-      data/reports/eval/{SYMBOL}/{run_slug}/walkforward_summary.json
+      data/reports/eval/{SYMBOL}/{run_slug}/stability_summary.json
     """
     if settings is None:
         settings = get_settings()
     base = settings.reports_eval_dir / symbol
     if run_slug:
         base = base / run_slug
-    return base / "walkforward_summary.json"
+    return base / "stability_summary.json"
 
 
 def get_backtest_report_path(

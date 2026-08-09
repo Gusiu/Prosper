@@ -45,7 +45,7 @@ from prosper.predict.window import (
     validate_train_window,
 )
 from prosper.storage.layout import get_features_parquet_path
-from prosper.storage.predictions import write_versioned_predictions
+from prosper.storage.predictions import write_run_summary, write_versioned_predictions
 from prosper.utils.time import parse_date
 
 
@@ -726,7 +726,7 @@ def predict_tft(
         predictions, symbol, "tft", settings, interval=interval
     )
 
-    return {
+    result = {
         "symbol": symbol,
         "start": start,
         "end": end,
@@ -736,6 +736,8 @@ def predict_tft(
         "epochs_used": summarise_epochs(epochs_used, epoch_budget),
         "run_dir": str(run_dir),
     }
+    write_run_summary(run_dir, result)
+    return result
 
 
 def _uniform_depth(labels: list[str]) -> dict[str, float]:

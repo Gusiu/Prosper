@@ -107,7 +107,7 @@ prosper backfill --symbol BTCUSDT --start 2020-01 --end 2020-01 --workers 2
 ### Predict, evaluate, compare
 
 A prediction run is identified by `{model}_{interval}_{timestamp}`, and every
-artifact derived from it — action windows, walk-forward metrics, backtests —
+artifact derived from it — action windows, stability reports, backtests —
 is stored under that identity. Nothing shares a "latest" directory, so a result
 can always be traced back to the model that produced it.
 
@@ -160,7 +160,7 @@ data/
     │       metrics.json, calibration.json, predictions_quality.parquet,
     │       recommendations.json, worst_predictions.csv
     ├── recommendations/{SYMBOL}/{run_slug}/{YYYY-MM}.json
-    ├── eval/{SYMBOL}/{run_slug}/walkforward_summary.json
+    ├── eval/{SYMBOL}/{run_slug}/stability_summary.json
     ├── backtests/{SYMBOL}/{run_slug}/backtest.json
     └── qa/{SYMBOL}/{interval}/{YYYY-MM}.json
 ```

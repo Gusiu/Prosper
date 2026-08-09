@@ -70,6 +70,66 @@ export function onBacktestRunChange() {
 }
 
 
+// Beating buy & hold is the weakest of four claims. Showing only that one is
+// how a reduced-beta position gets read as a forecast: ETHUSDT tft cleared
+// holding by 11.06 pp on one window while its cumulative monthly excess was
+// negative in all 40 months.
+export function renderBacktestNulls(data) {
+  const tbody = document.getElementById("backtest-nulls-tbody");
+  if (!tbody) return;
+
+  const nulls = data.nulls || {};
+  const signed = (value, unit) =>
+    Number.isFinite(value)
+      ? `<span class="${value >= 0 ? "text-green" : "text-red"}">${value >= 0 ? "+" : ""}${value.toFixed(2)}${unit}</span>`
+      : '<span class="text-muted">--</span>';
+
+  const rows = [];
+
+  const constant = nulls.constant_exposure;
+  if (constant) {
+    rows.push([
+      `Constant ${(100 * (constant.mean_exposure ?? 0)).toFixed(0)}% exposure`,
+      signed(constant.excess_roi_pct, " pp"),
+      "Rules out simply carrying less of the asset.",
+    ]);
+  }
+
+  const timing = nulls.mistimed_replay;
+  if (timing && Number.isFinite(timing.percentile)) {
+    // 50 is chance. 95 is the usual bar, and with many runs examined even that
+    // is generous, so anything below is shown as unconvincing rather than good.
+    const strong = timing.percentile >= 95;
+    rows.push([
+      "Vs its own mistimed copies",
+      `<span class="${strong ? "text-green" : "text-muted"}">${timing.percentile.toFixed(1)} pctile</span>`,
+      `Rules out volatility timing. ${timing.samples} shifts; 50 = chance.`,
+    ]);
+  }
+
+  const momentum = nulls.naive_momentum;
+  if (momentum && Number.isFinite(momentum.roi_pct)) {
+    const delta = Number.isFinite(timing?.replay_roi_pct)
+      ? timing.replay_roi_pct - momentum.roi_pct
+      : null;
+    rows.push([
+      `${momentum.lookback_bars}-bar momentum rule`,
+      delta === null ? '<span class="text-muted">--</span>' : signed(delta, " pp"),
+      "Rules out “any trend rule would have done this”. No model in it.",
+    ]);
+  }
+
+  tbody.innerHTML = rows.length
+    ? rows
+        .map(
+          ([label, result, meaning]) =>
+            `<tr><td>${escapeHtml(label)}</td><td>${result}</td><td class="text-muted">${meaning}</td></tr>`,
+        )
+        .join("")
+    : '<tr><td class="text-muted">Run a backtest to see its comparisons.</td></tr>';
+}
+
+
 export function renderBacktestLimitations(limitations) {
   const list = document.getElementById("backtest-limitations-list");
   if (!list) return;
@@ -141,6 +201,7 @@ export async function runBacktest() {
       ? `${data.time_in_market_pct.toFixed(1)}%`
       : "--%";
 
+    renderBacktestNulls(data);
     renderBacktestLimitations(data.assumptions);
     drawChart(data.chart_data);
 

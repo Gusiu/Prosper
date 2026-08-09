@@ -6,6 +6,7 @@ from prosper.api.routes.evaluations import router as evaluations_router
 from prosper.api.routes.meta import router as meta_router
 from prosper.api.routes.pipeline import router as pipeline_router
 from prosper.api.routes.runs import router as runs_router
+from prosper.api.routes.stability import router as stability_router
 from prosper.api.routes.tasks import router as tasks_router
 
 ALL_ROUTERS = (
@@ -16,6 +17,7 @@ ALL_ROUTERS = (
     pipeline_router,
     evaluations_router,
     backtest_router,
+    stability_router,
 )
 
 __all__ = ["ALL_ROUTERS"]

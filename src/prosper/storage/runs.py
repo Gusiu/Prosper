@@ -2,7 +2,7 @@
 
 A prediction run is identified by ``(symbol, model_type, interval, timestamp)``
 and lives in its own folder under ``reports/predictions/``. Everything derived
-from predictions — action windows, walk-forward metrics, backtests — is keyed
+from predictions — action windows, stability reports, backtests — is keyed
 by that identity, so a result can always be traced back to the exact model that
 produced it.
 """

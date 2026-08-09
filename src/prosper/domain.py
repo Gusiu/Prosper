@@ -78,10 +78,16 @@ class HorizonSpec:
         return days_to_steps(self.forward_days, interval)
 
 
+# Whole weeks, on purpose: 4, 26 and 52. `days_to_steps` rounds, so a `long` of
+# 365 became 52 bars at the 1w interval — 364 days — while staying 365 at 1d, and
+# invariant 2 requires the two to ask the same question. 364 also makes `medium`
+# exactly half of `long` (365/2 is 182.5) and keeps every horizon commensurate
+# with the ISO weeks the planner buckets into. The 3d interval stays inexact
+# whatever the value; a week and three days have no common multiple here.
 DEFAULT_HORIZONS: tuple[HorizonSpec, ...] = (
     HorizonSpec("short", 28),
     HorizonSpec("medium", 182),
-    HorizonSpec("long", 365),
+    HorizonSpec("long", 364),
 )
 
 

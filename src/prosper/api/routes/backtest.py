@@ -68,6 +68,11 @@ def run_backtest_api(
         "turnover_ratio": results["turnover_ratio"],
         "time_in_market_pct": results["time_in_market_pct"],
         "benchmark": results["benchmark"],
+        # Buy & hold alone cannot separate a forecast from a reduced-beta
+        # position, so the browser gets the whole comparison set too. Leaving it
+        # out of the response is how the CLI ends up the only honest surface.
+        "nulls": results.get("nulls", {}),
+        "mean_exposure": results.get("mean_exposure"),
         "assumptions": results["assumptions"],
         "chart_data": {
             "dates": [h["date"] for h in history],

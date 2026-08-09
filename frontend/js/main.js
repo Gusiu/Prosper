@@ -44,7 +44,9 @@ import {
   exportWorstPredictionsCsv,
   inspectEvaluationPrediction,
   loadEvaluations,
+  loadStability,
   onEvaluationFlagChange,
+  onStabilityMetricChange,
   populateEvaluationModelSelect,
   runPredictionEvaluation,
 } from "./tabs/evaluation.js";
@@ -121,6 +123,7 @@ registerActions({
   "evaluation-refresh": () => loadEvaluations(),
   "evaluation-export": () => exportWorstPredictionsCsv(),
   "evaluation-inspect": ({ index }) => inspectEvaluationPrediction(Number(index)),
+  "stability-load": () => loadStability(),
 
   // Backtest
   "backtest-run": () => runBacktest(),
@@ -153,6 +156,9 @@ function bootstrap() {
   document
     .getElementById("eval-flag-filter")
     ?.addEventListener("change", onEvaluationFlagChange);
+  document
+    .getElementById("stability-metric")
+    ?.addEventListener("change", onStabilityMetricChange);
   document
     .getElementById("backtest-run")
     ?.addEventListener("change", onBacktestRunChange);

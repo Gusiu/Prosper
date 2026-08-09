@@ -65,6 +65,7 @@ from prosper.api.routes.runs import (
     get_feature_importances,
     list_prediction_runs,
 )
+from prosper.api.routes.stability import run_stability_api
 from prosper.api.routes.tasks import (
     cancel_task,
     get_status,
@@ -157,6 +158,7 @@ __all__ = [
     "move_task",
     "run_aggregate",
     "run_backtest_api",
+    "run_stability_api",
     "run_batch_evaluation",
     "run_evaluation",
     "run_pipeline",

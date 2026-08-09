@@ -85,7 +85,8 @@ class Settings(BaseSettings):
         description="Round-trip cost a signal must clear before the planner acts",
     )
 
-    # Trading simulation costs (for eval walk-forward MVP)
+    # Trading simulation costs, charged by `eval/backtest.py` on the traded
+    # notional at every rebalance.
     trading_fee_rate: float = Field(
         default=0.001, ge=0.0, le=1.0, description="Fee rate per position"
     )

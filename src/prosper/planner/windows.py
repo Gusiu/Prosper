@@ -12,6 +12,21 @@ from prosper.storage.layout import get_recommendation_report_path
 from prosper.storage.runs import load_run_predictions, resolve_run
 from prosper.utils.time import parse_date
 
+# The scale, strongest buy to strongest sell. `map_to_recommendation` returns
+# one of these and nothing else. It had no single definition: the set lived in
+# `eval/walkforward.py` and disappeared with that module, while
+# `eval/backtest.py::EXPOSURE_POLICY` names six of the seven and deliberately
+# omits `Hold`, which carries the previous exposure rather than a target.
+RECOMMENDATIONS: tuple[str, ...] = (
+    "Strong Buy",
+    "Buy",
+    "Accumulate",
+    "Hold",
+    "Reduce",
+    "Sell",
+    "Strong Sell",
+)
+
 # Risk gates for the three conviction grades, as quantiles of the risk this
 # planner has already seen. Absolute cut-offs cannot survive a change to the
 # metric and did not: 0.2/0.3/0.4 were chosen when `calculate_risk_metric`
@@ -213,6 +228,48 @@ def map_to_recommendation(
     return "Hold"
 
 
+class SequenceGrader:
+    """Grades a chronological sequence of bars or windows, one verdict each.
+
+    Both the planner and the backtest turn (edge, risk, expected move) into a
+    verdict, and they had drifted apart: the quantile gates and the cost gate
+    went into `plan_windows` only, while `run_backtest` called
+    `map_to_recommendation` with the static defaults and never computed an
+    expected move at all. The same bar could be `Strong Buy` in the
+    recommendation report and `Buy` in the simulation that was supposed to be
+    trading that report. One grader, so they cannot disagree again.
+
+    Stateful on purpose: the risk gates are quantiles of the risk already seen,
+    and `grade` records a value only *after* using the gates that preceded it,
+    so nothing influences its own verdict.
+    """
+
+    def __init__(self, round_trip_cost: float) -> None:
+        self.round_trip_cost = float(round_trip_cost)
+        self._risk_history: list[float] = []
+
+    @property
+    def gates(self) -> tuple[float, float, float]:
+        return risk_gates(self._risk_history)
+
+    @property
+    def observed(self) -> int:
+        return len(self._risk_history)
+
+    def grade(self, edge: float, risk: float, expected: float | None = None) -> str:
+        """Verdict for one bar, then fold its risk into the history.
+
+        *expected* is the probability-weighted forward move. `None` means the
+        caller has no depth distribution to work from, which leaves the cost
+        gate open rather than silently holding everything.
+        """
+        gates = self.gates
+        cost_cleared = True if expected is None else clears_cost(expected, self.round_trip_cost)
+        verdict = map_to_recommendation(edge, risk, cost_cleared=cost_cleared, gates=gates)
+        self._risk_history.append(float(risk))
+        return verdict
+
+
 def plan_windows(
     symbol: str,
     start: str | None = None,
@@ -341,18 +398,16 @@ def plan_windows(
     all_windows: list[dict[str, Any]] = []
     for horizon_buckets in by_horizon.values():
         horizon_buckets.sort(key=lambda b: (b["iso_year"], b["iso_week"]))
-        risk_history: list[float] = []
+        grader = SequenceGrader(round_trip_cost)
 
         for b in horizon_buckets:
             edge_mean = b["edge_sum"] / max(b["count"], 1)
             risk_mean = b["risk_sum"] / max(b["count"], 1)
             move_mean = b["move_sum"] / max(b["count"], 1)
             cost_cleared = clears_cost(move_mean, round_trip_cost)
-            gates = risk_gates(risk_history)
-            recommendation = map_to_recommendation(
-                edge_mean, risk_mean, cost_cleared=cost_cleared, gates=gates
-            )
-            risk_history.append(risk_mean)
+            gates = grader.gates
+            observed = grader.observed
+            recommendation = grader.grade(edge_mean, risk_mean, move_mean)
 
             w = {
                 "start_date": b["week_start"],
@@ -368,7 +423,7 @@ def plan_windows(
                     # Recorded so a report can be re-read without replaying the
                     # walk that produced its gates.
                     "risk_gates": list(gates),
-                    "risk_history_windows": len(risk_history) - 1,
+                    "risk_history_windows": observed,
                 },
             }
             all_windows.append(w)

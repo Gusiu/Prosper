@@ -53,7 +53,18 @@ def _write_prices(settings: Settings, closes: list[float], opens: list[float]) -
         )
 
 
-def _write_run(settings: Settings, signals: list[tuple[float, float]]) -> None:
+# Mass far enough up the scale that a modest edge still clears the round-trip
+# cost. With DEPTH above, the probability-weighted move at edge 0.10 is 0.31%
+# against a 0.4% hurdle, so the cost gate holds — correctly, and that is its own
+# test below.
+DEPTH_WIDER = {"3-5": 0.4, "5-8": 0.4, "8-13": 0.2}
+
+
+def _write_run(
+    settings: Settings,
+    signals: list[tuple[float, float]],
+    depth: dict[str, float] | None = None,
+) -> None:
     """`signals` is one (P_long, P_short) pair per day, starting 2024-01-01."""
     run_dir = settings.reports_predictions_dir / SYMBOL / f"ml_1d_{TIMESTAMP}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -65,8 +76,8 @@ def _write_run(settings: Settings, signals: list[tuple[float, float]]) -> None:
             "P_long": p_long,
             "P_flat": max(0.0, 1.0 - p_long - p_short),
             "P_short": p_short,
-            "depth_long_bins": DEPTH,
-            "depth_short_bins": DEPTH,
+            "depth_long_bins": depth or DEPTH,
+            "depth_short_bins": depth or DEPTH,
             "trained": True,
         }
         rows.append(
@@ -131,14 +142,65 @@ def test_exposure_scales_with_conviction(tmp_path) -> None:
     settings = Settings(data_root=tmp_path)
     closes = [100.0] * 8
     _write_prices(settings, closes, closes)
-    # edge 0.10 -> "Accumulate" (0.4 target), never a full allocation
-    _write_run(settings, [(0.45, 0.35)] * 8)
+    # edge 0.10 -> "Accumulate" (0.4 target), never a full allocation. The wider
+    # depth distribution is what lets the expected move pay for the round trip;
+    # see the next test for the case where it cannot.
+    _write_run(settings, [(0.45, 0.35)] * 8, depth=DEPTH_WIDER)
 
     result = _backtest(settings, end="2024-01-08", fee_rate=0.0, slippage_rate=0.0)
 
     assert "error" not in result
     exposures = {round(row["exposure"], 3) for row in result["chart_data"]}
     assert exposures == {0.4}
+
+
+def test_a_signal_too_small_to_pay_its_costs_is_not_traded(tmp_path) -> None:
+    """The cost gate applies in the simulation, not only in the planner.
+
+    `run_backtest` used to call `map_to_recommendation` directly with the static
+    defaults and never computed an expected move, so it skipped this gate
+    entirely — and it also missed the quantile risk gates when those arrived.
+    The same bar could be `Accumulate` here and `Hold` in the recommendation
+    report the simulation was supposed to be trading. Both now go through
+    `SequenceGrader`.
+
+    With DEPTH the probability-weighted move at edge 0.10 is 0.31% against the
+    0.4% round-trip hurdle, so nothing should be bought.
+    """
+    settings = Settings(data_root=tmp_path)
+    closes = [100.0] * 8
+    _write_prices(settings, closes, closes)
+    _write_run(settings, [(0.45, 0.35)] * 8)
+
+    result = _backtest(settings, end="2024-01-08", fee_rate=0.0, slippage_rate=0.0)
+
+    assert "error" not in result
+    assert {round(row["exposure"], 3) for row in result["chart_data"]} == {0.0}
+    assert {row["recommendation"] for row in result["chart_data"]} == {"Hold"}
+
+
+def test_the_simulation_and_the_planner_agree_on_every_bar(tmp_path) -> None:
+    """One grader, so the report and the simulation cannot describe different
+    trades — the defect that motivated `SequenceGrader`."""
+    from prosper.planner.windows import plan_windows
+
+    settings = Settings(data_root=tmp_path)
+    closes = [100.0 + i for i in range(40)]
+    _write_prices(settings, closes, closes)
+    _write_run(settings, [(0.9, 0.05)] * 40, depth=DEPTH_WIDER)
+
+    result = _backtest(settings, end="2024-02-09", fee_rate=0.0, slippage_rate=0.0)
+    plan = plan_windows(
+        SYMBOL, settings=settings, model_type="ml", interval="1d", timestamp=TIMESTAMP
+    )
+
+    simulated = {row["recommendation"] for row in result["chart_data"]}
+    planned = {
+        window["recommendation"] for window in plan["windows"] if window["horizon"] == "short"
+    }
+    # Identical inputs every bar, so the weekly means equal the bar values and
+    # both paths must reach the same verdict.
+    assert simulated == planned
 
 
 def test_costs_are_charged_on_traded_notional(tmp_path) -> None:

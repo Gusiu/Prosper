@@ -203,3 +203,66 @@ def test_the_form_exposes_a_horizon_control() -> None:
     )
     assert 'id="train-horizons"' in html
     assert 'id="train-epoch-overrides"' in html
+
+
+def test_the_stability_command_takes_full_iso_dates() -> None:
+    """Its predecessor took YYYY-MM here and YYYY-MM-DD for its twin backtest.
+
+    Two sibling commands over the same run disagreeing about date format is the
+    kind of wart that makes a CLI untrustworthy for a thesis appendix.
+    """
+    for command in ("stability", "backtest"):
+        assert "--start" in _cli_options("eval", command)
+        assert "--end" in _cli_options("eval", command)
+
+    click_app = typer.main.get_command(app)
+    stability = click_app.commands["eval"].commands["stability"]  # type: ignore[attr-defined]
+    helps = " ".join(str(getattr(p, "help", "") or "") for p in stability.params)
+    assert "YYYY-MM-DD" in helps
+    assert "YYYY-MM " not in helps, "the month-only format is gone"
+
+
+def test_the_dead_walkforward_knobs_are_gone() -> None:
+    """`train_months` was accepted and ignored; nothing retrains here."""
+    accepted = _cli_options("eval", "stability")
+    for dead in ("--train-months", "--train_months", "--step-months", "--step_months"):
+        assert dead not in accepted, dead
+
+
+def test_the_ui_exposes_the_stability_panel() -> None:
+    """A CLI-only report is a report nobody reads."""
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[1] / "frontend" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'id="stability-metric"' in html
+    assert 'data-action="stability-load"' in html
+    assert 'id="stabilityChart"' in html
+
+
+def test_the_stability_action_is_wired_to_a_handler() -> None:
+    """`data-action` is dispatched by one delegated listener; an attribute with
+    no entry in the registry is a dead button."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "frontend"
+    main_js = (root / "js" / "main.js").read_text(encoding="utf-8")
+    assert '"stability-load": () => loadStability()' in main_js
+    assert "loadStability" in main_js
+    assert "onStabilityMetricChange" in main_js
+
+    evaluation_js = (root / "js" / "tabs" / "evaluation.js").read_text(encoding="utf-8")
+    assert "export async function loadStability" in evaluation_js
+
+
+def test_the_sharpness_bar_does_not_hardcode_three_classes() -> None:
+    """Direction has two classes; ln(3) credited a coin flip with 0.37 of the
+    sharpness it should earn none of. Same defect as the Python side had."""
+    from pathlib import Path
+
+    evaluation_js = (
+        Path(__file__).resolve().parents[1] / "frontend" / "js" / "tabs" / "evaluation.js"
+    ).read_text(encoding="utf-8")
+    assert "Math.log(3)" not in evaluation_js
+    assert "n_classes" in evaluation_js

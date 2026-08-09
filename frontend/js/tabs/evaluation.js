@@ -14,6 +14,7 @@ const evaluationState = {
   worstRows: [],
   recommendations: [],
   flags: [],
+  stability: null,
 };
 
 export function populateEvaluationModelSelect(models) {
@@ -222,9 +223,14 @@ export function renderSharpness(metrics) {
     container.innerHTML = `<div class="analysis-empty-subchart">No sharpness data.</div>`;
     return;
   }
-  const maxEntropy = Math.log(3);
   container.innerHTML = entries
     .map(([horizon, item]) => {
+      // The reference is the entropy of a uniform forecast over the classes
+      // this horizon actually carries. Hardcoding ln(3) survived the move to
+      // two classes and made every bar read as sharper than it is: a coin flip
+      // scored 1 - 0.693/1.099 = 0.37 of the sharpness it should score none of.
+      const classes = Number(item.n_classes) || 2;
+      const maxEntropy = Math.log(Math.max(2, classes));
       const entropy = Number(item.entropy || 0);
       const sharpness = Math.max(0, Math.min(1, 1 - entropy / maxEntropy));
       return `
@@ -238,6 +244,124 @@ export function renderSharpness(metrics) {
       `;
     })
     .join("");
+}
+
+
+// ── Quality over time ───────────────────────────────────────────────────────
+// The one question a whole-run aggregate cannot answer: did the quality hold?
+// A model that was excellent in one regime and useless since averages out to
+// "mediocre", which reads the same as consistently mediocre.
+
+const HORIZON_COLOURS = {
+  short: "#4ade80",
+  medium: "#60a5fa",
+  long: "#f472b6",
+};
+
+let stabilityChart = null;
+
+export async function loadStability() {
+  const run = getSelectedEvaluationRun();
+  const status = document.getElementById("stability-status");
+  if (!run) {
+    if (status) status.innerText = "Select a prediction run first.";
+    return;
+  }
+
+  if (status) status.innerText = `Scoring ${run.symbol} ${run.model_type} month by month...`;
+  try {
+    const params = new URLSearchParams({
+      model_type: run.model_type,
+      timestamp: run.timestamp,
+      interval: run.interval || "1d",
+    });
+    const data = await api.stability(run.symbol, params);
+    evaluationState.stability = data;
+    renderStability();
+    if (status) {
+      // Report the months actually covered, not the range that was asked for:
+      // a run that starts later than the request would otherwise be described
+      // by a window it has no data in.
+      const first = data.labels[0];
+      const last = data.labels[data.labels.length - 1];
+      status.innerText = data.labels.length
+        ? `${data.run.slug}: ${data.labels.length} months, ${first} to ${last}. ` +
+          `Months with fewer than ${data.min_month_samples} scored bars are marked.`
+        : `${data.run.slug}: no scored months in ${data.start}..${data.end}.`;
+    }
+  } catch (e) {
+    console.error(e);
+    if (status) status.innerText = `Failed to load stability: ${e.message}`;
+  }
+}
+
+export function onStabilityMetricChange() {
+  if (evaluationState.stability) renderStability();
+}
+
+export function renderStability() {
+  const data = evaluationState.stability;
+  const wrapper = document.getElementById("stability-chart");
+  const empty = document.getElementById("stability-empty");
+  const canvas = document.getElementById("stabilityChart");
+  if (!data || !wrapper || !canvas) return;
+
+  const metric = document.getElementById("stability-metric")?.value || "logloss";
+  const datasets = Object.entries(data.series)
+    .filter(([, series]) => (series[metric] || []).some((v) => v !== null))
+    .map(([horizon, series]) => ({
+      label: horizon,
+      data: series[metric],
+      borderColor: HORIZON_COLOURS[horizon] || "#8e9bb0",
+      backgroundColor: HORIZON_COLOURS[horizon] || "#8e9bb0",
+      // A month a horizon could not be scored in must stay a hole; joining
+      // across it would draw a trend that was never measured.
+      spanGaps: false,
+      borderWidth: 2,
+      tension: 0.2,
+      pointRadius: series.samples.map((n, i) => (series.sparse[i] ? 4 : 2)),
+      pointStyle: series.sparse.map((sparse) => (sparse ? "triangle" : "circle")),
+    }));
+
+  if (datasets.length === 0) {
+    empty.innerText = "No scored months for this run.";
+    empty.classList.remove("hidden");
+    wrapper.classList.add("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  wrapper.classList.remove("hidden");
+
+  if (stabilityChart) stabilityChart.destroy();
+  stabilityChart = new Chart(canvas.getContext("2d"), {
+    type: "line",
+    data: { labels: data.labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { position: "top" },
+        tooltip: {
+          callbacks: {
+            afterLabel: (item) => {
+              const series = data.series[item.dataset.label];
+              const n = series?.samples?.[item.dataIndex];
+              const sparse = series?.sparse?.[item.dataIndex];
+              return sparse ? `${n} bars — too few to read` : `${n} bars`;
+            },
+          },
+        },
+      },
+      scales: {
+        y: {
+          title: { display: true, text: metric },
+          beginAtZero: metric === "accuracy",
+          ...(metric === "accuracy" ? { max: 1 } : {}),
+        },
+      },
+    },
+  });
 }
 
 

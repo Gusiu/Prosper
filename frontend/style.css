@@ -1276,3 +1276,13 @@ progress::-moz-progress-bar {
 #backtest-status {
   margin-top: 12px;
 }
+
+/* Quality over time */
+.stability-chart {
+  height: 320px;
+}
+/* Utility: the stability panel swaps between its placeholder and its canvas,
+   and Chart.js cannot measure a canvas inside a zero-height container. */
+.hidden {
+  display: none !important;
+}

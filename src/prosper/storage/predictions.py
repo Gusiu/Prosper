@@ -62,3 +62,24 @@ def write_versioned_predictions(
         for r in predictions:
             f.write(json.dumps(r, default=_json_converter, sort_keys=True) + "\n")
     return out_dir
+
+
+def write_run_summary(run_dir: Path, summary: dict[str, Any]) -> Path:
+    """Persist a run's own description beside its predictions.
+
+    Everything a predictor learns about its own execution used to die with the
+    process: the result dict went to the caller, the CLI printed two lines of it
+    and the rest was gone. `epochs_used` in particular is a *result* — the epoch
+    count is decided by early stopping, not by the flag — and it was invisible
+    the moment the command exited, so checking whether stopping fired at all
+    needed a throwaway instrumented probe every time.
+
+    Invariant 5 says every derived artifact names its source run; the same logic
+    says a run should name its own configuration.
+    """
+    path = run_dir / "run_summary.json"
+    path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True, default=_json_converter),
+        encoding="utf-8",
+    )
+    return path

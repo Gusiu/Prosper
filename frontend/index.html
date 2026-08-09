@@ -737,6 +737,34 @@
             </div>
           </div>
 
+          <div class="chart-container glass-panel evaluation-panel mb-2">
+            <div class="table-title-row">
+              <h3>Quality over time</h3>
+              <div class="evaluation-actions compact">
+                <select id="stability-metric" class="glass-input">
+                  <option value="logloss">Logloss (lower is better)</option>
+                  <option value="brier">Brier (lower is better)</option>
+                  <option value="accuracy">Accuracy (higher is better)</option>
+                </select>
+                <button class="outline-btn" data-action="stability-load">
+                  Load
+                </button>
+              </div>
+            </div>
+            <p class="metric-desc">
+              A single figure over six years cannot tell a consistently mediocre model
+              from one that worked in 2021 and stopped. This is the same score, month by
+              month. Faded points are months with too few scored bars to mean anything.
+            </p>
+            <div id="stability-empty" class="analysis-empty-subchart">
+              Select an evaluation, then press Load.
+            </div>
+            <div id="stability-chart" class="canvas-wrapper stability-chart hidden">
+              <canvas id="stabilityChart"></canvas>
+            </div>
+            <div id="stability-status" class="text-muted"></div>
+          </div>
+
           <div class="evaluation-detail-grid mb-2">
             <div class="chart-container glass-panel evaluation-panel">
               <div class="table-title-row">
@@ -906,6 +934,34 @@
               <h3>Time in Market</h3>
               <div class="metric-value fade-in" id="val-exposure">--%</div>
               <p class="metric-desc">Share of bars holding inventory.</p>
+            </div>
+          </div>
+
+          <div class="chart-container glass-panel mb-2">
+            <div class="table-title-row">
+              <h3>Did the model add anything?</h3>
+              <span class="text-muted">Weakest claim first</span>
+            </div>
+            <p class="metric-desc">
+              Beating buy &amp; hold is the easiest of these to achieve by accident: a
+              strategy that sits out of volatile months finishes ahead of holding by
+              compounding alone, without predicting a single direction.
+            </p>
+            <div class="table-container mt-2">
+              <table class="inventory-table">
+                <thead>
+                  <tr>
+                    <th>Comparison</th>
+                    <th>Result</th>
+                    <th>What it rules out</th>
+                  </tr>
+                </thead>
+                <tbody id="backtest-nulls-tbody">
+                  <tr>
+                    <td class="text-muted">Run a backtest to see its comparisons.</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
 

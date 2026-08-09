@@ -9,6 +9,8 @@ all three, and each horizon trains its own model anyway.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -224,3 +226,42 @@ def test_a_zero_ceiling_cannot_be_hit() -> None:
     from prosper.predict.defaults import summarise_epochs
 
     assert summarise_epochs({"short": [3]}, {})["short"]["hit_ceiling"] == 0
+
+
+def test_a_run_records_its_own_epoch_usage(tmp_path) -> None:
+    """The count is a *result* of the run, and it used to die with the process.
+
+    `_train_gru` returned it, `predict_gru` put it in a dict, the CLI printed two
+    other fields and the rest was gone — so "did early stopping fire?" needed a
+    throwaway probe every time. It is now written beside the predictions.
+    """
+    from prosper.storage.predictions import write_run_summary
+
+    run_dir = tmp_path / "gru_1d_20240101000000"
+    run_dir.mkdir()
+    payload = {
+        "symbol": "TESTUSDT",
+        "predictions": 100,
+        "epochs_used": {"short": {"windows": 3, "mean": 19.3, "min": 18, "max": 20,
+                                  "ceiling": 20, "hit_ceiling": 2}},
+    }
+
+    path = write_run_summary(run_dir, payload)
+
+    assert path.name == "run_summary.json"
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored["epochs_used"]["short"]["hit_ceiling"] == 2
+    assert stored["predictions"] == 100
+
+
+def test_both_deep_predictors_persist_their_summary() -> None:
+    """A field only the console ever sees is a field nobody reads."""
+    import inspect
+
+    from prosper.predict.gru import predict_gru
+    from prosper.predict.tft import predict_tft
+
+    for predictor in (predict_gru, predict_tft):
+        source = inspect.getsource(predictor)
+        assert "write_run_summary(run_dir, result)" in source, predictor.__name__
+        assert '"epochs_used"' in source, predictor.__name__
