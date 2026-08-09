@@ -23,6 +23,7 @@ from prosper.domain import (
     direction_from_return,
     parse_depth_bins,
 )
+from prosper.eval.significance import accuracy_interval, calibration_error_interval
 from prosper.planner.windows import (
     SequenceGrader,
     calculate_edge,
@@ -539,6 +540,21 @@ def _aggregate_quality(
         ece, curve = expected_calibration_error(cal_samples, settings.calibration_bins)
         calibration_by_horizon[horizon] = {"ece": ece, "bins": curve}
 
+        # Confidence intervals that respect label overlap. `rows` is in
+        # chronological order because `quality_rows` is built by walking the
+        # sorted predictions, which is what the block bootstrap requires.
+        overlap = int(rows[0].get("forward_steps") or 1) if rows else 1
+        correct_flags = [bool(row["metrics"].get("correct")) for row in rows]
+        confidences = [float(row["prediction"]["confidence"]) for row in rows]
+        accuracy_ci = accuracy_interval(correct_flags, overlap) if rows else None
+        ece_ci = (
+            calibration_error_interval(
+                confidences, correct_flags, overlap, bins=settings.calibration_bins
+            )
+            if rows
+            else None
+        )
+
         briers = [float(row["metrics"]["brier"]) for row in rows]
         nlls = [float(row["metrics"]["nll"]) for row in rows]
         entropies = [float(row["metrics"]["entropy"]) for row in rows]
@@ -568,6 +584,14 @@ def _aggregate_quality(
 
         metrics_by_horizon[horizon] = {
             "samples": len(rows),
+            # `samples` counts rows; `effective_samples` counts observations. At
+            # the annual horizon consecutive labels share 363 of 364 days, so a
+            # 1249-row figure rests on about three. Reporting the first without
+            # the second is how every ranking in this project came to compare
+            # differences that sit inside their own intervals.
+            "accuracy_ci": accuracy_ci.to_dict() if accuracy_ci else None,
+            "accuracy_beats_chance": accuracy_ci.excludes(0.5) if accuracy_ci else None,
+            "ece_ci": ece_ci.to_dict() if ece_ci else None,
             # Published because entropy is only interpretable against the
             # uniform forecast over the classes this horizon actually carries.
             # The dashboard's sharpness bar divided by a hardcoded ln(3) and so

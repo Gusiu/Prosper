@@ -196,3 +196,84 @@ def test_a_miscalibrated_forecast_has_an_interval_away_from_zero() -> None:
 
     assert interval.low > 0.2, "claiming 0.95 while right 0.55 of the time is a large gap"
     assert interval.excludes(0.0) is True
+
+
+# ── Wired into the evaluation ────────────────────────────────────────────────
+
+def test_the_evaluation_reports_an_interval_for_every_horizon() -> None:
+    """A bare accuracy is not a result, so it must not be possible to get one."""
+    from prosper.eval.predictions import EvaluationSettings, _aggregate_quality
+
+    rng = np.random.default_rng(0)
+    rows = []
+    for horizon, forward in (("short", 28), ("medium", 91), ("long", 364)):
+        for i in range(1200):
+            confidence = float(rng.uniform(0.5, 0.9))
+            rows.append(
+                {
+                    "status": "scored",
+                    "horizon": horizon,
+                    "forward_steps": forward,
+                    "prediction": {"confidence": confidence, "probabilities": {"a": 0.5, "b": 0.5}},
+                    "metrics": {
+                        "correct": bool(rng.random() < 0.5),
+                        "brier": 0.5,
+                        "nll": 0.7,
+                        "entropy": 0.69,
+                        "depth_kl": None,
+                        "depth_js": None,
+                        "depth_abs_error_pct": None,
+                    },
+                }
+            )
+
+    metrics, _ = _aggregate_quality(rows, EvaluationSettings())
+    by_horizon = metrics["by_horizon"]
+
+    for horizon, forward in (("short", 28), ("medium", 91), ("long", 364)):
+        stats = by_horizon[horizon]
+        interval = stats["accuracy_ci"]
+        assert interval is not None, horizon
+        assert interval["block_size"] == forward, "the block must be the overlap length"
+        assert stats["ece_ci"] is not None
+        # 1200 rows over a 364-bar overlap is 3.3 blocks: estimable, but barely.
+        assert interval["effective_samples"] == pytest.approx(1200 / forward, abs=0.1)
+
+
+def test_a_coin_flip_evaluation_never_claims_to_beat_chance() -> None:
+    from prosper.eval.predictions import EvaluationSettings, _aggregate_quality
+
+    rng = np.random.default_rng(4)
+    rows = [
+        {
+            "status": "scored",
+            "horizon": "short",
+            "forward_steps": 28,
+            "prediction": {"confidence": 0.6, "probabilities": {"a": 0.6, "b": 0.4}},
+            "metrics": {
+                "correct": bool(rng.random() < 0.5),
+                "brier": 0.5, "nll": 0.7, "entropy": 0.69,
+                "depth_kl": None, "depth_js": None, "depth_abs_error_pct": None,
+            },
+        }
+        for _ in range(2000)
+    ]
+
+    metrics, _ = _aggregate_quality(rows, EvaluationSettings())
+    by_horizon = metrics["by_horizon"]
+    assert by_horizon["short"]["accuracy_beats_chance"] is False
+
+
+def test_the_cli_prints_the_interval_and_the_verdict() -> None:
+    """The table is the point: a number quoted without it is the failure this
+    module exists to prevent."""
+    import inspect
+
+    from prosper.cli import _run_predictions_evaluation
+
+    source = inspect.getsource(_run_predictions_evaluation)
+    assert "accuracy_ci" in source
+    assert "accuracy_beats_chance" in source
+    assert "effective_samples" in source
+    for verdict in ("> chance", "< chance", "= chance", "unknown"):
+        assert verdict in source, verdict

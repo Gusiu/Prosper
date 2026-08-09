@@ -1007,6 +1007,43 @@ def _run_predictions_evaluation(
         console.print(f"[green][OK][/green] Prediction evaluation saved to: {metrics['artifacts_dir']}")
         console.print(f"Model score: {score_text}")
         console.print(f"Scored rows: {metrics.get('scored_rows', 0)}")
+
+        # An accuracy without its interval is not a result. Labels overlap, so
+        # `rows` badly overstates how much was observed: at the annual horizon
+        # consecutive labels share 363 of 364 days and a 1249-row figure rests on
+        # about three observations.
+        table = Table(title="Accuracy against a coin flip (block bootstrap)")
+        table.add_column("horizon")
+        table.add_column("rows", justify="right")
+        table.add_column("independent", justify="right")
+        table.add_column("accuracy", justify="right")
+        table.add_column("95% interval", justify="right")
+        table.add_column("verdict")
+        for name, stats in (metrics.get("by_horizon") or {}).items():
+            if not stats.get("samples"):
+                continue
+            interval = stats.get("accuracy_ci") or {}
+            beats = stats.get("accuracy_beats_chance")
+            if interval.get("low") is None:
+                span, verdict, colour = "not estimable", "unknown", "yellow"
+            elif beats:
+                span = f"[{interval['low']:.3f}, {interval['high']:.3f}]"
+                above = interval["low"] > 0.5
+                verdict = "> chance" if above else "< chance"
+                colour = "green" if above else "red"
+            else:
+                span = f"[{interval['low']:.3f}, {interval['high']:.3f}]"
+                verdict, colour = "= chance", "white"
+            table.add_row(
+                name,
+                str(stats["samples"]),
+                f"{interval.get('effective_samples', 0):.1f}",
+                f"{stats['accuracy']:.3f}",
+                span,
+                f"[{colour}]{verdict}[/{colour}]",
+            )
+        console.print()
+        console.print(table)
         console.print(f"Metrics: {artifacts['metrics']}")
         console.print(f"Quality rows: {artifacts['predictions_quality']}")
         console.print(f"Recommendations: {artifacts['recommendations']}")
