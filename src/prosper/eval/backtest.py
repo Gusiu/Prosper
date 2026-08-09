@@ -50,6 +50,61 @@ EXPOSURE_POLICY: dict[str, float] = {
     "Strong Sell": 0.0,
 }
 
+# Keys the CLI and the API accept for the exposure policy, mapped to the grade
+# they set. The display names carry spaces, which makes them awkward in a
+# comma-separated flag.
+EXPOSURE_KEYS: dict[str, str] = {
+    "strong_buy": "Strong Buy",
+    "buy": "Buy",
+    "accumulate": "Accumulate",
+    "reduce": "Reduce",
+    "sell": "Sell",
+    "strong_sell": "Strong Sell",
+}
+
+
+def parse_exposure_policy(raw: str | None) -> dict[str, float] | None:
+    """Parse ``'strong_buy=1.0,buy=0.5'`` into a policy, merged onto the default.
+
+    `Hold` is deliberately not settable: it means "leave the book alone", which
+    is the absence of a target rather than a target of zero. Giving it a number
+    would make a neutral forecast a trade signal.
+
+    An unknown key or an out-of-range share is an error. Silently ignoring one
+    would leave the caller believing an assumption was applied when it was not —
+    the same failure that let the dashboard train 5 epochs while reporting 20.
+    """
+    if raw is None or not raw.strip():
+        return None
+
+    policy = dict(EXPOSURE_POLICY)
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise ValueError(f"Expected 'grade=share', got {part!r}")
+        key, _, value = part.partition("=")
+        key = key.strip().lower().replace(" ", "_").replace("-", "_")
+        if key == "hold":
+            raise ValueError(
+                "Hold carries the previous exposure and has no target; it cannot be set."
+            )
+        if key not in EXPOSURE_KEYS:
+            raise ValueError(
+                f"Unknown grade {key!r}. Known: {', '.join(sorted(EXPOSURE_KEYS))}"
+            )
+        try:
+            share = float(value.strip())
+        except ValueError as exc:
+            raise ValueError(f"Share for {key!r} must be a number, got {value!r}") from exc
+        # Long-only on SPOT: no shorts, and no leverage is modelled.
+        if not 0.0 <= share <= 1.0:
+            raise ValueError(f"Share for {key!r} must be within [0, 1], got {share}")
+        policy[EXPOSURE_KEYS[key]] = share
+    return policy
+
+
 # Rebalancing for a hair of drift costs more in fees than it gains.
 MIN_REBALANCE_FRACTION = 0.05
 
@@ -59,15 +114,35 @@ ASSUMPTIONS = [
     "Signals from bar t execute at the open of bar t+1.",
     "Long-only: Binance SPOT cannot open a short, so a 'short' forecast means "
     "hold no inventory. Buy and hold is reported as the benchmark.",
-    "Exposure is scaled by conviction (Strong Buy 100% … Sell 0%); 'Hold' keeps "
-    "the previous exposure.",
     "Fees and slippage are charged on the traded notional at every rebalance.",
     "Orders are assumed to fill in full at the open price; market impact beyond "
     "the flat slippage rate is not modelled.",
-    "Buy and hold is the weakest of four comparisons. Also reported: the same "
-    "average exposure held throughout, the same exposure path mistimed by every "
-    "circular shift, and a 7-bar momentum rule containing no model at all.",
 ]
+
+
+def _assumptions(config: BacktestConfig, momentum_lookback: int, hurdle: float) -> list[str]:
+    """The assumption list, stating the values actually used.
+
+    The benchmark line used to name "a 7-bar momentum rule" as a constant, so it
+    said 7 while the run used 30 — a value with two definitions, which is the
+    defect this project keeps finding. Everything adjustable is now read back
+    from what the simulation ran with.
+    """
+    grades = ", ".join(
+        f"{grade} {100 * share:.0f}%" for grade, share in config.exposure_policy.items()
+    )
+    return [
+        *ASSUMPTIONS,
+        f"Exposure targets: {grades}; 'Hold' keeps the previous exposure.",
+        f"Fee {100 * config.fee_rate:.3f}% and slippage {100 * config.slippage_rate:.3f}% "
+        f"per trade, charged on the traded notional; rebalances below "
+        f"{100 * config.min_rebalance_fraction:.1f}% of equity are skipped.",
+        f"A signal is acted on only if its expected move clears {100 * hurdle:.2f}%.",
+        f"Buy and hold is the weakest of four comparisons. Also reported: the same "
+        f"average exposure held throughout, the same exposure path mistimed by every "
+        f"circular shift, and a {momentum_lookback}-bar momentum rule containing no "
+        f"model at all.",
+    ]
 
 
 @dataclass
@@ -256,8 +331,21 @@ def run_backtest(
     horizon: str = "short",
     slippage_rate: float | None = None,
     save_report: bool = False,
+    exposure_policy: dict[str, float] | None = None,
+    min_rebalance_fraction: float | None = None,
+    round_trip_cost: float | None = None,
+    momentum_lookback: int = MOMENTUM_LOOKBACK_BARS,
 ) -> dict[str, Any]:
-    """Simulate the exposure-scaled strategy over a single prediction run."""
+    """Simulate the exposure-scaled strategy over a single prediction run.
+
+    The execution assumptions are arguments rather than constants so the
+    simulation can be used as an instrument: what happens at a 0.05% fee, or if
+    nothing below `Buy` is acted on, or if the trend benchmark looks back a
+    month. None of them may be tuned into evidence, which is why `nulls` travels
+    with every result whatever they are set to — a configuration that lifts ROI
+    to +500% while the momentum row stays negative is telling you something about
+    the market, not about the model.
+    """
     if settings is None:
         settings = get_settings()
     if horizon not in HORIZON_NAMES:
@@ -269,6 +357,8 @@ def run_backtest(
         fee_rate=fee_rate,
         slippage_rate=slippage_rate,
         horizon=horizon,
+        min_rebalance_fraction=min_rebalance_fraction,
+        exposure_policy=dict(exposure_policy) if exposure_policy else None,
     )
 
     try:
@@ -304,7 +394,10 @@ def run_backtest(
     cost_rate = config.fee_rate + config.slippage_rate
     # One grader for the whole walk: its risk gates are quantiles of what it has
     # already seen, so it has to be built once and fed in order.
-    grader = SequenceGrader(settings.planner_round_trip_cost)
+    hurdle = (
+        settings.planner_round_trip_cost if round_trip_cost is None else float(round_trip_cost)
+    )
+    grader = SequenceGrader(hurdle)
 
     history: list[dict[str, Any]] = []
     equity_curve: list[float] = []
@@ -433,6 +526,14 @@ def run_backtest(
         "skipped_untrained": skipped_untrained,
         "fee_rate": config.fee_rate,
         "slippage_rate": config.slippage_rate,
+        # A report produced under non-default assumptions must say so, or its
+        # numbers cannot be compared with anything.
+        "config": {
+            "exposure_policy": dict(config.exposure_policy),
+            "min_rebalance_fraction": config.min_rebalance_fraction,
+            "round_trip_cost": hurdle,
+            "momentum_lookback_bars": int(momentum_lookback),
+        },
         "benchmark": {
             "name": "buy_and_hold",
             "final_value": hold_final,
@@ -451,9 +552,9 @@ def run_backtest(
                 "mean_exposure": mean_exposure,
             },
             "mistimed_replay": _timing_test(marks, path, cost_rate),
-            "naive_momentum": _naive_momentum(marks, cost_rate, MOMENTUM_LOOKBACK_BARS),
+            "naive_momentum": _naive_momentum(marks, cost_rate, int(momentum_lookback)),
         },
-        "assumptions": ASSUMPTIONS,
+        "assumptions": _assumptions(config, int(momentum_lookback), hurdle),
         "chart_data": history,
     }
 

@@ -14,7 +14,7 @@ from rich.table import Table
 from prosper.binance.rest import BinanceRESTClient
 from prosper.config import get_settings
 from prosper.domain import DEFAULT_DEPTH_BINS_STR, DEFAULT_HORIZONS
-from prosper.eval.backtest import run_backtest
+from prosper.eval.backtest import MOMENTUM_LOOKBACK_BARS, parse_exposure_policy, run_backtest
 from prosper.eval.predictions import (
     collect_evaluation_summaries,
     evaluate_available_model_runs,
@@ -875,13 +875,45 @@ def eval_backtest_cmd(
     ),
     interval: str = typer.Option(None, "--interval", help="Source run interval"),
     horizon: str = typer.Option("short", "--horizon", help="Horizon driving the signal"),
+    fee_rate: float = typer.Option(
+        None, "--fee-rate", help="Exchange fee per trade, as a fraction (default from settings)"
+    ),
+    slippage_rate: float = typer.Option(
+        None, "--slippage-rate", help="Slippage proxy per trade, as a fraction"
+    ),
+    round_trip_cost: float = typer.Option(
+        None,
+        "--round-trip-cost",
+        help="Expected move a signal must clear to be acted on, as a fraction",
+    ),
+    min_rebalance: float = typer.Option(
+        None,
+        "--min-rebalance",
+        help="Smallest exposure change worth trading, as a fraction of equity",
+    ),
+    momentum_lookback: int = typer.Option(
+        MOMENTUM_LOOKBACK_BARS,
+        "--momentum-lookback",
+        help="Bars of trailing change the no-model trend benchmark reads",
+    ),
+    exposure: str = typer.Option(
+        None,
+        "--exposure",
+        help="Target shares per grade, e.g. 'strong_buy=1.0,buy=0.5'. Hold cannot be set.",
+    ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
     save_metadata: bool = typer.Option(
         False, "--save-metadata", help="Save meta.json alongside artifacts"
     ),
 ) -> None:
-    """Run Trading Simulator (Backtest) over one versioned prediction run."""
+    """Run Trading Simulator (Backtest) over one versioned prediction run.
+
+    The execution assumptions are all adjustable, which makes this an instrument
+    rather than a verdict. Whatever they are set to, the four comparisons in
+    "Did the model add anything?" are reported — a configuration that lifts ROI
+    while the no-model momentum row stays negative is a fact about the market.
+    """
     settings = get_settings(data_root=root, strict=strict, save_metadata=save_metadata)
 
     try:
@@ -895,6 +927,12 @@ def eval_backtest_cmd(
             timestamp=timestamp,
             interval=interval,
             horizon=horizon,
+            fee_rate=fee_rate,
+            slippage_rate=slippage_rate,
+            round_trip_cost=round_trip_cost,
+            min_rebalance_fraction=min_rebalance,
+            momentum_lookback=momentum_lookback,
+            exposure_policy=parse_exposure_policy(exposure),
             save_report=True,
         )
 
