@@ -189,7 +189,9 @@ def build_features(
                     pl.col("volume")
                     / pl.when(pl.col("num_trades") > 0).then(pl.col("num_trades")).otherwise(None)
                 ).alias("avg_trade_size"),
-                pl.col("num_trades").cast(pl.Float64).alias("trade_count"),
+                # Working column for `trade_count_rel_30`; dropped before saving,
+                # since keeping it stored `num_trades` twice under two names.
+                pl.col("num_trades").cast(pl.Float64).alias("_trade_count"),
             ]
         )
         df_feat = df_feat.with_columns(
@@ -197,8 +199,8 @@ def build_features(
                 (pl.col("taker_buy_ratio") - 0.5).alias("flow_imbalance"),
                 pl.col("taker_buy_ratio").rolling_mean(window_size=14).alias("taker_buy_ratio_14"),
                 (
-                    pl.col("trade_count")
-                    / pl.col("trade_count").rolling_mean(window_size=30)
+                    pl.col("_trade_count")
+                    / pl.col("_trade_count").rolling_mean(window_size=30)
                 ).alias("trade_count_rel_30"),
             ]
         )
@@ -260,7 +262,63 @@ def build_features(
         # Non-daily intervals don't need intraday features
         pass
 
-    cols_to_drop = [c for c in ["symbol", "year", "month", "week"] if c in df_feat.columns]
+    # ── Scale-free counterparts ──────────────────────────────────────────────
+    # Sixteen of the columns above are in price or volume units, so BTCUSDT's
+    # `ma_10` is ~47000 where SOLUSDT's is ~85 — a 553x gap, measured. A model
+    # pooling two symbols would learn the price level as a symbol identifier
+    # rather than a pattern, and robust normalisation over a joint window turns
+    # the feature bimodal instead of comparable.
+    #
+    # The absolute columns stay, because the dashboard shows them when inspecting
+    # a prediction. Training reads `TRAINING_FEATURE_COLUMNS`, which names only
+    # the ones below plus the already-free ones.
+    safe_close = pl.when(pl.col("close") > 0).then(pl.col("close")).otherwise(None)
+    relative: list[pl.Expr] = []
+
+    # Distance from price, as a fraction: -0.02 means the average sits 2% below.
+    for column in ("ma_10", "ma_30", "bb_mid", "bb_upper", "bb_lower"):
+        if column in df_feat.columns:
+            relative.append((pl.col(column) / safe_close - 1.0).alias(f"{column}_rel"))
+    # Already differences, so divide rather than subtract one.
+    for column in ("ma_diff", "ma_slope", "atr_14", "macd_hist"):
+        if column in df_feat.columns:
+            relative.append((pl.col(column) / safe_close).alias(f"{column}_rel"))
+    # Intrabar extremes relative to the close, which `candle_range` alone loses
+    # the sign of.
+    for column in ("high", "low", "open"):
+        if column in df_feat.columns:
+            relative.append((pl.col(column) / safe_close - 1.0).alias(f"{column}_rel"))
+    if relative:
+        df_feat = df_feat.with_columns(relative)
+
+    # Volume-scaled columns become multiples of their own recent typical level,
+    # which is comparable across symbols in a way absolute turnover is not.
+    volume_relative: list[pl.Expr] = []
+    if "volume" in df_feat.columns:
+        volume_relative.append(
+            (pl.col("volume") / pl.col("volume").rolling_mean(window_size=30)).alias(
+                "volume_rel_30"
+            )
+        )
+        if "obv" in df_feat.columns:
+            # The level of OBV is an arbitrary running total; its change is not.
+            volume_relative.append(
+                (
+                    pl.col("obv").diff() / pl.col("volume").rolling_mean(window_size=30)
+                ).alias("obv_change_rel")
+            )
+    if "avg_trade_size" in df_feat.columns:
+        volume_relative.append(
+            (
+                pl.col("avg_trade_size") / pl.col("avg_trade_size").rolling_mean(window_size=30)
+            ).alias("avg_trade_size_rel_30")
+        )
+    if volume_relative:
+        df_feat = df_feat.with_columns(volume_relative)
+
+    cols_to_drop = [
+        c for c in ["symbol", "year", "month", "week", "_trade_count"] if c in df_feat.columns
+    ]
     if cols_to_drop:
         df_feat = df_feat.drop(cols_to_drop)
 

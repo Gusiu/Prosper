@@ -117,10 +117,12 @@ def _write_daily(settings: Settings, *, full: bool, days: int = 90) -> None:
 ORDER_FLOW_FEATURES = {
     "taker_buy_ratio",
     "avg_trade_size",
-    "trade_count",
     "flow_imbalance",
     "taker_buy_ratio_14",
     "trade_count_rel_30",
+    # `avg_trade_size` is in base units, so it is kept for display and its
+    # scale-free counterpart is what a model trains on.
+    "avg_trade_size_rel_30",
 }
 
 
@@ -134,6 +136,9 @@ def test_order_flow_features_appear_when_the_columns_exist(tmp_path) -> None:
     )
 
     assert ORDER_FLOW_FEATURES <= set(features.columns)
+    # `trade_count` was a float cast of `num_trades` kept as working state for
+    # `trade_count_rel_30`; saving it stored the same quantity twice.
+    assert "trade_count" not in features.columns
     # 60% of volume lifted the ask in the fixture.
     assert features["taker_buy_ratio"][0] == pytest.approx(0.6)
     assert features["flow_imbalance"][0] == pytest.approx(0.1)

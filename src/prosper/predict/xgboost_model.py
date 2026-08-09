@@ -16,6 +16,7 @@ from prosper.domain import (
     assign_depth_bin,
     direction_from_return,
     parse_depth_bins,
+    training_features,
 )
 from prosper.predict.calibration import (
     TemperatureCalibrator,
@@ -94,8 +95,10 @@ def predict_xgboost(
 
     df_feat = df_feat.with_columns(pl.col("open_time").dt.date().alias("_date"))
 
-    exclude_cols = ["open_time", "close_time", "_date", "close", "symbol"]
-    feature_cols = [c for c in df_feat.columns if c not in exclude_cols]
+    # An include list, not an exclude list. The old form took every column in the
+    # parquet bar a handful of names, which fed the model raw price levels — and
+    # would have adopted each new relative column *alongside* its absolute twin.
+    feature_cols = training_features(df_feat.columns)
 
     open_times = df_feat["open_time"].to_list()
     dates = df_feat["_date"].to_list()
