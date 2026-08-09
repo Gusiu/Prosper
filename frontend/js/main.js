@@ -26,8 +26,10 @@ import {
 } from "./research.js";
 import { state } from "./state.js";
 import {
+  loadBacktestDefaults,
   onBacktestRunChange,
   populateBacktestRuns,
+  resetBacktestAssumptions,
   runBacktest,
 } from "./tabs/backtest.js";
 import {
@@ -127,6 +129,7 @@ registerActions({
 
   // Backtest
   "backtest-run": () => runBacktest(),
+  "backtest-reset": () => resetBacktestAssumptions(),
 
   // Analysis drawer
   "analysis-load": () => loadAnalysisData(),
@@ -137,6 +140,8 @@ registerActions({
 
 function bootstrap() {
   startActionDispatch();
+  // The assumptions form must never carry literals; it fills from the API.
+  loadBacktestDefaults();
 
   // Tabs own their own pickers; the modules that reload data just announce it.
   on(EVENTS.TASK_FINISHED, () => {

@@ -92,4 +92,5 @@ export const api = {
   // --- simulation ---
   backtest: (symbol, params) => request(`/api/backtest/${q(symbol)}?${params}`),
   stability: (symbol, params) => request(`/api/stability/${q(symbol)}?${params}`),
+  backtestDefaults: () => request("/api/meta/backtest-defaults"),
 };

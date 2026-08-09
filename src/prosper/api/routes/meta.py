@@ -15,6 +15,40 @@ from prosper.predict.defaults import (
 router = APIRouter()
 
 
+@router.get("/api/meta/backtest-defaults")
+def get_backtest_defaults() -> dict[str, Any]:
+    """Defaults the backtest form pre-fills from.
+
+    Read from the same place the simulation reads them, for the reason the epoch
+    field taught: a literal in the HTML becomes a second definition, and the two
+    drift without anything failing. The exposure grades are sent in scale order
+    so the form can render them as one axis from fully invested to flat.
+    """
+    from prosper.eval.backtest import (
+        EXPOSURE_KEYS,
+        EXPOSURE_POLICY,
+        MIN_REBALANCE_FRACTION,
+        MOMENTUM_LOOKBACK_BARS,
+    )
+
+    settings = get_settings()
+    return {
+        "initial_capital": 10000.0,
+        "fee_rate": settings.trading_fee_rate,
+        "slippage_rate": settings.trading_slippage_proxy_rate,
+        "round_trip_cost": settings.planner_round_trip_cost,
+        "min_rebalance_fraction": MIN_REBALANCE_FRACTION,
+        "momentum_lookback_bars": MOMENTUM_LOOKBACK_BARS,
+        "horizons": list(HORIZON_NAMES),
+        # key -> {label, default}; `Hold` is absent because it carries the
+        # previous exposure rather than a target, and must not be settable.
+        "exposure": [
+            {"key": key, "label": label, "default": EXPOSURE_POLICY[label]}
+            for key, label in EXPOSURE_KEYS.items()
+        ],
+    }
+
+
 @router.get("/api/meta/symbols")
 def get_symbol_metadata() -> dict[str, Any]:
     settings = get_settings()

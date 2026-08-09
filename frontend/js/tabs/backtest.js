@@ -140,6 +140,85 @@ export function renderBacktestLimitations(limitations) {
 }
 
 
+
+// The assumptions form. Values come from /api/meta/backtest-defaults rather than
+// from literals in the HTML, for the reason the epoch field taught: a number
+// typed into markup becomes a second definition and the two drift silently.
+let backtestDefaults = null;
+
+const PERCENT_FIELDS = [
+  ["bt-fee", "fee_rate"],
+  ["bt-slippage", "slippage_rate"],
+  ["bt-hurdle", "round_trip_cost"],
+  ["bt-rebalance", "min_rebalance_fraction"],
+];
+
+export async function loadBacktestDefaults() {
+  try {
+    backtestDefaults = await api.backtestDefaults();
+  } catch (error) {
+    console.error("backtest defaults unavailable", error);
+    return;
+  }
+  resetBacktestAssumptions();
+}
+
+export function resetBacktestAssumptions() {
+  if (!backtestDefaults) return;
+
+  const capital = document.getElementById("backtest-capital");
+  if (capital) capital.value = backtestDefaults.initial_capital;
+
+  // Stored as fractions, shown as percentages: 0.001 is far harder to read than
+  // 0.1%, and a fee field is exactly where a factor-of-100 slip hides.
+  for (const [id, key] of PERCENT_FIELDS) {
+    const field = document.getElementById(id);
+    if (field) field.value = round6(backtestDefaults[key] * 100);
+  }
+  const momentum = document.getElementById("bt-momentum");
+  if (momentum) momentum.value = backtestDefaults.momentum_lookback_bars;
+
+  const container = document.getElementById("backtest-exposure");
+  if (container) {
+    container.innerHTML = (backtestDefaults.exposure || [])
+      .map(
+        (grade) => `
+        <label class="evaluation-label">
+          <span>${escapeHtml(grade.label)} (%)</span>
+          <input type="number" id="bt-exp-${escapeHtml(grade.key)}"
+                 class="glass-input" step="5" min="0" max="100"
+                 value="${round6(grade.default * 100)}" />
+        </label>`,
+      )
+      .join("");
+  }
+}
+
+function round6(value) {
+  return Math.round(Number(value) * 1e6) / 1e6;
+}
+
+function fraction(id) {
+  const raw = document.getElementById(id)?.value;
+  if (raw === undefined || raw === "") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value / 100 : null;
+}
+
+function exposureParam() {
+  if (!backtestDefaults) return null;
+  const parts = [];
+  for (const grade of backtestDefaults.exposure || []) {
+    const share = fraction(`bt-exp-${grade.key}`);
+    // Only send what the user actually moved; the server merges onto its own
+    // default, so an unchanged grade needs no opinion from the browser.
+    if (share !== null && Math.abs(share - grade.default) > 1e-9) {
+      parts.push(`${grade.key}=${share}`);
+    }
+  }
+  return parts.length ? parts.join(",") : null;
+}
+
 export async function runBacktest() {
   const run = getSelectedBacktestRun();
   const status = document.getElementById("backtest-status");
@@ -159,6 +238,20 @@ export async function runBacktest() {
     horizon,
     capital,
   });
+
+  // Omit anything left at its default, so the request stays the shape a plain
+  // CLI invocation would produce and the server's own defaults stay in charge.
+  const optional = {
+    fee_rate: fraction("bt-fee"),
+    slippage_rate: fraction("bt-slippage"),
+    round_trip_cost: fraction("bt-hurdle"),
+    min_rebalance: fraction("bt-rebalance"),
+    momentum_lookback: document.getElementById("bt-momentum")?.value || null,
+    exposure: exposureParam(),
+  };
+  for (const [key, value] of Object.entries(optional)) {
+    if (value !== null && value !== "") params.set(key, String(value));
+  }
 
   if (status) status.innerText = `Simulating ${run.model_type} ${run.timestamp}...`;
 
