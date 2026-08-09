@@ -28,26 +28,31 @@ from prosper.storage.parquet import save_parquet
 SYMBOL = "TESTUSDT"
 
 
+# Column layout the encoder actually produces: {'nan': 0, 'long': 1, 'short': 2}.
+# Which column belongs to which class is asserted in test_tft_class_order.py.
+ENCODER_COLUMNS = [2, 1]
+
+
 def test_logits_become_a_valid_distribution() -> None:
-    probs = _logits_to_probs(np.array([2.0, 0.5]))
+    probs = _logits_to_probs(np.array([0.0, 0.5, 2.0]), ENCODER_COLUMNS)
 
     assert len(probs) == len(DIRECTION_CLASSES)
     assert sum(probs) == pytest.approx(1.0)
-    assert probs[0] > probs[1]
+    assert probs[0] > probs[1], "column 2 (short) carries the larger logit"
 
 
 def test_the_unknown_class_is_dropped_before_softmax() -> None:
-    """NaNLabelEncoder(add_nan=True) prepends a class that is not a direction."""
-    with_unknown = _logits_to_probs(np.array([9.0, 2.0, 0.5]))
-    without = _logits_to_probs(np.array([2.0, 0.5]))
+    """NaNLabelEncoder(add_nan=True) adds a class that is not a direction."""
+    with_unknown = _logits_to_probs(np.array([9.0, 0.5, 2.0]), ENCODER_COLUMNS)
+    without = _logits_to_probs(np.array([0.5, 2.0]), [1, 0])
 
-    # The leading "unknown" logit is ignored, however large it is.
+    # The "unknown" logit is ignored, however large it is.
     assert with_unknown == pytest.approx(without)
 
 
 def test_logits_survive_a_large_magnitude() -> None:
     """Softmax is shifted by the max, so big logits must not overflow."""
-    probs = _logits_to_probs(np.array([1000.0, 999.0]))
+    probs = _logits_to_probs(np.array([0.0, 999.0, 1000.0]), ENCODER_COLUMNS)
     assert sum(probs) == pytest.approx(1.0)
     assert all(math.isfinite(p) for p in probs)
 
@@ -80,12 +85,19 @@ class _FakeModel:
         import torch
 
         rows = len(self.time_indices)
-        output = {"prediction": torch.zeros((rows, 1, len(DIRECTION_CLASSES)))}
+        output = {"prediction": torch.zeros((rows, 1, len(DIRECTION_CLASSES) + 1))}
         index = pd.DataFrame({"time_idx": self.time_indices})
         return output, index
 
 
+class _FakeNormalizer:
+    # The layout NaNLabelEncoder(add_nan=True) produces for these two labels.
+    classes_ = {"nan": 0, "long": 1, "short": 2}
+
+
 class _FakeDataset:
+    target_normalizer = _FakeNormalizer()
+
     @staticmethod
     def from_dataset(ref, frame, predict, stop_randomization):  # noqa: ARG004
         return _FakeDataset()

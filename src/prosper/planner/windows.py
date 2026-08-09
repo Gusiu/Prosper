@@ -1,6 +1,8 @@
 """Action window planner based on baseline predictions."""
 
 import json
+import math
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 
@@ -9,6 +11,52 @@ from prosper.domain import depth_bin_midpoints, depth_scheme_of, is_large_move_b
 from prosper.storage.layout import get_recommendation_report_path
 from prosper.storage.runs import load_run_predictions, resolve_run
 from prosper.utils.time import parse_date
+
+# Risk gates for the three conviction grades, as quantiles of the risk this
+# planner has already seen. Absolute cut-offs cannot survive a change to the
+# metric and did not: 0.2/0.3/0.4 were chosen when `calculate_risk_metric`
+# summed both sides and could reach 1.0. Counting only the adverse side capped
+# it at 0.5 by construction — the losing side's probability is at most 0.5 —
+# and in practice at 0.365, so the outer gate stopped being reachable and
+# blocked 0 of 2129 bars. Reading the observed maximum and lowering the number
+# to suit would be tuning on the evaluation set.
+#
+# A quantile says what the gate is actually for: this bar's adverse tail
+# against what this market has looked like. It survives another change to the
+# bin scheme or the calibrator, and it keeps the seven-point scale populated.
+RISK_QUANTILES: tuple[float, float, float] = (0.40, 0.70, 0.90)
+
+# Gates used until enough windows have accumulated to take a quantile of. These
+# are the historical constants, so a short range behaves as it always did.
+STATIC_RISK_GATES: tuple[float, float, float] = (0.20, 0.30, 0.40)
+
+# Roughly a year of weekly windows before the empirical gates take over.
+RISK_WARMUP_WINDOWS = 52
+
+
+def _quantile(values: Sequence[float], q: float) -> float:
+    """Linear-interpolated quantile of *values*, which need not be sorted."""
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    position = q * (len(ordered) - 1)
+    lower = int(math.floor(position))
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def risk_gates(history: Sequence[float]) -> tuple[float, float, float]:
+    """The three risk cut-offs implied by the risk already observed.
+
+    *history* must contain only windows strictly earlier than the one being
+    graded — the gates are part of the decision, so letting them see the bar
+    they judge would be the same look-ahead the rest of the package refuses.
+    """
+    if len(history) < RISK_WARMUP_WINDOWS:
+        return STATIC_RISK_GATES
+    strong, moderate, weak = (_quantile(history, q) for q in RISK_QUANTILES)
+    return strong, moderate, weak
 
 
 def calculate_edge(p_long: float, p_short: float) -> float:
@@ -102,7 +150,13 @@ def clears_cost(expected: float, round_trip_cost: float) -> bool:
     return abs(expected) > round_trip_cost
 
 
-def map_to_recommendation(edge: float, risk: float, *, cost_cleared: bool = True) -> str:
+def map_to_recommendation(
+    edge: float,
+    risk: float,
+    *,
+    cost_cleared: bool = True,
+    gates: tuple[float, float, float] = STATIC_RISK_GATES,
+) -> str:
     """
     Map edge and risk to recommendation.
 
@@ -112,11 +166,16 @@ def map_to_recommendation(edge: float, risk: float, *, cost_cleared: bool = True
     that callers with no depth distribution to work from keep the old
     behaviour rather than silently holding everything.
 
+    *gates* are the three risk cut-offs, strongest first, from `risk_gates`.
+    The edge thresholds stay fixed because `edge` already has a scale that does
+    not drift: it is a difference of two probabilities, so 0.3 means the same
+    thing under any bin scheme. `risk` does not — see `RISK_QUANTILES`.
+
     Both sides are tested strongest-first and are mirror images of each other:
 
-    - Strong Buy / Strong Sell: |edge| > 0.3, risk < 0.2
-    - Buy / Sell:               |edge| > 0.15, risk < 0.3
-    - Accumulate / Reduce:      |edge| > 0.05, risk < 0.4
+    - Strong Buy / Strong Sell: |edge| > 0.3,  risk < gates[0]
+    - Buy / Sell:               |edge| > 0.15, risk < gates[1]
+    - Accumulate / Reduce:      |edge| > 0.05, risk < gates[2]
     - Hold:                     |edge| <= 0.05, or conviction the risk does not support
 
     The ordering matters. An earlier version listed the sell branches
@@ -129,6 +188,8 @@ def map_to_recommendation(edge: float, risk: float, *, cost_cleared: bool = True
     Args:
         edge: Edge value (P_long - P_short)
         risk: Risk metric
+        cost_cleared: Whether the expected move pays for a round trip
+        gates: Risk cut-offs for the strong, moderate and weak grades
 
     Returns:
         Recommendation string
@@ -138,12 +199,13 @@ def map_to_recommendation(edge: float, risk: float, *, cost_cleared: bool = True
     if not cost_cleared:
         return "Hold"
 
+    strong_gate, moderate_gate, weak_gate = gates
     bullish = edge > 0
-    if abs(edge) > 0.3 and risk < 0.2:
+    if abs(edge) > 0.3 and risk < strong_gate:
         return "Strong Buy" if bullish else "Strong Sell"
-    if abs(edge) > 0.15 and risk < 0.3:
+    if abs(edge) > 0.15 and risk < moderate_gate:
         return "Buy" if bullish else "Sell"
-    if abs(edge) > 0.05 and risk < 0.4:
+    if abs(edge) > 0.05 and risk < weak_gate:
         return "Accumulate" if bullish else "Reduce"
 
     # Conviction the risk metric does not support: stay flat rather than act on
@@ -265,33 +327,54 @@ def plan_windows(
             b["move_sum"] += move
             b["count"] += 1
 
-    # Build window objects and group them by YYYY-MM
+    # Build window objects and group them by YYYY-MM.
+    #
+    # Each horizon is graded in chronological order and keeps its own record of
+    # the risk seen so far, because the gates are quantiles of that record. A
+    # window is graded before its own risk joins the history, so no window
+    # influences its own verdict.
+    by_horizon: dict[str, list[dict[str, Any]]] = {}
+    for b in buckets.values():
+        by_horizon.setdefault(str(b["horizon"]), []).append(b)
+
     month_to_windows: dict[str, list[dict[str, Any]]] = {}
     all_windows: list[dict[str, Any]] = []
-    for b in buckets.values():
-        edge_mean = b["edge_sum"] / max(b["count"], 1)
-        risk_mean = b["risk_sum"] / max(b["count"], 1)
-        move_mean = b["move_sum"] / max(b["count"], 1)
-        cost_cleared = clears_cost(move_mean, round_trip_cost)
-        recommendation = map_to_recommendation(edge_mean, risk_mean, cost_cleared=cost_cleared)
+    for horizon_buckets in by_horizon.values():
+        horizon_buckets.sort(key=lambda b: (b["iso_year"], b["iso_week"]))
+        risk_history: list[float] = []
 
-        w = {
-            "start_date": b["week_start"],
-            "end_date": b["week_end"],
-            "horizon": b["horizon"],
-            "recommendation": recommendation,
-            "diagnostics": {
-                "edge_mean": edge_mean,
-                "risk_mean": risk_mean,
-                "expected_move": move_mean,
-                "round_trip_cost": round_trip_cost,
-                "cost_cleared": cost_cleared,
-            },
-        }
-        all_windows.append(w)
+        for b in horizon_buckets:
+            edge_mean = b["edge_sum"] / max(b["count"], 1)
+            risk_mean = b["risk_sum"] / max(b["count"], 1)
+            move_mean = b["move_sum"] / max(b["count"], 1)
+            cost_cleared = clears_cost(move_mean, round_trip_cost)
+            gates = risk_gates(risk_history)
+            recommendation = map_to_recommendation(
+                edge_mean, risk_mean, cost_cleared=cost_cleared, gates=gates
+            )
+            risk_history.append(risk_mean)
 
-        month_key = b["week_start"][:7]
-        month_to_windows.setdefault(month_key, []).append(w)
+            w = {
+                "start_date": b["week_start"],
+                "end_date": b["week_end"],
+                "horizon": b["horizon"],
+                "recommendation": recommendation,
+                "diagnostics": {
+                    "edge_mean": edge_mean,
+                    "risk_mean": risk_mean,
+                    "expected_move": move_mean,
+                    "round_trip_cost": round_trip_cost,
+                    "cost_cleared": cost_cleared,
+                    # Recorded so a report can be re-read without replaying the
+                    # walk that produced its gates.
+                    "risk_gates": list(gates),
+                    "risk_history_windows": len(risk_history) - 1,
+                },
+            }
+            all_windows.append(w)
+
+            month_key = b["week_start"][:7]
+            month_to_windows.setdefault(month_key, []).append(w)
 
     # Write one report per month, scoped to the run that produced it
     for month_key, windows in month_to_windows.items():

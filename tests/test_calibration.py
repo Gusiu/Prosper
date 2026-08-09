@@ -16,6 +16,7 @@ from prosper.predict.calibration import (
     CALIBRATION_FRACTION,
     MIN_CALIBRATION_SAMPLES,
     TemperatureCalibrator,
+    calibrated_nll,
     calibration_split,
     fit_calibrator_from_model,
     fit_temperature,
@@ -191,6 +192,72 @@ def test_apply_to_mapping_keeps_the_class_names() -> None:
     assert set(out) == {"short", "long"}
     assert sum(out.values()) == pytest.approx(1.0)
     assert out["short"] > out["long"]
+
+
+def _raw_nll(probs: np.ndarray, y: np.ndarray) -> float:
+    picked = np.asarray(probs)[np.arange(len(y)), y]
+    return float(-np.log(np.clip(picked, 1e-12, 1.0)).mean())
+
+
+def test_sharpening_raises_the_raw_loss_but_not_the_calibrated_one() -> None:
+    """This is the whole reason DL training stopped after one epoch.
+
+    Raw cross-entropy charges for confidence. A network that keeps the same
+    ranking but states it more strongly scores worse on it, even though the
+    temperature fit that follows training undoes exactly that. Measured on
+    BTCUSDT the raw sequence ran 0.7244, 0.9109, 0.9282, 1.0216 — rising from
+    the first epoch — while an epoch sweep showed accuracy still climbing.
+    """
+    rng = np.random.default_rng(11)
+    n = 500
+    p_long = rng.uniform(0.15, 0.85, size=n)
+    y = (rng.random(n) < p_long).astype(int)
+    probs = np.column_stack([1.0 - p_long, p_long])
+
+    sharpened = np.array([TemperatureCalibrator(0.5).apply(row) for row in probs])
+
+    assert _raw_nll(sharpened, y) > _raw_nll(probs, y), "raw loss punishes the sharpening"
+    assert calibrated_nll(sharpened, y) == pytest.approx(calibrated_nll(probs, y), rel=1e-6)
+
+
+def test_the_calibrated_loss_never_exceeds_the_raw_one() -> None:
+    """T = 1 is in the grid, so the minimum can only be lower or equal."""
+    rng = np.random.default_rng(3)
+    n = 300
+    p_long = rng.uniform(0.05, 0.95, size=n)
+    y = (rng.random(n) < 0.5).astype(int)
+    probs = np.column_stack([1.0 - p_long, p_long])
+
+    assert calibrated_nll(probs, y) <= _raw_nll(probs, y) + 1e-9
+
+
+def test_better_separation_lowers_the_calibrated_loss() -> None:
+    """It still measures something: what survives is discrimination."""
+    rng = np.random.default_rng(5)
+    n = 400
+    y = rng.integers(0, 2, size=n)
+
+    # Informative: the stated probability tracks the outcome.
+    good_long = np.where(y == 1, 0.7, 0.3)
+    good = np.column_stack([1.0 - good_long, good_long])
+    # Uninformative: same confidence, unrelated to the outcome.
+    noise_long = rng.choice([0.3, 0.7], size=n)
+    noise = np.column_stack([1.0 - noise_long, noise_long])
+
+    assert calibrated_nll(good, y) < calibrated_nll(noise, y)
+
+
+def test_a_single_class_holdout_falls_back_to_the_raw_loss() -> None:
+    """Minimising over T on one class drives the loss to zero for free."""
+    probs = np.tile([0.6, 0.4], (50, 1))
+    y = np.zeros(50, dtype=int)
+
+    assert calibrated_nll(probs, y) == pytest.approx(_raw_nll(probs, y))
+
+
+def test_an_empty_holdout_is_infinitely_bad_not_zero() -> None:
+    """Returning 0.0 would make an unscoreable epoch look like the best one."""
+    assert calibrated_nll(np.zeros((0, 2)), []) == float("inf")
 
 
 def test_max_entropy_follows_the_class_count() -> None:

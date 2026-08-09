@@ -23,6 +23,7 @@ from prosper.domain import (
 )
 from prosper.predict.calibration import (
     TemperatureCalibrator,
+    calibrated_nll,
     calibration_split,
     fit_temperature,
     usable_split,
@@ -35,6 +36,7 @@ from prosper.predict.defaults import (
     parse_epoch_overrides,
     parse_horizons,
     resolve_epochs,
+    summarise_epochs,
 )
 from prosper.predict.window import (
     days_to_steps,
@@ -53,21 +55,48 @@ def _robust_normalize(X: np.ndarray, med: np.ndarray, iqr: np.ndarray) -> np.nda
     return np.clip(np.nan_to_num(X_norm, nan=0.0, posinf=3.0, neginf=-3.0), -5.0, 5.0)
 
 
-def _logits_to_probs(logits: np.ndarray) -> tuple[float, ...]:
+def _class_columns(dataset_ref: Any) -> list[int]:
+    """Output-column index of each direction class, in `DIRECTION_CLASSES` order.
+
+    This must be read from the encoder and never assumed. `NaNLabelEncoder`
+    numbers its classes by sorting the labels, so with `add_nan=True` it yields
+    ``{'nan': 0, 'long': 1, 'short': 2}`` — alphabetical — while
+    `DIRECTION_CLASSES` is ordered ``['short', 'long']`` because the sign of the
+    return defines it. Dropping the leading column and reading the rest
+    positionally therefore lined `short` up with the model's `long` logit and
+    vice versa: every TFT run written before this was fixed carries the two
+    probabilities exchanged, so its edge was the negation of what the model had
+    learned. A synthetic series whose direction is a deterministic function of
+    the previous bar scored 0.013 agreement where it should have scored 0.987.
+    """
+    normalizer = getattr(dataset_ref, "target_normalizer", None)
+    mapping = getattr(normalizer, "classes_", None)
+    if not mapping:
+        raise ValueError(
+            "The TFT dataset exposes no target_normalizer.classes_, so the "
+            "direction columns cannot be identified."
+        )
+    missing = [name for name in DIRECTION_CLASSES if name not in mapping]
+    if missing:
+        raise ValueError(f"Direction class(es) {missing} absent from the encoder: {dict(mapping)}")
+    return [int(mapping[name]) for name in DIRECTION_CLASSES]
+
+
+def _logits_to_probs(logits: np.ndarray, columns: list[int]) -> tuple[float, ...]:
     """Softmax a raw output row into one probability per direction class.
 
-    Returned in `DIRECTION_CLASSES` order, so the caller never has to know how
-    many classes there are.
+    *columns* comes from `_class_columns`. Selecting after the softmax and
+    renormalising is equivalent to softmaxing the selected logits alone, so the
+    `nan` column simply drops out.
     """
     row = np.asarray(logits).reshape(-1)
-    # NaNLabelEncoder(add_nan=True) prepends an "unknown" class; drop it so the
-    # direction classes line up.
-    if row.shape[0] == len(DIRECTION_CLASSES) + 1:
-        row = row[1:]
     shifted = row - np.max(row)
     exp = np.exp(shifted)
-    probs = exp / exp.sum()
-    return tuple(float(v) for v in probs)
+    picked = np.array([exp[c] for c in columns], dtype=float)
+    total = picked.sum()
+    if not np.isfinite(total) or total <= 0:
+        return tuple([1.0 / len(columns)] * len(columns))
+    return tuple(float(v) for v in picked / total)
 
 
 def _unwrap_prediction(raw: Any) -> Any:
@@ -89,6 +118,76 @@ def _unwrap_prediction(raw: Any) -> Any:
     if hasattr(raw, "prediction"):
         return raw.prediction
     return raw
+
+
+CALIBRATED_VAL_METRIC = "val_calibrated_nll"
+
+
+def _calibrated_val_loss_callback(val_dataset: Any) -> Any:
+    """Callback publishing the validation loss that survives calibration.
+
+    Lightning's own `val_loss` is raw cross-entropy, and stopping on it is
+    wrong for the same reason it is wrong for the GRU: it charges for
+    overconfidence, the network becomes overconfident well before it stops
+    discriminating, and `_fit_tft_calibrator` removes that overconfidence
+    immediately afterwards. See `calibrated_nll`.
+
+    The value is written straight into `trainer.callback_metrics`, which is
+    where `EarlyStopping` reads from, so no logger has to be enabled to carry
+    it. Failing to compute it is not fatal: the metric is simply absent and the
+    paired `EarlyStopping(strict=False)` degrades to running the full budget.
+    """
+    import torch
+    from lightning.pytorch.callbacks import Callback
+
+    columns = _class_columns(val_dataset)
+    # The dataloader hands back the encoder's own class index; invert the
+    # column map to get the position in `DIRECTION_CLASSES` that indexes the
+    # probability vector `_logits_to_probs` returns.
+    to_direction_idx = {column: position for position, column in enumerate(columns)}
+
+    class _CalibratedValLoss(Callback):
+        def on_validation_epoch_end(self, trainer: Any, pl_module: Any) -> None:
+            loaders = trainer.val_dataloaders
+            if loaders is None:
+                return
+            if not isinstance(loaders, list | tuple):
+                loaders = [loaders]
+
+            probs: list[tuple[float, ...]] = []
+            labels: list[int] = []
+            was_training = pl_module.training
+            pl_module.eval()
+            try:
+                with torch.no_grad():
+                    for loader in loaders:
+                        for batch in loader:
+                            x, y = batch[0], batch[1]
+                            target = y[0] if isinstance(y, list | tuple) else y
+                            target = np.asarray(target.detach().cpu()).reshape(-1)
+                            logits = np.asarray(
+                                _unwrap_prediction(pl_module(x)).detach().cpu()
+                            )
+                            for position, encoded in enumerate(target):
+                                direction = to_direction_idx.get(int(encoded))
+                                if direction is None:
+                                    continue  # the encoder's `nan` class
+                                probs.append(_logits_to_probs(logits[position, 0], columns))
+                                labels.append(direction)
+            except Exception:
+                return
+            finally:
+                if was_training:
+                    pl_module.train()
+
+            if len(labels) < MIN_EARLY_STOPPING_SAMPLES:
+                return
+            value = calibrated_nll(np.array(probs, dtype=float), labels)
+            if not np.isfinite(value):
+                return
+            trainer.callback_metrics[CALIBRATED_VAL_METRIC] = torch.tensor(float(value))
+
+    return _CalibratedValLoss()
 
 
 def _predict_month(
@@ -170,12 +269,16 @@ def _predict_month(
         raw, index = result[0], result[1]
     predictions = _unwrap_prediction(raw)
 
+    # Ask the fitted encoder which column belongs to which direction rather
+    # than inferring it from position; see `_class_columns`.
+    columns = _class_columns(inference_set)
+
     wanted = set(bar_indices)
     out: dict[int, tuple[float, ...]] = {}
     for position, decoder_start in enumerate(index["time_idx"].tolist()):
         bar = int(decoder_start)
         if bar in wanted:
-            out[bar] = _logits_to_probs(predictions[position, 0].cpu().numpy())
+            out[bar] = _logits_to_probs(predictions[position, 0].cpu().numpy(), columns)
     return out
 
 
@@ -358,6 +461,9 @@ def predict_tft(
 
     predictions: list[dict[str, Any]] = []
     untrained_counts: dict[str, int] = {h.name: 0 for h in horizon_specs}
+    # Epochs each horizon actually trained for, per retraining window; see
+    # `summarise_epochs`. `--max-epochs` is a ceiling, so this is a result.
+    epochs_used: dict[str, list[int]] = {h.name: [] for h in horizon_specs}
     current_train_month = None
     tft_model: dict[str, Any] = {}
     dataset_cache: dict[str, Any] = {}
@@ -512,14 +618,23 @@ def predict_tft(
                         trainer_kwargs["deterministic"] = True
                     if val_loader is not None:
                         trainer_kwargs["callbacks"] = [
+                            _calibrated_val_loss_callback(val_ds),
                             EarlyStopping(
-                                monitor="val_loss",
+                                monitor=CALIBRATED_VAL_METRIC,
                                 patience=EARLY_STOPPING_PATIENCE,
                                 mode="min",
-                            )
+                                # The metric is absent when the callback could
+                                # not score the slice; run the full budget then
+                                # rather than abort the window.
+                                strict=False,
+                            ),
                         ]
                     trainer = L.Trainer(**trainer_kwargs)
                     trainer.fit(tft, train_dataloaders=loader, val_dataloaders=val_loader)
+                    # After `fit`, current_epoch is the count that ran: Lightning
+                    # increments it past the last completed epoch, and an early
+                    # stop leaves it at the epoch the patience expired on.
+                    epochs_used[h_name].append(int(trainer.current_epoch))
                     tft_model[h_name] = tft
                     dataset_cache[h_name] = ds
                     calibrator_cache[h_name] = _fit_tft_calibrator(
@@ -618,6 +733,7 @@ def predict_tft(
         "interval": interval,
         "predictions": len(predictions),
         "untrained_horizons": untrained_counts,
+        "epochs_used": summarise_epochs(epochs_used, epoch_budget),
         "run_dir": str(run_dir),
     }
 

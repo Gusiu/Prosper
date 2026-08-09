@@ -40,6 +40,13 @@ MIN_CALIBRATION_SAMPLES = 40
 # is also the regime closest to the bar being predicted.
 CALIBRATION_FRACTION = 0.25
 
+# Temperatures searched when fitting. One grid, shared by the fit and by the
+# stopping criterion, so the two cannot disagree about what "calibrated" means.
+TEMPERATURE_GRID: tuple[float, ...] = (
+    0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75,
+    2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0,
+)
+
 
 class SupportsPredictProba(Protocol):
     def predict_proba(self, X: Any) -> Any: ...
@@ -140,16 +147,46 @@ def fit_temperature(
     if len(np.unique(np.asarray(y_true))) < 2:
         return TemperatureCalibrator(1.0)
 
-    candidates = list(grid) if grid is not None else [
-        0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75,
-        2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0,
-    ]
+    candidates = list(grid) if grid is not None else list(TEMPERATURE_GRID)
     best_t, best_loss = 1.0, math.inf
     for t in candidates:
         loss = _nll(probs, y_true, t)
         if loss < best_loss:
             best_t, best_loss = t, loss
     return TemperatureCalibrator(best_t)
+
+
+def calibrated_nll(probs: np.ndarray, y_true: Sequence[int]) -> float:
+    """Held-out loss the forecast carries *once its temperature is fitted*.
+
+    This is the quantity DL training stops on, and raw cross-entropy is the
+    wrong one. A proper score decomposes into a calibration term — how far the
+    stated confidence is from the observed frequency — and a refinement term,
+    how well the forecast separates the classes at all. Training moves both:
+    the network sharpens long before it stops learning to discriminate, so its
+    raw NLL on the holdout climbs from the first epoch while accuracy is still
+    rising. Measured on BTCUSDT the sequence ran 0.7244, 0.9109, 0.9282,
+    1.0216, which stopped training after one epoch, while an epoch sweep showed
+    the short horizon still gaining accuracy at 20 (0.510 -> 0.584).
+
+    Minimising over the temperature grid removes the calibration term and
+    leaves refinement. That is not an optimistic proxy for what ships: the
+    model *is* temperature-scaled on this exact slice immediately afterwards,
+    so this is the loss the stored artifact will actually carry. The fit is
+    over one parameter on the same rows at every epoch, so the comparison
+    between epochs is like for like.
+
+    A single-class holdout cannot say anything about confidence and its NLL is
+    driven to zero by an arbitrarily small temperature, so it falls back to the
+    raw value; `usable_split` already tries to avoid handing one over.
+    """
+    y = np.asarray(list(y_true), dtype=int)
+    if y.size == 0:
+        return math.inf
+    p = np.asarray(probs, dtype=float)
+    if len(np.unique(y)) < 2:
+        return _nll(p, y, 1.0)
+    return min(_nll(p, y, t) for t in TEMPERATURE_GRID)
 
 
 def fit_calibrator_from_model(

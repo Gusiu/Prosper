@@ -49,6 +49,37 @@ def epoch_budget(model_type: str) -> int:
     return DEFAULT_EPOCH_BUDGET.get(model_type.lower(), 0)
 
 
+def summarise_epochs(
+    used: dict[str, list[int]],
+    ceilings: dict[str, int],
+) -> dict[str, dict[str, float]]:
+    """Per-horizon epoch usage, for the run result.
+
+    `--epochs` is a ceiling and early stopping decides the rest, so the number
+    of epochs a horizon actually trained for is a result of the run, not an
+    input to it. It used to be discarded: `_train_gru` returned it and nobody
+    read it, and TFT never looked at `trainer.current_epoch`. That made the
+    stopping decision — the thing the criterion was changed to fix — invisible
+    in the output, so checking whether it fired at all needed a throwaway probe
+    each time. `hit_ceiling` is the one to watch: a horizon that reaches its
+    budget in most windows is being limited by the budget, not by the signal.
+    """
+    summary: dict[str, dict[str, float]] = {}
+    for name, counts in used.items():
+        if not counts:
+            continue
+        ceiling = int(ceilings.get(name, 0))
+        summary[name] = {
+            "windows": len(counts),
+            "mean": round(sum(counts) / len(counts), 2),
+            "min": min(counts),
+            "max": max(counts),
+            "ceiling": ceiling,
+            "hit_ceiling": sum(1 for count in counts if ceiling and count >= ceiling),
+        }
+    return summary
+
+
 def resolve_epochs(
     budget: int,
     overrides: dict[str, int] | None = None,

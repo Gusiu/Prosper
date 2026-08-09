@@ -24,6 +24,7 @@ from prosper.domain import (
 )
 from prosper.predict.calibration import (
     TemperatureCalibrator,
+    calibrated_nll,
     calibration_split,
     fit_temperature,
     usable_split,
@@ -36,6 +37,7 @@ from prosper.predict.defaults import (
     parse_epoch_overrides,
     parse_horizons,
     resolve_epochs,
+    summarise_epochs,
 )
 from prosper.predict.window import (
     days_to_steps,
@@ -106,17 +108,23 @@ def _holdout_loss(
     model: nn.Module,
     dataset: Dataset,
     indices: list[int],
-    loss_fn: nn.Module,
     device: torch.device,
 ) -> float:
-    """Cross-entropy on the held-out sequences, without touching the gradients."""
+    """Held-out loss after temperature scaling — see `calibrated_nll`.
+
+    Raw cross-entropy is not usable as a stopping signal here: it charges for
+    overconfidence, the network becomes overconfident long before it stops
+    learning to discriminate, and the calibrator undoes exactly that
+    overconfidence one step later. Stopping on the raw value gave the epoch
+    budget back for nothing and cost GRU 1.7 points of composite score.
+    """
     model.eval()
     with torch.no_grad():
         xs = torch.stack([dataset[k][0] for k in indices]).to(device)
         ys = torch.stack([dataset[k][1] for k in indices]).to(device)
-        loss = float(loss_fn(model(xs), ys).item())
+        probs = torch.softmax(model(xs), dim=1).cpu().numpy()
     model.train()
-    return loss
+    return calibrated_nll(probs, ys.cpu().numpy())
 
 
 def _train_gru(
@@ -136,8 +144,14 @@ def _train_gru(
     few hundred sequences against ~45k parameters, and how long that takes to
     saturate differs by horizon: measured on BTCUSDT, the short horizon still
     gained accuracy at 20 epochs while medium and long stopped gaining after
-    about five and their NLL degraded monotonically past it — they were not
-    getting more often right, only more confidently wrong.
+    about five.
+
+    What is measured is the loss *after* temperature scaling. The raw
+    cross-entropy on this slice rises from the first epoch — the network
+    becomes overconfident faster than it stops discriminating — so stopping on
+    it returned a one-epoch model while accuracy was still climbing.
+    `_holdout_loss` therefore reports the calibrated value, which is also what
+    the stored artifact will carry.
 
     The best weights are restored on the way out. Stopping without that would
     hand back the *worst* model of the patience window, which is the opposite
@@ -174,7 +188,7 @@ def _train_gru(
             optimiser.step()
         epochs_run = epoch + 1
 
-        loss = _holdout_loss(model, dataset, holdout, loss_fn, device)
+        loss = _holdout_loss(model, dataset, holdout, device)
         if loss < best_loss - 1e-6:
             best_loss = loss
             best_state = copy.deepcopy(model.state_dict())
@@ -329,6 +343,10 @@ def predict_gru(
     # ── 3. Rolling-month training + inference ─────────────────────────────────
     predictions: list[dict[str, Any]] = []
     untrained_counts: dict[str, int] = {h.name: 0 for h in horizon_specs}
+    # How many epochs each horizon actually used, per retraining window. Without
+    # this the stopping decision is invisible in the output and checking whether
+    # early stopping fired at all needs a bespoke probe every time.
+    epochs_used: dict[str, list[int]] = {h.name: [] for h in horizon_specs}
     # We retrain once per calendar month to balance speed vs. freshness
     current_train_month = None
     models_cache: dict[str, Any] = {}
@@ -399,15 +417,17 @@ def predict_gru(
                 opt = torch.optim.Adam(m.parameters(), lr=lr)
                 loss_fn = nn.CrossEntropyLoss()
 
-                _train_gru(
-                    m,
-                    loader,
-                    opt,
-                    loss_fn,
-                    dataset=ds,
-                    holdout=cal_range,
-                    max_epochs=epoch_budget[h.name],
-                    device=device,
+                epochs_used[h.name].append(
+                    _train_gru(
+                        m,
+                        loader,
+                        opt,
+                        loss_fn,
+                        dataset=ds,
+                        holdout=cal_range,
+                        max_epochs=epoch_budget[h.name],
+                        device=device,
+                    )
                 )
 
                 models_cache[h.name] = m
@@ -473,6 +493,7 @@ def predict_gru(
         "interval": interval,
         "predictions": len(predictions),
         "untrained_horizons": untrained_counts,
+        "epochs_used": summarise_epochs(epochs_used, epoch_budget),
         "run_dir": str(run_dir),
         "device": str(device),
     }

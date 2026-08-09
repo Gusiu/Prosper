@@ -118,7 +118,7 @@ def test_the_best_weights_are_restored_not_the_last() -> None:
 
     from prosper.predict.gru import _holdout_loss
 
-    final = _holdout_loss(model, ds, holdout, loss_fn, torch.device("cpu"))
+    final = _holdout_loss(model, ds, holdout, torch.device("cpu"))
     # Training one more epoch from here must not beat the restored weights by
     # much — the restored state is the best seen, not merely the last.
     assert np.isfinite(final)
@@ -195,3 +195,32 @@ def test_an_already_valid_split_is_left_alone() -> None:
 
     labels = [0, 1] * 150
     assert usable_split(labels, 225, min_holdout=20) == 225
+
+
+def test_epoch_usage_is_reported_against_its_ceiling() -> None:
+    """`--epochs` is a ceiling, so what was used is a result of the run.
+
+    It used to be discarded — `_train_gru` returned it and nobody read it — so
+    whether early stopping fired at all was invisible in the output and had to
+    be re-measured with a throwaway probe each time.
+    """
+    from prosper.predict.defaults import summarise_epochs
+
+    summary = summarise_epochs(
+        {"short": [20, 20, 18], "medium": [4, 6], "long": []},
+        {"short": 20, "medium": 20, "long": 20},
+    )
+
+    assert set(summary) == {"short", "medium"}, "a horizon that never trained is absent"
+    assert summary["short"] == {
+        "windows": 3, "mean": 19.33, "min": 18, "max": 20, "ceiling": 20, "hit_ceiling": 2,
+    }
+    assert summary["medium"]["hit_ceiling"] == 0, "medium stopped early in every window"
+
+
+def test_a_zero_ceiling_cannot_be_hit() -> None:
+    """Guards against counting every window as budget-limited when the ceiling
+    is missing, which would read as "early stopping never fires"."""
+    from prosper.predict.defaults import summarise_epochs
+
+    assert summarise_epochs({"short": [3]}, {})["short"]["hit_ceiling"] == 0
