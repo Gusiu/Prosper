@@ -8,6 +8,7 @@ labelling module.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 # ── Direction constants ──────────────────────────────────────────────────────
@@ -128,6 +129,73 @@ HORIZON_NAMES: tuple[str, ...] = tuple(h.name for h in DEFAULT_HORIZONS)
 # The horizon a caller gets when it does not choose: the shortest, because it is
 # the one with enough independent observations to mean anything.
 DEFAULT_TRADED_HORIZON: str = DEFAULT_HORIZONS[0].name
+
+# ── Training feature set ─────────────────────────────────────────────────────
+# The columns a model may train on: every one is scale-free, so the same feature
+# means the same thing on BTCUSDT at ~47000 and SOLUSDT at ~85.
+#
+# The predictors used an *exclude* list — everything in the parquet except a few
+# names — which quietly fed them raw price levels. Measured across the two
+# symbols over the same period, `ma_10` differed by 553x, `atr_14` by 360x and
+# `macd_hist` by 387x. On one symbol that is harmless: the normaliser removes the
+# level and the model sees a shape. Pooled, it is a symbol label, and robust
+# statistics over a joint window make the feature bimodal rather than comparable.
+#
+# An include list also means a new column has to be named here before anything
+# trains on it, which is the safer default: the exclude list would have silently
+# adopted every one of the sixteen relative columns *alongside* its absolute
+# twin.
+TRAINING_FEATURE_COLUMNS: tuple[str, ...] = (
+    # Returns and volatility — already dimensionless.
+    "log_return_1b",
+    "log_return_3b",
+    "log_return_7b",
+    "log_return_14b",
+    "rolling_vol_7",
+    "rolling_vol_14",
+    "rolling_vol_30",
+    "realized_vol_1d",
+    "candle_range",
+    "rolling_drawdown_30",
+    "rolling_drawdown_90",
+    "max_intraday_drawdown",
+    "jump_count",
+    "rsi_14",
+    # Order flow — ratios and shares, not amounts.
+    "taker_buy_ratio",
+    "taker_buy_ratio_14",
+    "flow_imbalance",
+    "trade_count_rel_30",
+    # Price-unit indicators, expressed against the close.
+    "ma_10_rel",
+    "ma_30_rel",
+    "ma_diff_rel",
+    "ma_slope_rel",
+    "bb_mid_rel",
+    "bb_upper_rel",
+    "bb_lower_rel",
+    "atr_14_rel",
+    "macd_hist_rel",
+    "open_rel",
+    "high_rel",
+    "low_rel",
+    # Volume-unit columns, expressed against their own recent level.
+    "volume_rel_30",
+    "obv_change_rel",
+    "avg_trade_size_rel_30",
+)
+
+
+def training_features(available: Iterable[str]) -> list[str]:
+    """The training columns present in *available*, in canonical order.
+
+    Order-flow features need kline columns older data does not carry, and the
+    intraday ones only exist at 1d, so a narrower set is legitimate. Returning a
+    fixed order matters: a model stored under one column order cannot be scored
+    under another, and `set` iteration would vary between runs.
+    """
+    present = set(available)
+    return [column for column in TRAINING_FEATURE_COLUMNS if column in present]
 
 
 # ── Direction helper ─────────────────────────────────────────────────────────
