@@ -30,14 +30,17 @@ from typing import Any
 
 import numpy as np
 
+from prosper.domain import MIN_INDEPENDENT_OBSERVATIONS, effective_samples
+
 # Enough for a stable 95% percentile interval; the cost is linear and the inputs
 # here are a few thousand rows at most.
 DEFAULT_RESAMPLES = 2000
 
 # Below this many non-overlapping blocks there is nothing to resample *from*: the
 # bootstrap would draw the same one or two blocks repeatedly and report a
-# confidently narrow interval built from a single observation.
-MIN_BLOCKS = 3
+# confidently narrow interval built from a single observation. Shared with the
+# training-window warning, which applies the same floor before a run starts.
+MIN_BLOCKS = MIN_INDEPENDENT_OBSERVATIONS
 
 
 @dataclass(frozen=True)
@@ -78,18 +81,6 @@ class Interval:
             "resamples": self.resamples,
             "reason": self.reason,
         }
-
-
-def effective_samples(n: int, block_size: int) -> float:
-    """How many independent observations `n` overlapping rows really carry.
-
-    `n / block_size`, because rows less than `block_size` apart share part of
-    their label interval. This is an upper bound: non-overlapping annual returns
-    are still not independent, since market regimes outlast a year.
-    """
-    if block_size <= 0:
-        return float(n)
-    return n / block_size
 
 
 def block_bootstrap(

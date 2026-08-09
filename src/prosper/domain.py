@@ -59,6 +59,29 @@ def days_to_steps(days: float, interval: str) -> int:
     return max(1, round(days * MINUTES_PER_DAY / interval_minutes(interval)))
 
 
+# Below this many non-overlapping observations a figure is not a measurement.
+# Used by the training-window warning and by the bootstrap, which refuses to
+# produce an interval from fewer.
+MIN_INDEPENDENT_OBSERVATIONS = 3
+
+
+def effective_samples(n: int, forward_steps: int) -> float:
+    """How many independent observations *n* overlapping rows really carry.
+
+    A label at bar `k` is the sign of the return over `[k, k + forward_steps]`,
+    so the label at `k + 1` shares all but one bar of that interval with it. Two
+    labels stop sharing anything only once they are `forward_steps` apart, which
+    makes `n / forward_steps` the count that matters — at the annual horizon,
+    1249 daily rows are about three observations, not 1249.
+
+    An upper bound: non-overlapping annual returns are still not independent,
+    because market regimes outlast a year.
+    """
+    if forward_steps <= 0:
+        return float(n)
+    return n / forward_steps
+
+
 # ── Horizon spec ─────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class HorizonSpec:

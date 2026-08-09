@@ -17,7 +17,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from prosper.domain import DEPTH_BIN_LABELS, DIRECTION_CLASSES, HorizonSpec, days_to_steps
+from prosper.domain import (
+    DEPTH_BIN_LABELS,
+    DIRECTION_CLASSES,
+    MIN_INDEPENDENT_OBSERVATIONS,
+    HorizonSpec,
+    days_to_steps,
+    effective_samples,
+)
 
 # Below this many leakage-free labels a fitted classifier is noise, not a model.
 MIN_TRAIN_SAMPLES = 30
@@ -83,7 +90,53 @@ def validate_train_window(
             f"or restrict the run to shorter horizons."
         )
 
+    warn_low_power(window_steps, steps_by_horizon)
     return steps_by_horizon
+
+
+def training_window_power(
+    window_steps: int, steps_by_horizon: dict[str, int]
+) -> dict[str, float]:
+    """Independent observations each horizon has inside the training window.
+
+    The window holds `window_steps` bars, of which the last `forward_steps` have
+    no realised label yet, so `window_steps - forward_steps` are labelled — and
+    those overlap, which is what `effective_samples` divides out.
+
+    At the shipped defaults this is 25.1 for a 28-day horizon, 7.0 for 91 days
+    and **1.0** for 364. One observation cannot fit or calibrate anything, and no
+    model, optimiser setting or epoch budget changes that: it is arithmetic about
+    how much non-overlapping history a two-year window contains.
+    """
+    return {
+        name: effective_samples(max(0, window_steps - forward), forward)
+        for name, forward in steps_by_horizon.items()
+    }
+
+
+def warn_low_power(window_steps: int, steps_by_horizon: dict[str, int]) -> list[str]:
+    """Warn about horizons the window cannot statistically support.
+
+    The sibling of `validate_train_window`'s exception. That one refuses a
+    configuration that cannot train at all; this one runs, but says so when the
+    result will not be a measurement. `validate_train_window` shipped for months
+    without it, and the annual horizon was reported to three decimal places on
+    the strength of one observation.
+
+    Returns the messages as well as printing them, so a caller can surface them
+    somewhere other than a console.
+    """
+    power = training_window_power(window_steps, steps_by_horizon)
+    messages = [
+        f"horizon {name!r} has ~{observations:.1f} independent observations in the "
+        f"training window (needs {MIN_INDEPENDENT_OBSERVATIONS:.0f}); its metrics "
+        f"will not be statistically meaningful"
+        for name, observations in sorted(power.items(), key=lambda item: item[1])
+        if observations < MIN_INDEPENDENT_OBSERVATIONS
+    ]
+    for message in messages:
+        print(f"[power] {message}")
+    return messages
 
 
 def _steps_to_days(steps: int, interval: str) -> float:

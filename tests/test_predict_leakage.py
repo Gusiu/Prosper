@@ -126,3 +126,67 @@ def test_untrained_payload_is_flagged_and_normalised() -> None:
     assert direction_mass == pytest.approx(1.0)
     assert set(DIRECTION_CLASSES) == {k[2:] for k in payload if k.startswith("P_")}
     assert sum(payload["depth_long_bins"].values()) == pytest.approx(1.0)
+
+
+# ── Statistical power ────────────────────────────────────────────────────────
+
+def test_the_window_reports_how_many_observations_each_horizon_has() -> None:
+    """`validate_train_window` refuses a window that cannot train; this is its
+    sibling for a window that can train but cannot measure.
+
+    A 730-day window holds 730 - 364 = 366 labelled bars at the annual horizon,
+    and those overlap by 363 of 364 days — about one independent observation. No
+    model, optimiser or epoch budget changes that; it is arithmetic about how
+    much non-overlapping history two years contains.
+    """
+    from prosper.predict.window import training_window_power
+
+    steps = {"month": 28, "quarter": 91, "year": 364}
+    power = training_window_power(days_to_steps(730, "1d"), steps)
+
+    assert power["month"] == pytest.approx(25.1, abs=0.1)
+    assert power["quarter"] == pytest.approx(7.0, abs=0.1)
+    assert power["year"] == pytest.approx(1.0, abs=0.1)
+
+
+def test_a_quarter_has_more_than_twice_the_power_of_a_half_year() -> None:
+    """The reason the horizon set moved to 91 days, and not an aesthetic one."""
+    from prosper.predict.window import training_window_power
+
+    window = days_to_steps(730, "1d")
+    half_year = training_window_power(window, {"h": 182})["h"]
+    quarter = training_window_power(window, {"h": 91})["h"]
+
+    assert quarter > 2 * half_year
+
+
+def test_an_underpowered_horizon_is_warned_about() -> None:
+    from prosper.predict.window import warn_low_power
+
+    messages = warn_low_power(days_to_steps(730, "1d"), {"month": 28, "year": 364})
+
+    assert len(messages) == 1
+    assert "'year'" in messages[0]
+    assert "1.0 independent observations" in messages[0]
+
+
+def test_a_well_powered_configuration_warns_about_nothing() -> None:
+    from prosper.predict.window import warn_low_power
+
+    assert warn_low_power(days_to_steps(730, "1d"), {"week": 7, "month": 28}) == []
+
+
+def test_validate_train_window_warns_without_refusing() -> None:
+    """The annual horizon must still run — that it cannot be validated is a
+    finding worth reporting, not a reason to hide it."""
+    steps = validate_train_window(730, "1d", DEFAULT_HORIZONS)
+    assert steps, "the configuration is accepted"
+
+
+def test_the_floor_is_the_one_the_bootstrap_uses() -> None:
+    """Two thresholds for one idea would drift; the evaluation refusing an
+    interval and the trainer warning must agree on what "too few" means."""
+    from prosper.domain import MIN_INDEPENDENT_OBSERVATIONS
+    from prosper.eval.significance import MIN_BLOCKS
+
+    assert MIN_BLOCKS == MIN_INDEPENDENT_OBSERVATIONS
