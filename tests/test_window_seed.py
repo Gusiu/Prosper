@@ -18,10 +18,11 @@ from __future__ import annotations
 import inspect
 
 import pytest
+from prosper.domain import HORIZON_NAMES
 from prosper.predict.defaults import window_seed
 
 MODELS = ("tft", "gru")
-HORIZONS = ("short", "medium", "long")
+HORIZONS = HORIZON_NAMES
 
 
 def test_every_field_changes_the_seed() -> None:

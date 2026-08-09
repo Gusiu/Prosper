@@ -20,6 +20,7 @@ from prosper.api.server import (
     get_ai_evaluation_flags,
 )
 from prosper.config import Settings
+from prosper.domain import HORIZON_NAMES
 from prosper.eval.predictions import evaluate_predictions
 from prosper.inventory import DataManager
 from prosper.storage.layout import get_parquet_file_path, resolve_versioned_prediction_dir
@@ -77,9 +78,7 @@ def _evaluated_run(tmp_path, rows: int = 300) -> Settings:
                     "open_time": ts.isoformat(),
                     "date": ts.date().isoformat(),
                     "symbol": SYMBOL,
-                    "short": horizon,
-                    "medium": horizon,
-                    "long": horizon,
+                    **{name: horizon for name in HORIZON_NAMES},
                 }
             )
         )

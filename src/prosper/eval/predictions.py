@@ -18,6 +18,7 @@ from prosper.domain import (
     DEFAULT_HORIZONS,
     DEPTH_BIN_LABELS,
     DIRECTION_CLASSES,
+    HORIZON_NAMES,
     assign_depth_bin,
     depth_scheme_of,
     direction_from_return,
@@ -866,6 +867,19 @@ def evaluate_predictions(
     # realised return under one scheme while the forecast used another would
     # compare distributions over different label sets — the depth Brier and the
     # expected-depth error would both be meaningless.
+    # A run whose horizons this build does not know would score zero rows and
+    # look like a model that predicted nothing, so it fails instead.
+    known = [h.name for h in DEFAULT_HORIZONS if h.name in (predictions[0] if predictions else {})]
+    if predictions and not known:
+        present = sorted(
+            key for key in predictions[0] if key not in {"open_time", "date", "symbol"}
+        )
+        raise ValueError(
+            f"Run carries horizons {present}, none of which this build knows "
+            f"({[h.name for h in DEFAULT_HORIZONS]}). Recompute the run or check out the "
+            f"revision that produced it."
+        )
+
     depth_labels = _run_depth_scheme(predictions)
     depth_ranges, _ = parse_depth_bins(",".join(depth_labels))
     midpoints = _depth_midpoints(depth_labels)
@@ -890,8 +904,17 @@ def evaluate_predictions(
             matched_predictions += 1
 
         for horizon in DEFAULT_HORIZONS:
-            horizon_pred = prediction.get(horizon.name) or {}
+            horizon_pred = prediction.get(horizon.name)
             forward_steps = horizon.steps(interval)
+
+            # A horizon this run never wrote is not the same as an untrained one
+            # and must not be counted as either. Reading it as `or {}` and then
+            # testing only `trained is False` let a missing key fall through to
+            # `normalize_probabilities({})`, which returns the uniform prior —
+            # scoring the prior as a forecast, which invariant 3 exists to stop.
+            # A run written under a different horizon set hits this on every row.
+            if horizon_pred is None:
+                continue
 
             # A horizon the model could not train emits a uniform placeholder.
             # Scoring it would report the prior as if it were a forecast.
@@ -1294,7 +1317,7 @@ def collect_evaluation_summaries(
                     "entropy": overall.get("entropy"),
                     **{
                         f"acc_{name}": by_horizon.get(name, {}).get("accuracy")
-                        for name in ("short", "medium", "long")
+                        for name in HORIZON_NAMES
                     },
                 }
             )

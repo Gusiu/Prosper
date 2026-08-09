@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 
-from prosper.domain import DEFAULT_HORIZONS
+from prosper.domain import HORIZON_NAMES as DOMAIN_HORIZON_NAMES
 
 # Epoch budgets, not targets. With early stopping on the held-out slice inside
 # the training window, a run normally stops well short of these; the number is
@@ -35,7 +35,9 @@ DEFAULT_EPOCH_BUDGET: dict[str, int] = {
 # Models with no epoch concept at all; the flag is not offered for them.
 EPOCHLESS_MODELS: frozenset[str] = frozenset({"baseline", "ml", "xgboost"})
 
-HORIZON_NAMES: tuple[str, ...] = tuple(h.name for h in DEFAULT_HORIZONS)
+# Re-exported so existing callers keep working; the definition is in domain,
+# where labelling, prediction, evaluation and planning can all reach it.
+HORIZON_NAMES = DOMAIN_HORIZON_NAMES
 
 # How many epochs without improvement on the held-out slice before training
 # stops. Small because a retraining window holds only a few hundred sequences.

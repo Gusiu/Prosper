@@ -13,6 +13,7 @@ import typer
 from prosper.api.commands import build_train_command
 from prosper.api.models import ResearchFlags, TrainRequest
 from prosper.cli import app
+from prosper.domain import HORIZON_NAMES
 
 MODEL_TYPES = ("baseline", "ml", "xgboost", "gru", "tft")
 
@@ -163,12 +164,14 @@ def test_the_full_horizon_set_is_not_spelled_out() -> None:
 def test_a_horizon_subset_reaches_the_command() -> None:
     argv = build_train_command(
         TrainRequest(
-            symbol="BTCUSDT", model_type="ml", horizons=["long", "short"],
+            symbol="BTCUSDT", model_type="ml",
+            # Deliberately out of order, to prove the argv is canonicalised.
+            horizons=[HORIZON_NAMES[-1], HORIZON_NAMES[0]],
             start="2024-01-01", end="2024-06-30",
         )
     )[0]
-    # Canonical order, whatever the caller listed.
-    assert argv[argv.index("--horizons") + 1] == "short,long"
+    expected = f"{HORIZON_NAMES[0]},{HORIZON_NAMES[-1]}"
+    assert argv[argv.index("--horizons") + 1] == expected
 
 
 def test_every_predictor_accepts_a_horizon_selection() -> None:

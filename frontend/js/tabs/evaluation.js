@@ -252,11 +252,9 @@ export function renderSharpness(metrics) {
 // A model that was excellent in one regime and useless since averages out to
 // "mediocre", which reads the same as consistently mediocre.
 
-const HORIZON_COLOURS = {
-  short: "#4ade80",
-  medium: "#60a5fa",
-  long: "#f472b6",
-};
+// Assigned by position rather than by name, so a renamed or added horizon still
+// gets a colour instead of falling back to grey.
+const HORIZON_PALETTE = ["#4ade80", "#60a5fa", "#f472b6", "#fbbf24", "#a78bfa"];
 
 let stabilityChart = null;
 
@@ -309,11 +307,11 @@ export function renderStability() {
   const metric = document.getElementById("stability-metric")?.value || "logloss";
   const datasets = Object.entries(data.series)
     .filter(([, series]) => (series[metric] || []).some((v) => v !== null))
-    .map(([horizon, series]) => ({
+    .map(([horizon, series], index) => ({
       label: horizon,
       data: series[metric],
-      borderColor: HORIZON_COLOURS[horizon] || "#8e9bb0",
-      backgroundColor: HORIZON_COLOURS[horizon] || "#8e9bb0",
+      borderColor: HORIZON_PALETTE[index % HORIZON_PALETTE.length],
+      backgroundColor: HORIZON_PALETTE[index % HORIZON_PALETTE.length],
       // A month a horizon could not be scored in must stay a hole; joining
       // across it would draw a trend that was never measured.
       spanGaps: false,

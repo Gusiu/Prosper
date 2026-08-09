@@ -26,6 +26,7 @@ import polars as pl
 from rich.console import Console
 
 from prosper.config import Settings, get_settings
+from prosper.domain import DEFAULT_TRADED_HORIZON
 from prosper.planner.windows import (
     SequenceGrader,
     calculate_edge,
@@ -77,7 +78,7 @@ class BacktestConfig:
     initial_capital: float = 10000.0
     fee_rate: float = 0.001
     slippage_rate: float = 0.001
-    horizon: str = "short"
+    horizon: str = DEFAULT_TRADED_HORIZON
     min_rebalance_fraction: float = MIN_REBALANCE_FRACTION
     exposure_policy: dict[str, float] = field(
         default_factory=lambda: dict(EXPOSURE_POLICY)
@@ -253,7 +254,7 @@ def run_backtest(
     model_type: str | None = None,
     timestamp: str | None = None,
     interval: str | None = None,
-    horizon: str = "short",
+    horizon: str = DEFAULT_TRADED_HORIZON,
     slippage_rate: float | None = None,
     save_report: bool = False,
 ) -> dict[str, Any]:

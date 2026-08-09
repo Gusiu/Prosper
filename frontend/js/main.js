@@ -28,6 +28,7 @@ import { state } from "./state.js";
 import {
   onBacktestRunChange,
   populateBacktestRuns,
+  renderBacktestHorizons,
   runBacktest,
 } from "./tabs/backtest.js";
 import {
@@ -137,6 +138,8 @@ registerActions({
 
 function bootstrap() {
   startActionDispatch();
+  // Horizon options come from the API, never from the markup.
+  renderBacktestHorizons();
 
   // Tabs own their own pickers; the modules that reload data just announce it.
   on(EVENTS.TASK_FINISHED, () => {

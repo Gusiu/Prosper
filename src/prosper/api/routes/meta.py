@@ -6,13 +6,24 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from prosper.config import get_settings
+from prosper.domain import DEFAULT_HORIZONS
 from prosper.predict.defaults import (
     DEFAULT_EPOCH_BUDGET,
     EPOCHLESS_MODELS,
-    HORIZON_NAMES,
 )
 
 router = APIRouter()
+
+
+def _horizon_label(days: int) -> str:
+    """A human span for a horizon, derived rather than written down."""
+    if days % 364 == 0 and days >= 364:
+        years = days // 364
+        return "1 year" if years == 1 else f"{years} years"
+    if days % 7 == 0:
+        weeks = days // 7
+        return "1 week" if weeks == 1 else f"{weeks} weeks"
+    return f"{days} days"
 
 
 @router.get("/api/meta/symbols")
@@ -82,7 +93,18 @@ def get_training_defaults() -> dict[str, Any]:
     configuration. There is one definition now and the browser reads it.
     """
     return {
-        "horizons": list(HORIZON_NAMES),
+        # Names *and* spans: the dashboard used to write "≈52w (365d)" into
+        # markup, which was already wrong once the year became 364 days. A label
+        # that restates a value is a second definition of it.
+        "horizons": [
+            {
+                "name": h.name,
+                "forward_days": h.forward_days,
+                "weeks": h.forward_days / 7,
+                "label": _horizon_label(h.forward_days),
+            }
+            for h in DEFAULT_HORIZONS
+        ],
         "epoch_budget": dict(DEFAULT_EPOCH_BUDGET),
         "epochless_models": sorted(EPOCHLESS_MODELS),
     }

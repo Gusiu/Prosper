@@ -7,7 +7,12 @@ from datetime import timedelta
 from typing import Any
 
 from prosper.config import Settings, get_settings
-from prosper.domain import depth_bin_midpoints, depth_scheme_of, is_large_move_bin
+from prosper.domain import (
+    HORIZON_NAMES,
+    depth_bin_midpoints,
+    depth_scheme_of,
+    is_large_move_bin,
+)
 from prosper.storage.layout import get_recommendation_report_path
 from prosper.storage.runs import load_run_predictions, resolve_run
 from prosper.utils.time import parse_date
@@ -326,7 +331,18 @@ def plan_windows(
 
     predictions.sort(key=lambda x: str(x.get("open_time") or x["date"]))
 
-    horizons = ["short", "medium", "long"]
+    # Read the horizons the run itself carries, not today's constant: a run
+    # written under a different set would otherwise be silently skipped, the
+    # same trap the depth-bin scheme taught (invariant 8).
+    horizons = [name for name in HORIZON_NAMES if name in predictions[0]]
+    if not horizons:
+        return {
+            "error": (
+                f"Run {run.slug} carries no recognised horizons. It has "
+                f"{sorted(k for k in predictions[0] if k not in {'open_time', 'date', 'symbol'})}; "
+                f"this build knows {list(HORIZON_NAMES)}."
+            )
+        }
     # (horizon, iso_year, iso_week) -> accumulators
     buckets: dict[tuple[str, int, int], dict[str, Any]] = {}
 

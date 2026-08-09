@@ -14,6 +14,7 @@ import json
 import numpy as np
 import torch
 import torch.nn as nn
+from prosper.domain import HORIZON_NAMES
 from prosper.predict.defaults import (
     EARLY_STOPPING_PATIENCE,
     MIN_EARLY_STOPPING_SAMPLES,
@@ -127,8 +128,11 @@ def test_the_best_weights_are_restored_not_the_last() -> None:
 
 
 def test_per_horizon_budgets_override_the_global_one() -> None:
-    resolved = resolve_epochs(10, parse_epoch_overrides("short=20,long=3"))
-    assert resolved == {"short": 20, "medium": 10, "long": 3}
+    first, last = HORIZON_NAMES[0], HORIZON_NAMES[-1]
+    resolved = resolve_epochs(10, parse_epoch_overrides(f"{first}=20,{last}=3"))
+
+    expected = dict.fromkeys(HORIZON_NAMES, 10) | {first: 20, last: 3}
+    assert resolved == expected
 
 
 def test_a_nearby_split_rescues_a_single_class_fit_half() -> None:
@@ -208,16 +212,17 @@ def test_epoch_usage_is_reported_against_its_ceiling() -> None:
     """
     from prosper.predict.defaults import summarise_epochs
 
+    busy, early, absent = HORIZON_NAMES[0], HORIZON_NAMES[1], HORIZON_NAMES[-1]
     summary = summarise_epochs(
-        {"short": [20, 20, 18], "medium": [4, 6], "long": []},
-        {"short": 20, "medium": 20, "long": 20},
+        {busy: [20, 20, 18], early: [4, 6], absent: []},
+        dict.fromkeys(HORIZON_NAMES, 20),
     )
 
-    assert set(summary) == {"short", "medium"}, "a horizon that never trained is absent"
-    assert summary["short"] == {
+    assert set(summary) == {busy, early}, "a horizon that never trained is absent"
+    assert summary[busy] == {
         "windows": 3, "mean": 19.33, "min": 18, "max": 20, "ceiling": 20, "hit_ceiling": 2,
     }
-    assert summary["medium"]["hit_ceiling"] == 0, "medium stopped early in every window"
+    assert summary[early]["hit_ceiling"] == 0, "it stopped early in every window"
 
 
 def test_a_zero_ceiling_cannot_be_hit() -> None:
@@ -225,7 +230,8 @@ def test_a_zero_ceiling_cannot_be_hit() -> None:
     is missing, which would read as "early stopping never fires"."""
     from prosper.predict.defaults import summarise_epochs
 
-    assert summarise_epochs({"short": [3]}, {})["short"]["hit_ceiling"] == 0
+    name = HORIZON_NAMES[0]
+    assert summarise_epochs({name: [3]}, {})[name]["hit_ceiling"] == 0
 
 
 def test_a_run_records_its_own_epoch_usage(tmp_path) -> None:
@@ -242,15 +248,17 @@ def test_a_run_records_its_own_epoch_usage(tmp_path) -> None:
     payload = {
         "symbol": "TESTUSDT",
         "predictions": 100,
-        "epochs_used": {"short": {"windows": 3, "mean": 19.3, "min": 18, "max": 20,
-                                  "ceiling": 20, "hit_ceiling": 2}},
+        "epochs_used": {
+            HORIZON_NAMES[0]: {"windows": 3, "mean": 19.3, "min": 18, "max": 20,
+                               "ceiling": 20, "hit_ceiling": 2},
+        },
     }
 
     path = write_run_summary(run_dir, payload)
 
     assert path.name == "run_summary.json"
     stored = json.loads(path.read_text(encoding="utf-8"))
-    assert stored["epochs_used"]["short"]["hit_ceiling"] == 2
+    assert stored["epochs_used"][HORIZON_NAMES[0]]["hit_ceiling"] == 2
     assert stored["predictions"] == 100
 
 

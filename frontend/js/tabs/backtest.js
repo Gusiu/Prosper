@@ -40,6 +40,34 @@ export function populateBacktestRuns(models) {
 }
 
 
+// The horizon list is the server's, not a copy kept in the markup. The set and
+// its order change, and a stale <option> would silently simulate a horizon the
+// run never carried — the same class of defect as the "≈52w (365d)" label that
+// went on saying 365 after the year became 364 days.
+export async function renderBacktestHorizons() {
+  const select = document.getElementById("backtest-horizon");
+  if (!select) return;
+  let specs = [];
+  try {
+    specs = (await api.trainingDefaults()).horizons || [];
+  } catch (error) {
+    console.error("horizon metadata unavailable", error);
+    return;
+  }
+  const current = select.value;
+  select.innerHTML = specs
+    .map(
+      (spec) =>
+        `<option value="${escapeHtml(spec.name)}">` +
+        `${escapeHtml(spec.name)} — ${escapeHtml(spec.label)}</option>`,
+    )
+    .join("");
+  if ([...select.options].some((option) => option.value === current)) {
+    select.value = current;
+  }
+}
+
+
 export function getSelectedBacktestRun() {
   const select = document.getElementById("backtest-run");
   if (!select || !select.value) return null;
@@ -147,7 +175,7 @@ export async function runBacktest() {
 
   const start = document.getElementById("eval-start").value;
   const end = document.getElementById("eval-end").value;
-  const horizon = document.getElementById("backtest-horizon")?.value || "short";
+  const horizon = document.getElementById("backtest-horizon")?.value || "";
   const capital = document.getElementById("backtest-capital")?.value || "10000";
 
   const params = new URLSearchParams({
