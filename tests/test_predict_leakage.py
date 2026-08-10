@@ -185,10 +185,16 @@ def test_validate_train_window_warns_without_refusing() -> None:
     assert steps, "the configuration is accepted"
 
 
-def test_the_floor_is_the_one_the_bootstrap_uses() -> None:
-    """Two thresholds for one idea would drift; the evaluation refusing an
-    interval and the trainer warning must agree on what "too few" means."""
+def test_the_two_floors_are_deliberately_different() -> None:
+    """They were one constant, shared for tidiness, and the data separated them.
+
+    The training floor asks "can a model be fitted here at all", which needs very
+    little. The bootstrap floor asks "is an interval around the answer stable",
+    which needs an order more: at 3.1 blocks two of fifty-five intervals came out
+    excluding their own point estimate.
+    """
     from prosper.domain import MIN_INDEPENDENT_OBSERVATIONS
     from prosper.eval.significance import MIN_BLOCKS
 
-    assert MIN_BLOCKS == MIN_INDEPENDENT_OBSERVATIONS
+    assert MIN_INDEPENDENT_OBSERVATIONS == 3, "a model can be fitted on very little"
+    assert MIN_BLOCKS > MIN_INDEPENDENT_OBSERVATIONS, "an interval needs more"

@@ -282,3 +282,36 @@ def test_the_cli_prints_the_interval_and_the_verdict() -> None:
     assert "effective_samples" in source
     for verdict in ("> chance", "< chance", "= chance", "unknown"):
         assert verdict in source, verdict
+
+
+def test_an_interval_that_cannot_bracket_its_estimate_is_refused() -> None:
+    """Found in real output, not imagined: at 3.1 blocks two of fifty-five
+    intervals came out excluding their own point estimate — 0.339 against
+    [0.066, 0.335] — because four blocks drawn and truncated cannot represent a
+    series holding three. The block count alone did not catch it, so the
+    inconsistency is detected directly.
+    """
+    # A series with a single long run, so resampling cannot reproduce the mean.
+    values = np.concatenate([np.ones(300), np.zeros(60)])
+    interval = block_bootstrap(values, block_size=120, seed=0)
+
+    assert not interval.estimable
+    assert interval.reason is not None
+
+
+def test_the_floor_reflects_the_measured_failure() -> None:
+    """Three blocks was the training-window floor borrowed for a different
+    question. It is not enough for a stable interval."""
+    assert MIN_BLOCKS >= 10
+
+
+def test_a_well_sampled_interval_always_brackets_its_estimate() -> None:
+    """The guard must not fire on data that is fine, or it would silently turn
+    every result into "unknown"."""
+    rng = np.random.default_rng(2)
+    for seed in range(5):
+        values = _persistent_series(3000, 20, seed=seed)
+        interval = block_bootstrap(values, block_size=20, seed=seed)
+        assert interval.estimable, interval.reason
+        assert interval.low <= interval.point <= interval.high
+    assert rng is not None

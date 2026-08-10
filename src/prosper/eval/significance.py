@@ -30,17 +30,24 @@ from typing import Any
 
 import numpy as np
 
-from prosper.domain import MIN_INDEPENDENT_OBSERVATIONS, effective_samples
+from prosper.domain import effective_samples
 
 # Enough for a stable 95% percentile interval; the cost is linear and the inputs
 # here are a few thousand rows at most.
 DEFAULT_RESAMPLES = 2000
 
-# Below this many non-overlapping blocks there is nothing to resample *from*: the
-# bootstrap would draw the same one or two blocks repeatedly and report a
-# confidently narrow interval built from a single observation. Shared with the
-# training-window warning, which applies the same floor before a run starts.
-MIN_BLOCKS = MIN_INDEPENDENT_OBSERVATIONS
+# Below this many non-overlapping blocks the resampling cannot reproduce the
+# statistic it is describing. This started as the training-window floor of 3 and
+# was raised on evidence: at 3.1 blocks, two of fifty-five intervals came out
+# *excluding their own point estimate* — 0.339 with an interval of
+# [0.066, 0.335] — because four blocks drawn and truncated to the original length
+# cannot represent a series that holds only three.
+#
+# It is deliberately not the same number as `MIN_INDEPENDENT_OBSERVATIONS`. That
+# one asks "can a model be fitted here at all", which needs very little; this
+# asks "is an interval around the answer stable", which needs an order more.
+# Sharing one constant was tidiness, and the measurement says they differ.
+MIN_BLOCKS = 10
 
 
 @dataclass(frozen=True)
@@ -132,6 +139,16 @@ def block_bootstrap(
         estimates[i] = compute(data[index])
 
     low, high = np.quantile(estimates, [alpha / 2.0, 1.0 - alpha / 2.0])
+    # The resampling is supposed to describe the statistic it was built from. If
+    # it cannot even bracket it, the block structure is too coarse for this
+    # series and the interval would be an artefact, not a measurement. This
+    # catches the failure directly rather than trusting the block count alone.
+    if not low <= point <= high:
+        return Interval(
+            point, None, None, length, blocks, n, resamples,
+            f"the resampled interval [{low:.3f}, {high:.3f}] does not contain the "
+            f"estimate {point:.3f}; {blocks:.1f} blocks is too coarse to describe it",
+        )
     return Interval(point, float(low), float(high), length, blocks, n, resamples)
 
 
