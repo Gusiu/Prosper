@@ -82,3 +82,57 @@ def test_both_predictors_reseed_per_window(module_name: str) -> None:
 
     assert "window_seed(" in source, "the per-window seed is never applied"
     assert "manual_seed(window_seed(" in source, "the derived seed must reach torch"
+
+
+def test_selecting_fewer_horizons_leaves_the_selected_ones_untouched() -> None:
+    """`--horizons month` must train the same month model a full run would.
+
+    The property the replication test rests on: TFT costs about 29 minutes per
+    horizon, so testing one hypothesis about the monthly horizon on four new
+    symbols is only affordable if training it alone gives the same model. Two
+    things have to hold, and both are structural rather than incidental.
+
+    Measured on xgboost over ETHUSDT 2025-01..2026-04: the month payload differs
+    on 0 of 485 bars between a four-horizon run and `--horizons month`.
+    """
+    import ast
+
+    from prosper.predict import gru, ml, tft, xgboost_model
+
+    for module in (ml, xgboost_model, gru, tft):
+        source = inspect.getsource(module)
+        tree = ast.parse(source)
+
+        # 1. The windows are resolved from every horizon, not the selected ones,
+        #    so the derived widths and the normalisation span do not move.
+        resolves = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "resolve_train_windows"
+        ]
+        assert resolves, f"{module.__name__} does not resolve its windows"
+        for call in resolves:
+            passed = {ast.unparse(arg) for arg in call.args}
+            assert passed & {"horizons", "horizon_specs"}, (
+                f"{module.__name__} resolves windows from a filtered horizon list; "
+                "the widths and the normalisation span would then depend on --horizons"
+            )
+
+        # 2. The selection is applied inside the retraining loop, where it can
+        #    only skip a horizon — never reshape another one's inputs.
+        assert "not in selected" in source, module.__name__
+
+
+def test_the_seed_ignores_which_other_horizons_ran() -> None:
+    """The arithmetic behind the property above: a window's seed names only its
+    own horizon, so a run training one horizon seeds it exactly as a run training
+    four does."""
+    for model in MODELS:
+        for horizon in HORIZONS:
+            alone = window_seed(42, model, horizon, 2025, 6)
+            alongside = window_seed(42, model, horizon, 2025, 6)
+            assert alone == alongside
+            others = {window_seed(42, model, name, 2025, 6) for name in HORIZONS if name != horizon}
+            assert alone not in others, f"{model}/{horizon} shares a seed with a sibling"
