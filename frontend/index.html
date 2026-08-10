@@ -566,6 +566,35 @@
                   model, so they need not agree.</span
                 >
               </details>
+              <details id="train-pool" style="margin-top: 10px">
+                <summary
+                  style="
+                    font-size: 0.75rem;
+                    color: var(--text-muted);
+                    cursor: pointer;
+                    user-select: none;
+                  "
+                >
+                  Advanced: train on several symbols
+                </summary>
+                <div
+                  id="train-pool-symbols"
+                  style="display: flex; gap: 14px; margin-top: 8px; flex-wrap: wrap; font-size: 0.78rem"
+                ></div>
+                <span
+                  id="train-pool-note"
+                  style="
+                    font-size: 0.7rem;
+                    color: var(--text-muted);
+                    display: block;
+                    margin-top: 6px;
+                  "
+                  >Predictions are still for the symbol above; these only add
+                  training rows. Correlated symbols add far less than their row
+                  count suggests — the run summary records what the pool was
+                  worth. Tabular models only.</span
+                >
+              </details>
               <button class="glow-btn full-width mt-2" data-action="train-run">
                 Train & Predict
               </button>

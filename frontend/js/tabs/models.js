@@ -82,6 +82,45 @@ export function selectedHorizons() {
 }
 
 
+// Which symbols may be pooled into the training set. Read from the inventory
+// rather than written down: a symbol with no features parquet would fail the
+// run, and the list changes whenever one is added.
+function renderPoolControls() {
+  const box = document.getElementById("train-pool-symbols");
+  if (!box) return;
+  const target = document.getElementById("train-symbol")?.value;
+  const chosen = new Set(selectedPoolSymbols());
+  box.innerHTML = "";
+
+  const others = (state.globalInventory || [])
+    .map((item) => item.symbol)
+    .filter((symbol) => symbol && symbol !== target)
+    .sort();
+
+  if (!others.length) {
+    box.innerHTML = `<span class="text-muted" style="font-size:0.72rem">No other symbols in the lake</span>`;
+    return;
+  }
+
+  for (const symbol of others) {
+    const label = document.createElement("label");
+    label.style.cssText = "display:flex; align-items:center; gap:5px; cursor:pointer;";
+    const checked = chosen.has(symbol) ? " checked" : "";
+    label.innerHTML =
+      `<input type="checkbox" class="train-pool-symbol" value="${symbol}"${checked} />` +
+      `<span>${symbol}</span>`;
+    box.appendChild(label);
+  }
+}
+
+
+export function selectedPoolSymbols() {
+  return Array.from(document.querySelectorAll(".train-pool-symbol"))
+    .filter((box) => box.checked)
+    .map((box) => box.value);
+}
+
+
 export function updateTrainDates() {
   const sym = document.getElementById("train-symbol").value;
   const item = state.globalInventory.find((i) => i.symbol === sym);
@@ -160,6 +199,15 @@ export function updateTrainModelUI() {
 
   if (wrapper) wrapper.style.display = hasEpochs ? "flex" : "none";
   if (advanced) advanced.style.display = hasEpochs ? "block" : "none";
+
+  // Offering the pool where the CLI has no flag would build a command that
+  // fails rather than one that ignores the setting.
+  const pool = document.getElementById("train-pool");
+  const canPool = model && (trainingDefaults.pooling_models || []).includes(model);
+  if (pool) {
+    pool.style.display = canPool ? "block" : "none";
+    if (canPool) renderPoolControls();
+  }
 
   // Show the budget this model would actually use, rather than a number
   // hardcoded in the markup.
@@ -262,6 +310,7 @@ export function runTrain() {
   // An empty field means "no opinion" and must stay absent, so the CLI's own
   // default applies. Sending a number the user never chose is exactly what
   // made the dashboard and the CLI disagree.
+  const poolSymbols = selectedPoolSymbols();
   const budget = Number(document.getElementById("train-epochs").value);
   const epochsByHorizon = {};
   for (const name of horizons) {
@@ -277,6 +326,7 @@ export function runTrain() {
     end: document.getElementById("train-end").value,
     ...(budget > 0 ? { epochs: budget } : {}),
     ...(Object.keys(epochsByHorizon).length ? { epochs_by_horizon: epochsByHorizon } : {}),
+    ...(poolSymbols.length ? { pool_symbols: poolSymbols } : {}),
     horizons,
     flags: getResearchFlags(),
   });

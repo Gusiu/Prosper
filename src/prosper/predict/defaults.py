@@ -35,6 +35,13 @@ DEFAULT_EPOCH_BUDGET: dict[str, int] = {
 # Models with no epoch concept at all; the flag is not offered for them.
 EPOCHLESS_MODELS: frozenset[str] = frozenset({"baseline", "ml", "xgboost"})
 
+# Models that accept `--symbols`. The sequence models read fixed-length windows
+# of consecutive bars, so pooling them means building sequences inside each
+# symbol before mixing — which is a different change from sharing rows. Listing
+# them here rather than in the API keeps the dashboard from offering a flag the
+# CLI would reject.
+POOLING_MODELS: frozenset[str] = frozenset({"ml", "xgboost"})
+
 # Re-exported so existing callers keep working; the definition is in domain,
 # where labelling, prediction, evaluation and planning can all reach it.
 HORIZON_NAMES = DOMAIN_HORIZON_NAMES

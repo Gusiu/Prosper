@@ -20,7 +20,7 @@ from prosper.api.models import (
     ResearchFlags,
     TrainRequest,
 )
-from prosper.predict.defaults import HORIZON_NAMES
+from prosper.predict.defaults import HORIZON_NAMES, POOLING_MODELS
 
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,30}$")
 
@@ -185,7 +185,7 @@ def build_train_command(req: TrainRequest) -> list[list[str]]:
             cmd.extend(["--seq-len", str(req.params["seq_len"])])
         if "hidden_size" in req.params:
             cmd.extend(["--hidden-size", str(req.params["hidden_size"])])
-    elif model_type in ("xgboost", "ml"):
+    elif model_type in POOLING_MODELS:
         if "train_window_days" in req.params:
             cmd.extend(["--train-window-days", str(req.params["train_window_days"])])
         # Only the tabular predictors pool; the sequence models do not offer the

@@ -10,6 +10,7 @@ from prosper.domain import DEFAULT_HORIZONS, HORIZON_NAMES
 from prosper.predict.defaults import (
     DEFAULT_EPOCH_BUDGET,
     EPOCHLESS_MODELS,
+    POOLING_MODELS,
 )
 
 router = APIRouter()
@@ -141,4 +142,9 @@ def get_training_defaults() -> dict[str, Any]:
         ],
         "epoch_budget": dict(DEFAULT_EPOCH_BUDGET),
         "epochless_models": sorted(EPOCHLESS_MODELS),
+        # Which models accept a training pool. The sequence models need
+        # sequences built inside a symbol before they can pool, so the flag does
+        # not exist for them — and a form offering it there would build a command
+        # that fails rather than one that ignores the setting.
+        "pooling_models": sorted(POOLING_MODELS),
     }
