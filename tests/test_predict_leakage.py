@@ -11,10 +11,10 @@ from prosper.domain import DEFAULT_HORIZONS, DIRECTION_CLASSES, HorizonSpec, day
 from prosper.predict.window import (
     MIN_TRAIN_SAMPLES,
     TrainingWindows,
+    resolve_train_windows,
     training_bounds,
     untrained_horizon_payload,
     usable_sample_count,
-    validate_train_window,
 )
 
 
@@ -41,18 +41,20 @@ def test_usable_sample_count_is_zero_when_window_matches_horizon() -> None:
     assert usable_sample_count(row_index=1000, train_window_steps=150, forward_steps=182) == 0
 
 
-def test_validate_train_window_accepts_a_sufficient_window() -> None:
-    steps = validate_train_window(730, "1d", DEFAULT_HORIZONS)
+def test_a_sufficient_window_is_accepted() -> None:
+    windows = resolve_train_windows(730, "1d", DEFAULT_HORIZONS)
 
-    # Read from the specs, not repeated: the horizons are whole weeks (4/26/52)
+    # Read from the specs, not repeated: the horizons are whole weeks (1/4/13/52)
     # and a literal here would silently disagree the next time they move.
-    assert steps == {h.name: h.forward_days for h in DEFAULT_HORIZONS}
+    assert dict(windows.forward_steps) == {h.name: h.forward_days for h in DEFAULT_HORIZONS}
     assert all(h.forward_days % 7 == 0 for h in DEFAULT_HORIZONS), "whole weeks"
+    # An explicit width applies to every horizon, overriding the derived one.
+    assert set(windows.window_days.values()) == {730}
 
 
-def test_validate_train_window_rejects_a_window_narrower_than_the_horizon() -> None:
+def test_a_window_narrower_than_the_horizon_is_rejected() -> None:
     with pytest.raises(ValueError) as exc:
-        validate_train_window(150, "1d", DEFAULT_HORIZONS)
+        resolve_train_windows(150, "1d", DEFAULT_HORIZONS)
 
     message = str(exc.value)
     longest = max(DEFAULT_HORIZONS, key=lambda h: h.forward_days)
@@ -60,13 +62,13 @@ def test_validate_train_window_rejects_a_window_narrower_than_the_horizon() -> N
     assert "--train-window-days" in message
 
 
-def test_validate_train_window_needs_headroom_beyond_the_horizon() -> None:
+def test_a_window_needs_headroom_beyond_the_horizon() -> None:
     # Exactly one horizon-length of window leaves zero training samples.
     with pytest.raises(ValueError):
-        validate_train_window(365, "1d", [HorizonSpec("long", 365)])
+        resolve_train_windows(365, "1d", [HorizonSpec("long", 365)])
 
     # Horizon plus the minimum sample count is enough.
-    validate_train_window(365 + MIN_TRAIN_SAMPLES, "1d", [HorizonSpec("long", 365)])
+    resolve_train_windows(365 + MIN_TRAIN_SAMPLES, "1d", [HorizonSpec("long", 365)])
 
 
 def test_horizons_span_the_same_calendar_time_across_intervals() -> None:
@@ -111,14 +113,14 @@ def test_train_window_scales_with_interval() -> None:
     assert days_to_steps(730, "1h") == 730 * 24
 
 
-def test_validate_train_window_scales_the_requirement_by_interval() -> None:
+def test_the_requirement_scales_by_interval() -> None:
     # 730 calendar days is plenty at 1d and, expressed in bars, also at 1h.
-    validate_train_window(730, "1h", DEFAULT_HORIZONS)
+    resolve_train_windows(730, "1h", DEFAULT_HORIZONS)
 
     # But a window shorter in calendar terms than the horizon fails regardless
     # of how many bars it happens to contain.
     with pytest.raises(ValueError):
-        validate_train_window(200, "1h", DEFAULT_HORIZONS)
+        resolve_train_windows(200, "1h", DEFAULT_HORIZONS)
 
 
 def test_untrained_payload_is_flagged_and_normalised() -> None:
@@ -203,11 +205,11 @@ def test_the_scored_side_is_warned_about_too() -> None:
     assert "training window" not in messages[0], "the training side is fine at 2555 days"
 
 
-def test_validate_train_window_warns_without_refusing() -> None:
+def test_an_underpowered_configuration_warns_without_refusing() -> None:
     """The annual horizon must still run — that it cannot be validated is a
     finding worth reporting, not a reason to hide it."""
-    steps = validate_train_window(730, "1d", DEFAULT_HORIZONS)
-    assert steps, "the configuration is accepted"
+    windows = resolve_train_windows(730, "1d", DEFAULT_HORIZONS)
+    assert windows.forward_steps, "the configuration is accepted"
 
 
 def test_the_two_floors_are_deliberately_different() -> None:

@@ -9,7 +9,7 @@ close of bar ``k + forward_steps``, so it is only usable once
 That constraint interacts with the training window: a window of ``W`` bars
 yields ``W - forward_steps`` usable labels. When the window is not clearly
 wider than the horizon the training set silently collapses to nothing, which
-is why :func:`validate_train_window` refuses such a configuration up front
+is why :func:`resolve_train_windows` refuses such a configuration up front
 instead of letting a model emit an untrained placeholder for every row.
 """
 
@@ -233,25 +233,6 @@ def resolve_train_windows(
 
     return TrainingWindows(
         forward_steps=forward_steps, window_steps=window_steps, window_days=window_days
-    )
-
-
-def validate_train_window(
-    train_window_days: int,
-    interval: str,
-    horizons: Iterable[HorizonSpec],
-    min_samples: int = MIN_TRAIN_SAMPLES,
-) -> dict[str, int]:
-    """Forward-step counts per horizon, checking the window can train each one.
-
-    Kept for callers that only ever needed the horizon spans. Anything that
-    slices a training set wants :func:`resolve_train_windows` instead, because
-    the window is no longer one number shared by every horizon.
-    """
-    return dict(
-        resolve_train_windows(
-            train_window_days, interval, horizons, min_samples=min_samples
-        ).forward_steps
     )
 
 
