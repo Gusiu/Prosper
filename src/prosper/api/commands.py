@@ -185,18 +185,26 @@ def build_train_command(req: TrainRequest) -> list[list[str]]:
             cmd.extend(["--seq-len", str(req.params["seq_len"])])
         if "hidden_size" in req.params:
             cmd.extend(["--hidden-size", str(req.params["hidden_size"])])
-    elif model_type == "xgboost":
+    elif model_type in ("xgboost", "ml"):
         if "train_window_days" in req.params:
             cmd.extend(["--train-window-days", str(req.params["train_window_days"])])
-        if "n_estimators" in req.params:
-            cmd.extend(["--n-estimators", str(req.params["n_estimators"])])
-        if "max_depth" in req.params:
-            cmd.extend(["--max-depth", str(req.params["max_depth"])])
-        if "learning_rate" in req.params:
-            cmd.extend(["--learning-rate", str(req.params["learning_rate"])])
-    elif model_type == "ml":
-        if "train_window_days" in req.params:
-            cmd.extend(["--train-window-days", str(req.params["train_window_days"])])
+        # Only the tabular predictors pool; the sequence models do not offer the
+        # flag, so passing it there would fail the whole run rather than be
+        # ignored. Each name is validated because this string becomes argv.
+        pooled = [
+            name.upper()
+            for name in req.pool_symbols
+            if _is_valid_symbol(name.upper()) and name.upper() != symbol
+        ]
+        if pooled:
+            cmd.extend(["--symbols", ",".join(dict.fromkeys(pooled))])
+        if model_type == "xgboost":
+            if "n_estimators" in req.params:
+                cmd.extend(["--n-estimators", str(req.params["n_estimators"])])
+            if "max_depth" in req.params:
+                cmd.extend(["--max-depth", str(req.params["max_depth"])])
+            if "learning_rate" in req.params:
+                cmd.extend(["--learning-rate", str(req.params["learning_rate"])])
 
     return [cmd]
 
