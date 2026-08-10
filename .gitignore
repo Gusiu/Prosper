@@ -82,3 +82,9 @@ lightning_logs/
 CLAUDE.md
 AGENTS.md
 .claude/
+
+# The technical write-up is generated from results that keep moving, so it does
+# not belong in the tree: the tracked copy described horizons, a feature set and
+# a set of findings that three later fixes overturned, and anyone reading the
+# repository would have taken it for the current design.
+docs/*.pdf
