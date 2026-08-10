@@ -13,16 +13,16 @@ from prosper.domain import (
     direction_from_return,
     parse_depth_bins,
 )
-from prosper.predict.defaults import parse_horizons
+from prosper.predict.defaults import parse_horizons, parse_window_overrides
 from prosper.predict.window import (
     MIN_TRAIN_SAMPLES,
-    days_to_steps,
-    training_bounds,
+    count_scored_bars,
+    resolve_train_windows,
     untrained_horizon_payload,
-    validate_train_window,
+    warn_low_power,
 )
 from prosper.storage.parquet import load_parquet
-from prosper.storage.predictions import write_versioned_predictions
+from prosper.storage.predictions import write_run_summary, write_versioned_predictions
 from prosper.utils.time import parse_date
 
 
@@ -38,6 +38,7 @@ def predict_baseline(
     interval: str = "1d",
     horizons_selected: str | None = None,
     rolling_window_days: int | None = None,
+    train_window_by_horizon: str | None = None,
     depth_bins_str: str = DEFAULT_DEPTH_BINS_STR,
     alpha: float = 1.0,
 ) -> dict[str, Any]:
@@ -61,8 +62,7 @@ def predict_baseline(
     # only meant a 1h comparison had no buy-and-hold to be measured against.
     horizons = list(DEFAULT_HORIZONS)
     selected = set(parse_horizons(horizons_selected))
-    steps_by_horizon = validate_train_window(rolling_window_days, interval, horizons)
-    window_steps = days_to_steps(rolling_window_days, interval)
+    window_overrides = parse_window_overrides(train_window_by_horizon)
 
     depth_bins, depth_labels = parse_depth_bins(depth_bins_str)
     depth_k = len(depth_bins)
@@ -95,6 +95,17 @@ def predict_baseline(
     dates = df_bars["_date"].to_list()
     closes = df_bars["close"].to_list()
     n = len(df_bars)
+
+    # After the load, not before: the window a horizon should get depends on how
+    # much history there is to divide between training it and scoring it. The
+    # benchmark counts frequencies over the same window the models train on, or
+    # it would not be answering the same question.
+    windows = resolve_train_windows(
+        rolling_window_days, interval, horizons, window_overrides, history_bars=n
+    )
+    steps_by_horizon = windows.forward_steps
+    scored_bars = count_scored_bars(dates, start_dt.date(), end_dt.date(), windows)
+    warn_low_power(windows, scored_bars)
 
     def horizon_labels(forward_steps: int) -> dict[str, list[Any]]:
         directions: list[str | None] = [None] * n
@@ -135,9 +146,7 @@ def predict_baseline(
             d_idx = labels["depth_bin_idx"]
 
             # Only outcomes realised strictly before bar i are observable.
-            train_start, train_end = training_bounds(
-                i, window_steps, steps_by_horizon[h.name]
-            )
+            train_start, train_end = windows.bounds(i, h.name)
             window_idx = [j for j in range(train_start, train_end) if dirs[j] is not None]
 
             if len(window_idx) < MIN_TRAIN_SAMPLES:
@@ -185,12 +194,15 @@ def predict_baseline(
         predictions, symbol, "baseline", settings, interval=interval
     )
 
-    return {
+    result = {
         "symbol": symbol,
         "start": start,
         "end": end,
         "interval": interval,
         "predictions": len(predictions),
         "untrained_horizons": untrained_counts,
+        "training_windows": windows.describe(scored_bars),
         "run_dir": str(run_dir),
     }
+    write_run_summary(run_dir, result)
+    return result

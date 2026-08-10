@@ -145,11 +145,11 @@ def parse_horizons(raw: str | None) -> list[str]:
     return [name for name in HORIZON_NAMES if name in requested]
 
 
-def parse_epoch_overrides(raw: str | None) -> dict[str, int]:
-    """Parse ``'short=20,medium=5'`` into per-horizon epoch ceilings.
+def _parse_horizon_ints(raw: str | None, quantity: str, minimum: int) -> dict[str, int]:
+    """Parse ``'week=20,month=5'`` into a per-horizon integer setting.
 
     An unknown horizon or a non-numeric value is an error: silently ignoring
-    it would leave the caller believing a budget was applied when it was not.
+    it would leave the caller believing a setting was applied when it was not.
     """
     if raw is None or not raw.strip():
         return {}
@@ -160,7 +160,7 @@ def parse_epoch_overrides(raw: str | None) -> dict[str, int]:
         if not part:
             continue
         if "=" not in part:
-            raise ValueError(f"Expected 'horizon=epochs', got {part!r}")
+            raise ValueError(f"Expected 'horizon={quantity}', got {part!r}")
         name, _, value = part.partition("=")
         name = name.strip().lower()
         if name not in HORIZON_NAMES:
@@ -168,18 +168,45 @@ def parse_epoch_overrides(raw: str | None) -> dict[str, int]:
                 f"Unknown horizon {name!r}. Known horizons: {', '.join(HORIZON_NAMES)}"
             )
         try:
-            epochs = int(value.strip())
+            parsed = int(value.strip())
         except ValueError as exc:
-            raise ValueError(f"Epoch count for {name!r} must be an integer, got {value!r}") from exc
-        if epochs < 1:
-            raise ValueError(f"Epoch count for {name!r} must be at least 1, got {epochs}")
-        overrides[name] = epochs
+            raise ValueError(
+                f"The {quantity} for {name!r} must be an integer, got {value!r}"
+            ) from exc
+        if parsed < minimum:
+            raise ValueError(
+                f"The {quantity} for {name!r} must be at least {minimum}, got {parsed}"
+            )
+        overrides[name] = parsed
     return overrides
 
 
-# Rolling training window, in calendar days. It must stay wider than the
-# longest horizon plus a usable sample count or `validate_train_window` refuses
-# the configuration; see `prosper.predict.window`. Defined here because the CLI
-# repeated the literal in five commands and every predictor signature carried
-# its own copy.
-DEFAULT_TRAIN_WINDOW_DAYS = 730
+def parse_epoch_overrides(raw: str | None) -> dict[str, int]:
+    """Parse ``'week=20,month=5'`` into per-horizon epoch ceilings."""
+    return _parse_horizon_ints(raw, "epoch count", minimum=1)
+
+
+def parse_window_overrides(raw: str | None) -> dict[str, int]:
+    """Parse ``'year=1456'`` into per-horizon training windows, in calendar days."""
+    return _parse_horizon_ints(raw, "window length in days", minimum=1)
+
+
+# Rolling training window, in calendar days.
+#
+# `None` means the window is derived per horizon from the horizon's own span and
+# the history available — see `prosper.predict.window.dynamic_window_steps`. One
+# fixed width for every horizon was a mistake of arithmetic, not of taste: a
+# window of W days is worth `(W - forward) / forward` independent observations,
+# because consecutive labels share all but one day of their forward return, so
+# 730 days meant 103 observations for the week horizon and **1.0** for the year.
+#
+# Passing a number here restores that single shared width, which is what
+# reproducing an older run needs and what a controlled experiment on the window
+# itself needs. It is not the default because the right width is not a matter of
+# preference: it follows from the horizon and the data.
+DEFAULT_TRAIN_WINDOW_DAYS: int | None = None
+
+# The width every horizon used before the window was derived. Kept because
+# `Settings.baseline_rolling_window_days` is a stored configuration value that
+# has to mean something concrete, and because tests pin the old behaviour.
+LEGACY_TRAIN_WINDOW_DAYS = 730

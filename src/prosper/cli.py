@@ -430,7 +430,13 @@ def predict_baseline_cmd(
         DEFAULT_TRAIN_WINDOW_DAYS,
         "--window-days",
         "--window_days",
-        help=f"Rolling window in calendar days; must exceed the longest horizon ({LONGEST_HORIZON_DAYS}d)",
+        help="Rolling window in calendar days, one width for every horizon. "
+        "Omit it and each horizon derives its own from its span and the history available.",
+    ),
+    train_window_by_horizon: str = typer.Option(
+        None,
+        "--train-window-per-horizon",
+        help="Per-horizon training windows in days, e.g. 'year=1456'. Overrides the derived width.",
     ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
@@ -460,6 +466,7 @@ def predict_baseline_cmd(
             interval=interval,
             horizons_selected=horizons,
             rolling_window_days=window_days,
+            train_window_by_horizon=train_window_by_horizon,
         )
         if "error" in results:
             console.print(f"[red]Error: {results['error']}[/red]")
@@ -486,7 +493,13 @@ def predict_ml_cmd(
         DEFAULT_TRAIN_WINDOW_DAYS,
         "--train-window-days",
         "--train_window_days",
-        help=f"Training window in calendar days; must exceed the longest horizon ({LONGEST_HORIZON_DAYS}d)",
+        help="Training window in calendar days, one width for every horizon. "
+        "Omit it and each horizon derives its own from its span and the history available.",
+    ),
+    train_window_by_horizon: str = typer.Option(
+        None,
+        "--train-window-per-horizon",
+        help="Per-horizon training windows in days, e.g. 'year=1456'. Overrides the derived width.",
     ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
@@ -516,6 +529,7 @@ def predict_ml_cmd(
             interval=interval,
             horizons_selected=horizons,
             train_window_days=train_window_days,
+            train_window_by_horizon=train_window_by_horizon,
         )
         if "error" in results:
             console.print(f"[red]Error: {results['error']}[/red]")
@@ -542,7 +556,13 @@ def predict_xgboost_cmd(
         DEFAULT_TRAIN_WINDOW_DAYS,
         "--train-window-days",
         "--train_window_days",
-        help=f"Training window in calendar days; must exceed the longest horizon ({LONGEST_HORIZON_DAYS}d)",
+        help="Training window in calendar days, one width for every horizon. "
+        "Omit it and each horizon derives its own from its span and the history available.",
+    ),
+    train_window_by_horizon: str = typer.Option(
+        None,
+        "--train-window-per-horizon",
+        help="Per-horizon training windows in days, e.g. 'year=1456'. Overrides the derived width.",
     ),
     n_estimators: int = typer.Option(100, "--n-estimators", help="XGBoost n_estimators"),
     max_depth: int = typer.Option(6, "--max-depth", help="XGBoost max_depth"),
@@ -575,6 +595,7 @@ def predict_xgboost_cmd(
             interval=interval,
             horizons_selected=horizons,
             train_window_days=train_window_days,
+            train_window_by_horizon=train_window_by_horizon,
             n_estimators=n_estimators,
             max_depth=max_depth,
             learning_rate=learning_rate,
@@ -605,7 +626,13 @@ def predict_gru_cmd(
     train_window_days: int = typer.Option(
         DEFAULT_TRAIN_WINDOW_DAYS,
         "--train-window-days",
-        help="Training window in calendar days; must exceed the longest horizon",
+        help="Training window in calendar days, one width for every horizon. "
+        "Omit it and each horizon derives its own from its span and the history available.",
+    ),
+    train_window_by_horizon: str = typer.Option(
+        None,
+        "--train-window-per-horizon",
+        help="Per-horizon training windows in days, e.g. 'year=1456'. Overrides the derived width.",
     ),
     seq_len: int = typer.Option(30, "--seq-len", help="Sequence length for GRU input"),
     epochs: int = typer.Option(
@@ -647,6 +674,7 @@ def predict_gru_cmd(
             seq_len=seq_len,
             horizons_selected=horizons,
             train_window_days=train_window_days,
+            train_window_by_horizon=train_window_by_horizon,
             epochs=epochs,
             epochs_by_horizon=epochs_by_horizon,
             hidden_size=hidden_size,
@@ -677,7 +705,13 @@ def predict_tft_cmd(
     train_window_days: int = typer.Option(
         DEFAULT_TRAIN_WINDOW_DAYS,
         "--train-window-days",
-        help="Training window in calendar days; must exceed the longest horizon",
+        help="Training window in calendar days, one width for every horizon. "
+        "Omit it and each horizon derives its own from its span and the history available.",
+    ),
+    train_window_by_horizon: str = typer.Option(
+        None,
+        "--train-window-per-horizon",
+        help="Per-horizon training windows in days, e.g. 'year=1456'. Overrides the derived width.",
     ),
     seq_len: int = typer.Option(60, "--seq-len", help="Encoder sequence length"),
     max_epochs: int = typer.Option(
@@ -721,6 +755,7 @@ def predict_tft_cmd(
             seq_len=seq_len,
             horizons_selected=horizons,
             train_window_days=train_window_days,
+            train_window_by_horizon=train_window_by_horizon,
             max_epochs=max_epochs,
             epochs_by_horizon=epochs_by_horizon,
             hidden_size=hidden_size,

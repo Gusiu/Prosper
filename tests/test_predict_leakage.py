@@ -10,6 +10,7 @@ import pytest
 from prosper.domain import DEFAULT_HORIZONS, DIRECTION_CLASSES, HorizonSpec, days_to_steps
 from prosper.predict.window import (
     MIN_TRAIN_SAMPLES,
+    TrainingWindows,
     training_bounds,
     untrained_horizon_payload,
     usable_sample_count,
@@ -132,19 +133,29 @@ def test_untrained_payload_is_flagged_and_normalised() -> None:
 
 # ── Statistical power ────────────────────────────────────────────────────────
 
+def _fixed(window_days: int, forward: dict[str, int]) -> TrainingWindows:
+    """Windows as they were before each horizon derived its own: one width, shared."""
+    steps = days_to_steps(window_days, "1d")
+    return TrainingWindows(
+        forward_steps=forward,
+        window_steps=dict.fromkeys(forward, steps),
+        window_days=dict.fromkeys(forward, window_days),
+    )
+
+
 def test_the_window_reports_how_many_observations_each_horizon_has() -> None:
-    """`validate_train_window` refuses a window that cannot train; this is its
+    """`resolve_train_windows` refuses a window that cannot train; this is its
     sibling for a window that can train but cannot measure.
 
     A 730-day window holds 730 - 364 = 366 labelled bars at the annual horizon,
     and those overlap by 363 of 364 days — about one independent observation. No
     model, optimiser or epoch budget changes that; it is arithmetic about how
-    much non-overlapping history two years contains.
+    much non-overlapping history two years contains, and it is why one shared
+    window had to go.
     """
     from prosper.predict.window import training_window_power
 
-    steps = {"month": 28, "quarter": 91, "year": 364}
-    power = training_window_power(days_to_steps(730, "1d"), steps)
+    power = training_window_power(_fixed(730, {"month": 28, "quarter": 91, "year": 364}))
 
     assert power["month"] == pytest.approx(25.1, abs=0.1)
     assert power["quarter"] == pytest.approx(7.0, abs=0.1)
@@ -155,9 +166,8 @@ def test_a_quarter_has_more_than_twice_the_power_of_a_half_year() -> None:
     """The reason the horizon set moved to 91 days, and not an aesthetic one."""
     from prosper.predict.window import training_window_power
 
-    window = days_to_steps(730, "1d")
-    half_year = training_window_power(window, {"h": 182})["h"]
-    quarter = training_window_power(window, {"h": 91})["h"]
+    half_year = training_window_power(_fixed(730, {"h": 182}))["h"]
+    quarter = training_window_power(_fixed(730, {"h": 91}))["h"]
 
     assert quarter > 2 * half_year
 
@@ -165,7 +175,7 @@ def test_a_quarter_has_more_than_twice_the_power_of_a_half_year() -> None:
 def test_an_underpowered_horizon_is_warned_about() -> None:
     from prosper.predict.window import warn_low_power
 
-    messages = warn_low_power(days_to_steps(730, "1d"), {"month": 28, "year": 364})
+    messages = warn_low_power(_fixed(730, {"month": 28, "year": 364}))
 
     assert len(messages) == 1
     assert "'year'" in messages[0]
@@ -175,7 +185,22 @@ def test_an_underpowered_horizon_is_warned_about() -> None:
 def test_a_well_powered_configuration_warns_about_nothing() -> None:
     from prosper.predict.window import warn_low_power
 
-    assert warn_low_power(days_to_steps(730, "1d"), {"week": 7, "month": 28}) == []
+    assert warn_low_power(_fixed(730, {"week": 7, "month": 28})) == []
+
+
+def test_the_scored_side_is_warned_about_too() -> None:
+    """Widening a window to fix the training side takes the bars from the scored
+    side, one for one. A warning about only the first would read as an invitation
+    to keep widening — which is how a well-trained horizon ends up unmeasurable.
+    """
+    from prosper.predict.window import warn_low_power
+
+    windows = _fixed(2555, {"year": 364})  # seven years of training on nine of data
+    messages = warn_low_power(windows, scored_bars={"year": 320})
+
+    assert len(messages) == 1
+    assert "scored range" in messages[0]
+    assert "training window" not in messages[0], "the training side is fine at 2555 days"
 
 
 def test_validate_train_window_warns_without_refusing() -> None:

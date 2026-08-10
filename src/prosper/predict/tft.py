@@ -36,15 +36,16 @@ from prosper.predict.defaults import (
     MIN_EARLY_STOPPING_SAMPLES,
     parse_epoch_overrides,
     parse_horizons,
+    parse_window_overrides,
     resolve_epochs,
     summarise_epochs,
     window_seed,
 )
 from prosper.predict.window import (
-    days_to_steps,
-    training_bounds,
+    count_scored_bars,
+    resolve_train_windows,
     untrained_horizon_payload,
-    validate_train_window,
+    warn_low_power,
 )
 from prosper.storage.layout import get_features_parquet_path
 from prosper.storage.predictions import write_run_summary, write_versioned_predictions
@@ -341,7 +342,8 @@ def predict_tft(
     settings: Settings | None = None,
     interval: str = "1d",
     seq_len: int = 60,
-    train_window_days: int = DEFAULT_TRAIN_WINDOW_DAYS,
+    train_window_days: int | None = DEFAULT_TRAIN_WINDOW_DAYS,
+    train_window_by_horizon: str | None = None,
     horizons_selected: str | None = None,
     max_epochs: int = DEFAULT_EPOCH_BUDGET["tft"],
     epochs_by_horizon: str | None = None,
@@ -359,8 +361,7 @@ def predict_tft(
     horizon_specs = list(DEFAULT_HORIZONS)
     selected = set(parse_horizons(horizons_selected))
     epoch_budget = resolve_epochs(max_epochs, parse_epoch_overrides(epochs_by_horizon))
-    steps_by_horizon = validate_train_window(train_window_days, interval, horizon_specs)
-    train_window_steps = days_to_steps(train_window_days, interval)
+    window_overrides = parse_window_overrides(train_window_by_horizon)
 
     # ── Seed & deterministic mode (research) ─────────────────────────────────
     if settings.deterministic:
@@ -427,6 +428,15 @@ def predict_tft(
 
     start_dt = parse_date(start).date()
     end_dt = parse_date(end).date()
+
+    # After the load, not before: the window a horizon should get depends on how
+    # much history there is to divide between training it and scoring it.
+    windows = resolve_train_windows(
+        train_window_days, interval, horizon_specs, window_overrides, history_bars=n
+    )
+    steps_by_horizon = windows.forward_steps
+    scored_bars = count_scored_bars(dates, start_dt, end_dt, windows)
+    warn_low_power(windows, scored_bars)
 
     # ── 2. Pre-compute forward labels ─────────────────────────────────────────
     dir_map = DIR_TO_IDX
@@ -498,7 +508,10 @@ def predict_tft(
             depth_cache = {}
 
             # Normalise on past rows only; stats never see future bars.
-            X_tr = X_raw[max(0, i - train_window_steps) : i]
+            # The widest window in use, because normalisation is fitted once
+            # per bar and shared by every horizon. Still causal: it reads only
+            # bars strictly before the one being predicted.
+            X_tr = X_raw[max(0, i - windows.widest_window_steps) : i]
             X_safe = np.where(np.isfinite(X_tr), X_tr, 0.0)
             med = np.median(X_safe, axis=0)
             iqr_arr = np.percentile(X_safe, 75, axis=0) - np.percentile(X_safe, 25, axis=0)
@@ -512,7 +525,7 @@ def predict_tft(
                     continue
                 forward_steps = steps_by_horizon[h_name]
                 y_dir = y_dir_all[h_name]
-                train_start, train_end = training_bounds(i, train_window_steps, forward_steps)
+                train_start, train_end = windows.bounds(i, h_name)
                 # Build pandas dataframe for TimeSeriesDataSet
                 valid_idx = [k for k in range(train_start, train_end) if y_dir[k] >= 0]
                 if len(valid_idx) < seq_len + 10 or len(set(y_dir[valid_idx])) < 2:
@@ -747,6 +760,7 @@ def predict_tft(
         "interval": interval,
         "predictions": len(predictions),
         "untrained_horizons": untrained_counts,
+        "training_windows": windows.describe(scored_bars),
         "epochs_used": summarise_epochs(epochs_used, epoch_budget),
         "run_dir": str(run_dir),
     }

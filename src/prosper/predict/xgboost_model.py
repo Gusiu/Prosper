@@ -23,15 +23,19 @@ from prosper.predict.calibration import (
     calibration_split,
     fit_calibrator_from_model,
 )
-from prosper.predict.defaults import DEFAULT_TRAIN_WINDOW_DAYS, parse_horizons
+from prosper.predict.defaults import (
+    DEFAULT_TRAIN_WINDOW_DAYS,
+    parse_horizons,
+    parse_window_overrides,
+)
 from prosper.predict.window import (
-    days_to_steps,
-    training_bounds,
+    count_scored_bars,
+    resolve_train_windows,
     untrained_horizon_payload,
-    validate_train_window,
+    warn_low_power,
 )
 from prosper.storage.layout import get_features_parquet_path
-from prosper.storage.predictions import write_versioned_predictions
+from prosper.storage.predictions import write_run_summary, write_versioned_predictions
 from prosper.utils.time import parse_date
 
 
@@ -42,6 +46,7 @@ def predict_xgboost(
     settings: Settings | None = None,
     interval: str = "1d",
     train_window_days: int = DEFAULT_TRAIN_WINDOW_DAYS,
+    train_window_by_horizon: str | None = None,
     horizons_selected: str | None = None,
     n_estimators: int = 100,
     max_depth: int = 6,
@@ -67,8 +72,7 @@ def predict_xgboost(
 
     horizons = list(DEFAULT_HORIZONS)
     selected = set(parse_horizons(horizons_selected))
-    steps_by_horizon = validate_train_window(train_window_days, interval, horizons)
-    train_window_steps = days_to_steps(train_window_days, interval)
+    window_overrides = parse_window_overrides(train_window_by_horizon)
 
     effective_seed = settings.seed if settings.seed is not None else 42
     if settings.deterministic or settings.seed is not None:
@@ -104,6 +108,15 @@ def predict_xgboost(
     dates = df_feat["_date"].to_list()
     closes = df_feat["close"].to_list()
     n = len(df_feat)
+
+    # After the load, not before: the window a horizon should get depends on how
+    # much history there is to divide between training it and scoring it.
+    windows = resolve_train_windows(
+        train_window_days, interval, horizons, window_overrides, history_bars=n
+    )
+    steps_by_horizon = windows.forward_steps
+    scored_bars = count_scored_bars(dates, start_dt.date(), end_dt.date(), windows)
+    warn_low_power(windows, scored_bars)
 
     X_all = df_feat.select(feature_cols).to_numpy()
 
@@ -150,7 +163,7 @@ def predict_xgboost(
                     models_cache[h.name] = None
                     continue
                 forward_steps = steps_by_horizon[h.name]
-                train_start, train_end = training_bounds(i, train_window_steps, forward_steps)
+                train_start, train_end = windows.bounds(i, h.name)
                 y_dirs = horizon_targets[h.name]["direction"][train_start:train_end]
                 y_depths = horizon_targets[h.name]["depth"][train_start:train_end]
                 X_train = X_all[train_start:train_end]
@@ -277,15 +290,18 @@ def predict_xgboost(
             json.dumps(fi, indent=2), encoding="utf-8"
         )
 
-    return {
+    result = {
         "symbol": symbol,
         "start": start,
         "end": end,
         "interval": interval,
         "predictions": len(predictions),
         "untrained_horizons": untrained_counts,
+        "training_windows": windows.describe(scored_bars),
         "run_dir": str(out_dir),
     }
+    write_run_summary(out_dir, result)
+    return result
 
 
 def _to_prob_dict(counts: list[int], labels: list[str]) -> dict[str, float]:

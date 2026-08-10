@@ -8,7 +8,6 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from prosper.domain import DEPTH_BIN_LABELS
-from prosper.predict.defaults import DEFAULT_TRAIN_WINDOW_DAYS
 
 _UNSET = Path()
 
@@ -67,10 +66,11 @@ class Settings(BaseSettings):
     # Label settings
     label_depth_bins_default: list[str] = Field(default_factory=lambda: list(DEPTH_BIN_LABELS))
 
-    # Baseline model settings. The window must stay wider than the longest
-    # horizon (365d) plus a usable sample count, otherwise the long horizon has
-    # no realised outcomes to count; see prosper.predict.window.
-    baseline_rolling_window_days: int = Field(default=DEFAULT_TRAIN_WINDOW_DAYS, ge=1)
+    # Baseline model settings. `None` lets each horizon derive its own window
+    # from its span and the history available; a number pins one width for every
+    # horizon, which is what reproducing an older run needs. See
+    # prosper.predict.window.dynamic_window_steps.
+    baseline_rolling_window_days: int | None = Field(default=None, ge=1)
 
     # Planner settings
     # The round trip a signal has to pay for before it is worth acting on.

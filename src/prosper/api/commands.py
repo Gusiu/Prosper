@@ -160,6 +160,15 @@ def build_train_command(req: TrainRequest) -> list[list[str]]:
     if selected and len(selected) < len(HORIZON_NAMES):
         cmd.extend(["--horizons", ",".join(selected)])
 
+    if req.train_window_by_horizon:
+        pairs = ",".join(
+            f"{name}={days}"
+            for name, days in req.train_window_by_horizon.items()
+            if name in HORIZON_NAMES
+        )
+        if pairs:
+            cmd.extend(["--train-window-per-horizon", pairs])
+
     if model_type in ("gru", "tft"):
         # Silence, not a default, when the caller did not choose one.
         if req.epochs is not None:

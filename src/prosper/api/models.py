@@ -41,6 +41,10 @@ class TrainRequest(BaseModel):
     # it unconditionally. `None` means "say nothing and let the CLI decide".
     epochs: int | None = None
     epochs_by_horizon: dict[str, int] = Field(default_factory=dict)
+    # Same rule as the epochs above: empty means "say nothing". The CLI derives
+    # each horizon's window from its span and the history available, and an
+    # unasked-for value here would override a decision the data made.
+    train_window_by_horizon: dict[str, int] = Field(default_factory=dict)
     horizons: list[str] = Field(default_factory=lambda: list(HORIZON_NAMES))
     params: dict[str, Any] = Field(default_factory=dict)
     flags: ResearchFlags = Field(default_factory=ResearchFlags)
