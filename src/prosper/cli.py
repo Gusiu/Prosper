@@ -501,6 +501,12 @@ def predict_ml_cmd(
         "--train-window-per-horizon",
         help="Per-horizon training windows in days, e.g. 'year=1456'. Overrides the derived width.",
     ),
+    symbols: str = typer.Option(
+        None,
+        "--symbols",
+        help="Extra symbols to pool into the training set, e.g. 'BTCUSDT,SOLUSDT'. "
+        "Predictions are still for --symbol alone.",
+    ),
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
     strict: bool = typer.Option(False, "--strict", help="Fail fast on data quality issues"),
     deterministic: bool = typer.Option(
@@ -527,6 +533,7 @@ def predict_ml_cmd(
             end=end,
             settings=settings,
             interval=interval,
+            symbols=symbols,
             horizons_selected=horizons,
             train_window_days=train_window_days,
             train_window_by_horizon=train_window_by_horizon,
@@ -564,6 +571,12 @@ def predict_xgboost_cmd(
         "--train-window-per-horizon",
         help="Per-horizon training windows in days, e.g. 'year=1456'. Overrides the derived width.",
     ),
+    symbols: str = typer.Option(
+        None,
+        "--symbols",
+        help="Extra symbols to pool into the training set, e.g. 'BTCUSDT,SOLUSDT'. "
+        "Predictions are still for --symbol alone.",
+    ),
     n_estimators: int = typer.Option(100, "--n-estimators", help="XGBoost n_estimators"),
     max_depth: int = typer.Option(6, "--max-depth", help="XGBoost max_depth"),
     learning_rate: float = typer.Option(0.1, "--learning-rate", help="XGBoost learning rate"),
@@ -593,6 +606,7 @@ def predict_xgboost_cmd(
             end=end,
             settings=settings,
             interval=interval,
+            symbols=symbols,
             horizons_selected=horizons,
             train_window_days=train_window_days,
             train_window_by_horizon=train_window_by_horizon,

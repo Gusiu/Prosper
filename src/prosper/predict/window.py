@@ -62,7 +62,11 @@ class TrainingWindows:
             row_index, self.window_steps[horizon], self.forward_steps[horizon]
         )
 
-    def describe(self, scored_bars: Mapping[str, int] | None = None) -> dict[str, dict[str, float]]:
+    def describe(
+        self,
+        scored_bars: Mapping[str, int] | None = None,
+        effective_symbols: Mapping[str, float] | None = None,
+    ) -> dict[str, dict[str, float]]:
         """The windows this run chose, and what they are worth, for the summary.
 
         A derived setting that is not written down is a setting nobody can check.
@@ -71,7 +75,7 @@ class TrainingWindows:
         find out what a run actually trained on would be to re-derive it and hope
         the rule had not changed in between.
         """
-        power = training_window_power(self)
+        power = training_window_power(self, effective_symbols)
         scored = scored_power(self, scored_bars) if scored_bars is not None else {}
         return {
             name: {
@@ -251,7 +255,9 @@ def validate_train_window(
     )
 
 
-def training_window_power(windows: TrainingWindows) -> dict[str, float]:
+def training_window_power(
+    windows: TrainingWindows, effective_symbols: Mapping[str, float] | None = None
+) -> dict[str, float]:
     """Independent observations each horizon has inside its training window.
 
     A window holds `window_steps` bars, of which the last `forward_steps` have
@@ -262,9 +268,16 @@ def training_window_power(windows: TrainingWindows) -> dict[str, float]:
     and **1.0** for 364. One observation cannot fit or calibrate anything, and no
     model, optimiser setting or epoch budget changes that: it is arithmetic about
     how much non-overlapping history a two-year window contains.
+
+    *effective_symbols* scales the count when several symbols are pooled — by
+    `domain.effective_symbols`, not by the number of symbols. Three correlated
+    crypto symbols multiply the annual count by 1.19, not by 3, and using the
+    row count instead would report a horizon as measurable when it is not.
     """
+    scale = dict(effective_symbols or {})
     return {
         name: effective_samples(max(0, windows.window_steps[name] - forward), forward)
+        * max(1.0, scale.get(name, 1.0))
         for name, forward in windows.forward_steps.items()
     }
 
@@ -305,7 +318,9 @@ def scored_power(windows: TrainingWindows, scored_bars: Mapping[str, int]) -> di
 
 
 def warn_low_power(
-    windows: TrainingWindows, scored_bars: Mapping[str, int] | None = None
+    windows: TrainingWindows,
+    scored_bars: Mapping[str, int] | None = None,
+    effective_symbols: Mapping[str, float] | None = None,
 ) -> list[str]:
     """Warn about horizons the run cannot statistically support.
 
@@ -324,7 +339,7 @@ def warn_low_power(
     somewhere other than a console.
     """
     sides: list[tuple[str, dict[str, float]]] = [
-        ("training window", training_window_power(windows))
+        ("training window", training_window_power(windows, effective_symbols))
     ]
     if scored_bars is not None:
         sides.append(("scored range", scored_power(windows, scored_bars)))

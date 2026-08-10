@@ -116,14 +116,25 @@ def test_no_absolute_column_is_in_the_training_set() -> None:
 
 def test_every_predictor_uses_the_include_list() -> None:
     """An exclude list adopts every new column, which is how the relative
-    columns would have been trained on *alongside* their absolute twins."""
+    columns would have been trained on *alongside* their absolute twins.
+
+    The pooled predictors get their columns from `pool.load_pool`, which
+    intersects `training_features` across the symbols, so either calling it
+    directly or going through the pool satisfies this. What is forbidden is
+    naming columns to leave out.
+    """
     import inspect
 
-    from prosper.predict import gru, ml, tft, xgboost_model
+    from prosper.predict import gru, ml, pool, tft, xgboost_model
+
+    assert "training_features(" in inspect.getsource(pool), (
+        "load_pool is where the pooled predictors get their columns; it must "
+        "still filter through the include list"
+    )
 
     for module in (ml, xgboost_model, gru, tft):
         source = inspect.getsource(module)
-        assert "training_features(" in source, module.__name__
+        assert "training_features(" in source or "load_pool(" in source, module.__name__
         assert "exclude_cols" not in source, f"{module.__name__} still excludes rather than includes"
 
 

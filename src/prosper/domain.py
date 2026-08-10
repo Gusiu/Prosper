@@ -83,6 +83,32 @@ def effective_samples(n: int, forward_steps: int) -> float:
     return n / forward_steps
 
 
+def effective_symbols(count: int, correlation: float) -> float:
+    """How many *independent* symbols a pool of *count* correlated ones is worth.
+
+    The standard design effect: `n / (1 + (n - 1) * rho)`. Pooling symbols is the
+    only lever that adds training observations without spending scored bars, but
+    it does not add them one for one — two symbols that move together carry one
+    symbol's worth of information about what moves them.
+
+    Measured on this project's daily data, mean pairwise correlation of forward
+    returns runs 0.60 at the weekly horizon and **0.76 at the annual** one, so
+    three symbols are worth 1.34 and 1.19 respectively. The limit as more symbols
+    are added is `1 / rho` — about 1.3 at the annual horizon — so no number of
+    crypto symbols rescues that horizon by pooling alone. They share one dominant
+    market factor, and pooling averages over the part that differs, not the part
+    that dominates.
+
+    That ceiling is the argument for predicting *relative* moves ("will BTC beat
+    ETH") rather than absolute ones: subtracting the common factor is the only
+    way to make a second symbol carry a second observation.
+    """
+    if count <= 1:
+        return float(max(count, 0))
+    rho = min(max(correlation, 0.0), 1.0)
+    return count / (1.0 + (count - 1) * rho)
+
+
 # ── Horizon spec ─────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class HorizonSpec:

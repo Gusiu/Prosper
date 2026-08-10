@@ -4,20 +4,17 @@ import math
 from typing import Any
 
 import numpy as np
-import polars as pl
 from sklearn.ensemble import HistGradientBoostingClassifier
 
 from prosper.config import Settings, get_settings
 from prosper.domain import (
     DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
-    DIR_TO_IDX,
     DIRECTION_CLASSES,
     IDX_TO_DIR,
-    assign_depth_bin,
     direction_from_return,
+    effective_symbols,
     parse_depth_bins,
-    training_features,
 )
 from prosper.predict.calibration import calibration_split, fit_calibrator_from_model
 from prosper.predict.defaults import (
@@ -25,13 +22,13 @@ from prosper.predict.defaults import (
     parse_horizons,
     parse_window_overrides,
 )
+from prosper.predict.pool import describe_pool, load_pool, parse_symbols
 from prosper.predict.window import (
     count_scored_bars,
     resolve_train_windows,
     untrained_horizon_payload,
     warn_low_power,
 )
-from prosper.storage.layout import get_features_parquet_path
 from prosper.storage.predictions import write_run_summary, write_versioned_predictions
 from prosper.utils.time import parse_date
 
@@ -52,6 +49,7 @@ def predict_ml(
     train_window_days: int | None = DEFAULT_TRAIN_WINDOW_DAYS,
     train_window_by_horizon: str | None = None,
     horizons_selected: str | None = None,
+    symbols: str | None = None,
     depth_bins_str: str = DEFAULT_DEPTH_BINS_STR,
 ) -> dict[str, Any]:
     """
@@ -88,66 +86,43 @@ def predict_ml(
     start_dt = parse_date(start)
     end_dt = parse_date(end)
 
-    # 1. Load Features
-    feat_path = get_features_parquet_path(symbol, interval, settings=settings)
-    if not feat_path.exists():
-        return {
-            "error": f"No features parquet found for {symbol}. Run features build.",
-            "symbol": symbol,
-        }
+    # 1. Load features for every pooled symbol. One path whether pooling or
+    # not, so "which rows may this model see" has a single implementation.
+    pooled_symbols = parse_symbols(symbols, symbol)
+    forward_steps_by_horizon = {h.name: h.steps(interval) for h in horizons}
+    try:
+        pool, feature_cols = load_pool(
+            pooled_symbols, interval, forward_steps_by_horizon, depth_bins, settings
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return {"error": str(exc), "symbol": symbol}
 
-    # Disable hive partitioning to avoid duplicate schema errors if 'symbol' is already a column
-    df_feat = pl.read_parquet(feat_path, hive_partitioning=False).sort("open_time")
-
-    if df_feat.is_empty():
-        return {"error": "Empty features DataFrame", "symbol": symbol}
-
-    df_feat = df_feat.with_columns(pl.col("open_time").dt.date().alias("_date"))
-
-    # 2. Extract features matrix
-    # Exclude non-feature columns
-    # An include list, not an exclude list. The old form took every column in the
-    # parquet bar a handful of names, which fed the model raw price levels — and
-    # would have adopted each new relative column *alongside* its absolute twin.
-    feature_cols = training_features(df_feat.columns)
-
-    open_times = df_feat["open_time"].to_list()
-    dates = df_feat["_date"].to_list()
-    closes = df_feat["close"].to_list()
-    n = len(df_feat)
+    target = pool.frames[0]
+    open_times = target.timestamps
+    dates = [value.date() for value in open_times]
+    n = len(target)
 
     # After the load, not before: the window a horizon should get depends on how
     # much history there is to divide between training it and scoring it.
     windows = resolve_train_windows(
         train_window_days, interval, horizons, window_overrides, history_bars=n
     )
-    steps_by_horizon = windows.forward_steps
     scored_bars = count_scored_bars(dates, start_dt.date(), end_dt.date(), windows)
-    warn_low_power(windows, scored_bars)
+    # Pooling scales the training side, but by  rather than by
+    # the symbol count: correlated symbols do not each bring an observation.
+    pool_power = {
+        name: effective_symbols(len(pool.frames), pool.return_correlation(forward))
+        for name, forward in forward_steps_by_horizon.items()
+    }
+    warn_low_power(windows, scored_bars, pool_power)
 
-    X_all = df_feat.select(feature_cols).to_numpy()
-
-    # Pre-calculate horizon targets, indexed in bars rather than days.
-    horizon_targets = {}
-    for h in horizons:
-        forward_steps = steps_by_horizon[h.name]
-        directions: list[str | None] = [None] * n
-        depths: list[int | None] = [None] * n
-        for i in range(n):
-            j = i + forward_steps
-            if j < n:
-                r = closes[j] / closes[i] - 1.0
-                d = _direction_from_return_safe(r)
-                directions[i] = d
-                if d is not None:
-                    depths[i] = assign_depth_bin(abs(r) * 100.0, depth_bins)
-        horizon_targets[h.name] = {"direction": directions, "depth": depths}
+    X_all = target.features
+    pool_contributions: dict[str, Any] = {}
 
     predictions: list[dict[str, Any]] = []
     untrained_counts: dict[str, int] = {h.name: 0 for h in horizons}
 
     # Label <-> index mapping comes from the domain, not a local literal.
-    dir_map = DIR_TO_IDX
     inv_dir_map = IDX_TO_DIR
 
     # Retrain once per calendar month to balance freshness against runtime.
@@ -171,27 +146,28 @@ def predict_ml(
             current_train_month = train_month
             models_cache = {}
 
+            month_slices: dict[str, Any] = {}
             for h in horizons:
                 if h.name not in selected:
                     models_cache[h.name] = None
                     continue
-                forward_steps = steps_by_horizon[h.name]
-                # Labels at k need close[k + forward_steps]; only those realised
-                # before bar i may be trained on.
-                train_start, train_end = windows.bounds(i, h.name)
-                y_dirs = horizon_targets[h.name]["direction"][train_start:train_end]
-                y_depths = horizon_targets[h.name]["depth"][train_start:train_end]
-                X_train = X_all[train_start:train_end]
+                # Bounded by instants, not row indices: a label at instant t
+                # needs the close at t + horizon, and symbols that launched at
+                # different times share no common row numbering.
+                pooled = pool.training_slice(open_times[i], h.name, windows)
+                month_slices[h.name] = pooled
+                y_dirs = pooled.direction
+                y_depths = pooled.depth
+                X_train = pooled.features
 
-                # Filter valid labels (no None)
-                valid_idx = [k for k, d in enumerate(y_dirs) if d is not None]
+                valid_idx = [k for k, d in enumerate(y_dirs) if d >= 0]
 
                 if len(valid_idx) < 10:
                     models_cache[h.name] = None
                     continue
 
                 X_train_valid = X_train[valid_idx]
-                y_train_valid = [dir_map[y_dirs[k]] for k in valid_idx]
+                y_train_valid = [int(y_dirs[k]) for k in valid_idx]
 
                 # Reserve the most recent slice of the *training* region to
                 # calibrate on. Holding out later bars instead would break
@@ -225,30 +201,32 @@ def predict_ml(
                 )
 
                 # Depth classifiers (long and short separately)
-                idx_long = [k for k in valid_idx if y_dirs[k] == "long"]
-                idx_short = [k for k in valid_idx if y_dirs[k] == "short"]
+                idx_long = [k for k in valid_idx if inv_dir_map[int(y_dirs[k])] == "long"]
+                idx_short = [k for k in valid_idx if inv_dir_map[int(y_dirs[k])] == "short"]
 
                 clf_depth_long = None
                 if len(idx_long) > 5 and len({y_depths[k] for k in idx_long}) > 1:
                     clf_depth_long = HistGradientBoostingClassifier(
                         random_state=effective_seed, max_iter=30, max_leaf_nodes=10
                     )
-                    clf_depth_long.fit(X_train[idx_long], [y_depths[k] for k in idx_long])
+                    clf_depth_long.fit(X_train[idx_long], [int(y_depths[k]) for k in idx_long])
 
                 clf_depth_short = None
                 if len(idx_short) > 5 and len({y_depths[k] for k in idx_short}) > 1:
                     clf_depth_short = HistGradientBoostingClassifier(
                         random_state=effective_seed, max_iter=30, max_leaf_nodes=10
                     )
-                    clf_depth_short.fit(X_train[idx_short], [y_depths[k] for k in idx_short])
+                    clf_depth_short.fit(X_train[idx_short], [int(y_depths[k]) for k in idx_short])
 
                 # Fallback empirics for depth
                 emp_long = [0] * len(depth_labels)
                 for k in idx_long:
-                    emp_long[y_depths[k]] += 1
+                    if y_depths[k] >= 0:
+                        emp_long[int(y_depths[k])] += 1
                 emp_short = [0] * len(depth_labels)
                 for k in idx_short:
-                    emp_short[y_depths[k]] += 1
+                    if y_depths[k] >= 0:
+                        emp_short[int(y_depths[k])] += 1
 
                 def to_prob_dict(counts: list[int]) -> dict[str, float]:
                     s = sum(counts)
@@ -267,6 +245,11 @@ def predict_ml(
                     "classes_long": clf_depth_long.classes_ if clf_depth_long else [],
                     "classes_short": clf_depth_short.classes_ if clf_depth_short else [],
                 }
+
+            if month_slices:
+                pool_contributions = describe_pool(
+                    month_slices, pool, forward_steps_by_horizon
+                )
 
         # Inference for current row
         X_test = X_all[i : i + 1]
@@ -325,12 +308,14 @@ def predict_ml(
 
     result = {
         "symbol": symbol,
+        "trained_on": list(pool.symbols),
+        "pool_contributions": pool_contributions,
         "start": start,
         "end": end,
         "interval": interval,
         "predictions": len(predictions),
         "untrained_horizons": untrained_counts,
-        "training_windows": windows.describe(scored_bars),
+        "training_windows": windows.describe(scored_bars, pool_power),
         "run_dir": str(run_dir),
     }
     write_run_summary(run_dir, result)
