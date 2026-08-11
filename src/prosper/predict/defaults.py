@@ -60,7 +60,9 @@ def epoch_budget(model_type: str) -> int:
     return DEFAULT_EPOCH_BUDGET.get(model_type.lower(), 0)
 
 
-def window_seed(base_seed: int, model_type: str, horizon: str, year: int, month: int) -> int:
+def window_seed(
+    base_seed: int, model_type: str, horizon: str, year: int, month: int, symbol: str = ""
+) -> int:
     """A seed belonging to one (model, horizon, retraining month) and nothing else.
 
     Seeding once before the walk-forward loop makes a *single configuration*
@@ -78,12 +80,25 @@ def window_seed(base_seed: int, model_type: str, horizon: str, year: int, month:
     Deriving the seed from the window's own identity makes each model depend only
     on which model it is, so two runs differing in one hyperparameter produce
     identical results everywhere that hyperparameter does not reach.
+
+    **The symbol belongs in that identity**, and leaving it out cost a result. For
+    a given (base seed, model, horizon, month) every symbol drew the *same*
+    weights, dropout masks and batch order, so four symbols trained under one base
+    seed were not four independent draws of "this model on a new dataset" — they
+    were one draw of the initialisation sequence applied to four datasets. A
+    four-symbol replication was read as independent evidence on that basis, and
+    the shared factor is large: reseeding moves a single symbol's accuracy by
+    about 0.05, which was larger than the effect being claimed. Including the
+    symbol decorrelates them and costs nothing, because the symbol is never the
+    hyperparameter under test.
     """
     # A real hash over the identity, not arithmetic on the characters: summing
     # code points collides immediately — "tft" and "gru" both sum to 334, so the
     # two models would have shared every seed. `hash()` is unusable here because
     # Python salts it per process, which would make runs irreproducible.
-    identity = f"{base_seed}|{model_type.lower()}|{horizon.lower()}|{year:04d}-{month:02d}"
+    identity = (
+        f"{base_seed}|{model_type.lower()}|{horizon.lower()}|{year:04d}-{month:02d}|{symbol.upper()}"
+    )
     digest = hashlib.blake2b(identity.encode("utf-8"), digest_size=8).digest()
     # Keep it inside the range torch.manual_seed accepts.
     return int.from_bytes(digest, "big") % (2**31 - 1)

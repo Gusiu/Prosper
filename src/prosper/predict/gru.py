@@ -437,7 +437,7 @@ def predict_gru(
                 # others — see `window_seed`.
                 if settings.deterministic or settings.seed is not None:
                     base = settings.seed if settings.seed is not None else 42
-                    torch.manual_seed(window_seed(base, "gru", h.name, *month_key))
+                    torch.manual_seed(window_seed(base, "gru", h.name, *month_key, symbol=symbol))
 
                 loader = DataLoader(fit_ds, batch_size=batch_size, shuffle=True, drop_last=False)
                 m = GRUClassifier(len(feature_cols), hidden_size, num_layers, dropout).to(device)

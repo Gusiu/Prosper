@@ -613,7 +613,7 @@ def predict_tft(
                         import torch as _torch
 
                         base = settings.seed if settings.seed is not None else 42
-                        _torch.manual_seed(window_seed(base, "tft", h_name, *month_key))
+                        _torch.manual_seed(window_seed(base, "tft", h_name, *month_key, symbol=symbol))
 
                     tft = TemporalFusionTransformer.from_dataset(
                         ds,
