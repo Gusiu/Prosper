@@ -64,7 +64,9 @@ def write_versioned_predictions(
     return out_dir
 
 
-def write_run_summary(run_dir: Path, summary: dict[str, Any]) -> Path:
+def write_run_summary(
+    run_dir: Path, summary: dict[str, Any], settings: Settings | None = None
+) -> Path:
     """Persist a run's own description beside its predictions.
 
     Everything a predictor learns about its own execution used to die with the
@@ -76,10 +78,33 @@ def write_run_summary(run_dir: Path, summary: dict[str, Any]) -> Path:
 
     Invariant 5 says every derived artifact names its source run; the same logic
     says a run should name its own configuration.
+
+    The **seed and the deterministic flag are stamped here**, not by the callers,
+    because a run that cannot say what produced it cannot be reproduced — and the
+    project's entire reproducibility claim rests on being able to re-run one. The
+    omission surfaced while comparing two seeds of the same configuration: the
+    artifacts were indistinguishable, and which seed made which had to be
+    recovered from a shell log. Stamping it in one place means no predictor can
+    forget it, which five separately-maintained result dicts had all managed to.
     """
+    if settings is None:
+        settings = get_settings()
+
+    model_type, _, rest = run_dir.name.partition("_")
+    interval = rest.rpartition("_")[0]
+
+    stamped = {
+        "model_type": model_type or None,
+        "interval": interval or None,
+        "seed": settings.seed,
+        "deterministic": bool(settings.deterministic),
+        "generated_at": datetime.now(UTC).isoformat(),
+        **summary,
+    }
+
     path = run_dir / "run_summary.json"
     path.write_text(
-        json.dumps(summary, indent=2, sort_keys=True, default=_json_converter),
+        json.dumps(stamped, indent=2, sort_keys=True, default=_json_converter),
         encoding="utf-8",
     )
     return path

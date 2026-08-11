@@ -525,7 +525,7 @@ def predict_gru(
         "run_dir": str(run_dir),
         "device": str(device),
     }
-    write_run_summary(run_dir, result)
+    write_run_summary(run_dir, result, settings)
     return result
 
 

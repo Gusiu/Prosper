@@ -296,7 +296,7 @@ def predict_xgboost(
         "training_windows": windows.describe(scored_bars, pool_power),
         "run_dir": str(out_dir),
     }
-    write_run_summary(out_dir, result)
+    write_run_summary(out_dir, result, settings)
     return result
 
 

@@ -271,5 +271,7 @@ def test_both_deep_predictors_persist_their_summary() -> None:
 
     for predictor in (predict_gru, predict_tft):
         source = inspect.getsource(predictor)
-        assert "write_run_summary(run_dir, result)" in source, predictor.__name__
+        # The settings go with it, or the run would not record its own seed;
+        # see `test_run_provenance`.
+        assert "write_run_summary(run_dir, result, settings)" in source, predictor.__name__
         assert '"epochs_used"' in source, predictor.__name__

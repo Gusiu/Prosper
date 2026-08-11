@@ -764,7 +764,7 @@ def predict_tft(
         "epochs_used": summarise_epochs(epochs_used, epoch_budget),
         "run_dir": str(run_dir),
     }
-    write_run_summary(run_dir, result)
+    write_run_summary(run_dir, result, settings)
     return result
 
 
