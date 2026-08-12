@@ -185,37 +185,86 @@ def build() -> str:
     doc.add_page_break()
 
     # ── 1. teza ──────────────────────────────────────────────────────────────
-    add_heading(doc, "1. Teza i cel pracy", 1)
+    add_heading(doc, "1. Pytanie badawcze, teza i zakres", 1)
 
-    add_body(doc, "Praca broni następującej tezy:")
+    add_heading(doc, "1.1. Pytanie badawcze", 2)
+    add_body(
+        doc,
+        "Praca odpowiada na pytanie: jak różne architektury uczenia maszynowego radzą sobie z "
+        "prognozą kierunku zmiany ceny aktywa finansowego, dysponując wyłącznie historią jego "
+        "notowań.",
+    )
+    add_body(
+        doc,
+        "Ograniczenie do samych notowań nie jest uproszczeniem przyjętym dla wygody. Pytanie "
+        "„czy z historii cen da się przewidzieć cenę” jest treścią słabej formy hipotezy "
+        "efektywności rynku (Fama, 1970) i stanowi jedną z trzech kanonicznych postaci tej "
+        "hipotezy. Analiza fundamentalna należy do formy półsilnej i odpowiada na inne pytanie; "
+        "nie jest bogatszą wersją pytania zadanego tutaj. Praca testuje formę słabą przy użyciu "
+        "architektur, które w chwili jej sformułowania nie istniały.",
+    )
+
+    add_heading(doc, "1.2. Teza", 2)
     quote = doc.add_paragraph()
     quote.paragraph_format.left_indent = Cm(1.0)
     quote.paragraph_format.space_after = Pt(10)
     run = quote.add_run(
-        "W domenie o bardzo słabym sygnale wartość systemu prognostycznego leży w jego "
-        "aparaturze pomiarowej, a nie w modelu. Bez rygorystycznej weryfikacji poprawnie "
-        "zaimplementowany pipeline systematycznie produkuje wyniki pozornie pozytywne — "
-        "i każdy z nich jest artefaktem."
+        "Różnice między badanymi architekturami uczenia maszynowego w zadaniu prognozy kierunku "
+        "ceny z samej historii notowań są mniejsze niż rozrzut wyników wynikający z losowej "
+        "inicjalizacji tej samej architektury, a żadna z nich nie osiąga przewagi odróżnialnej "
+        "od losowej. Orzeczenie tego wymaga warstwy weryfikacji zdolnej odróżnić brak różnicy "
+        "od niedostatecznej dokładności pomiaru."
     )
     run.bold = True
     run.font.size = Pt(10.5)
 
     add_body(
         doc,
-        "Dowodem tezy nie jest brak wykrytej przewagi prognostycznej, lecz lista defektów, "
-        "które warstwa weryfikacji wykryła w trakcie budowy systemu. Każdy z nich dawał wynik "
-        "wyglądający na poprawny i żaden nie ujawniłby się w samej trafności prognozy "
-        "(rozdział 7). Wynik negatywny jest konsekwencją tezy, a nie jej treścią.",
+        "Zdanie ostatnie jest istotne. Stwierdzenie „architektury nie różnią się między sobą” "
+        "jest nieodróżnialne od stwierdzenia „pomiar był zbyt zaszumiony, aby je rozróżnić”, "
+        "dopóki poziom szumu nie zostanie zmierzony. Z tego powodu każdą konfigurację uruchomiono "
+        "wielokrotnie pod różnymi ziarnami generatora liczb losowych, a rozdział 6 raportuje "
+        "rozrzut między architekturami obok rozrzutu wynikającego z samej inicjalizacji.",
     )
 
-    add_heading(doc, "1.1. Twierdzenia szczegółowe", 2)
+    add_heading(doc, "1.3. Uzasadnienie wyboru rynku", 2)
+    add_body(
+        doc,
+        "Pierwotnym zamiarem był system uniwersalny, obejmujący rynek akcji, walutowy i "
+        "kryptowalut. Zamiar ograniczono do kryptowalut z powodów metodologicznych, a nie "
+        "wyłącznie z powodu złożoności implementacji: rynki różnią się w sposób, który wprowadza "
+        "do pomiaru zmienne niezwiązane z badanym modelem.",
+    )
     add_bullets(
         doc,
         [
-            "Przy zastosowanym zbiorze cech technicznych i pięciu rodzinach modeli nie wykryto "
-            "przewagi kierunkowej istotnie większej od losowej na żadnym horyzoncie o "
-            "wystarczającej mocy statystycznej. Jest to wynik ograniczony od góry, a nie "
-            "twierdzenie o niemożliwości prognozowania.",
+            "Notowania ciągłe — brak luk weekendowych i nocnych, które na rynku akcji tworzą "
+            "nieciągłości wymagające osobnego traktowania w każdej z cech technicznych.",
+            "Brak zdarzeń korporacyjnych — podziały akcji, dywidendy i emisje wymagają korekty "
+            "szeregu historycznego, a sposób tej korekty wpływa na wynik modelu.",
+            "Jednolita mikrostruktura — jedna giełda, jeden mechanizm zawierania transakcji, "
+            "brak fragmentacji zleceń między systemami obrotu.",
+            "Otwarte dane historyczne w jednolitym formacie, o pełnej głębokości i bez opłat "
+            "licencyjnych, co czyni wyniki odtwarzalnymi przez osobę trzecią.",
+        ],
+    )
+    add_body(
+        doc,
+        "Wybrano zatem rynek, na którym mierzone jest zachowanie modelu, a nie artefakty "
+        "specyficzne dla danego systemu obrotu. Rozszerzenie na pozostałe rynki pozostaje "
+        "kierunkiem dalszych prac (rozdział 8).",
+    )
+
+    add_heading(doc, "1.4. Twierdzenia szczegółowe", 2)
+    add_bullets(
+        doc,
+        [
+            "Żadna z pięciu badanych architektur nie osiąga trafności kierunkowej istotnie "
+            "większej od losowej na horyzoncie o wystarczającej mocy statystycznej. Jest to "
+            "wynik ograniczony od góry, a nie twierdzenie o niemożliwości prognozowania.",
+            "Rozrzut trafności tej samej architektury pod różnymi ziarnami inicjalizacji jest "
+            "porównywalny z różnicami między architekturami, co czyni ranking architektur "
+            "oparty na pojedynczym przebiegu pozbawionym podstaw.",
             "Kalibracja prognoz jest osiągalna tam, gdzie trafność nie jest: system poprawnie "
             "raportuje własną niepewność, co jest osobnym, pozytywnym wynikiem inżynierskim.",
             "Wiążącym ograniczeniem jest liczba niezależnych obserwacji, nie pojemność modelu. "
@@ -397,11 +446,12 @@ def build() -> str:
 
     # ── 5. warstwa weryfikacji ──────────────────────────────────────────────
     doc.add_page_break()
-    add_heading(doc, "5. Warstwa weryfikacji", 1)
+    add_heading(doc, "5. Metodyka pomiaru", 1)
     add_body(
         doc,
-        "Rozdział centralny dla tezy pracy. Warstwa weryfikacji istnieje po to, aby system nie "
-        "mógł schlebiać samemu sobie.",
+        "Rozdział opisuje warstwę, która czyni porównanie architektur rozstrzygalnym. Bez niej "
+        "wynik „architektury nie różnią się” pozostaje nieodróżnialny od „pomiar był zbyt "
+        "zaszumiony”, a każdy pojedynczy wynik dodatni — nieodróżnialny od artefaktu.",
         italic=True,
     )
 
@@ -476,7 +526,7 @@ def build() -> str:
 
     # ── 6. wyniki ────────────────────────────────────────────────────────────
     doc.add_page_break()
-    add_heading(doc, "6. Wyniki", 1)
+    add_heading(doc, "6. Wyniki: porównanie architektur", 1)
 
     total = sum(len(v) for v in runs.values())
     seeds = sorted({r["seed"] for v in runs.values() for r in v if r["seed"] is not None})
@@ -484,10 +534,66 @@ def build() -> str:
         doc,
         f"Podstawą tabel jest {total} przebiegów odczytanych z artefaktów projektu"
         + (f", pod ziarnami: {', '.join(str(s) for s in seeds)}." if seeds else ".")
-        + " Każdy model uruchomiono wielokrotnie pod różnymi ziarnami, ponieważ pojedynczy "
-        "przebieg niesie szum inicjalizacji, którego przedział ufności liczony wewnątrz tego "
-        "przebiegu nie obejmuje.",
+        + " Każdą konfigurację uruchomiono wielokrotnie pod różnymi ziarnami, ponieważ "
+        "pojedynczy przebieg niesie szum inicjalizacji, którego przedział ufności liczony "
+        "wewnątrz tego przebiegu nie obejmuje.",
     )
+
+    add_heading(doc, "6.1. Ranking architektur wobec podłogi szumu", 2)
+    add_body(
+        doc,
+        "Tabela poniżej odpowiada wprost na pytanie badawcze. Kolumna „rozrzut ziarna” podaje "
+        "typowe odchylenie standardowe trafności między przebiegami tej samej architektury na "
+        "tym samym symbolu, różniącymi się wyłącznie ziarnem. Jeżeli rozstęp między "
+        "architekturami nie przekracza tej wielkości, ranking architektur nie ma podstaw.",
+    )
+
+    for horizon in HORIZON_NAMES:
+        per_model: dict[str, list[float]] = {}
+        within: list[float] = []
+        for model in MODELS:
+            values: list[float] = []
+            for symbol in SYMBOLS:
+                accs = horizon_values(runs.get((symbol, model), []), horizon, "accuracy")
+                if not accs:
+                    continue
+                values.extend(accs)
+                if len(accs) > 1:
+                    within.append(float(np.std(accs, ddof=1)))
+            if values:
+                per_model[model] = values
+        if len(per_model) < 2:
+            continue
+
+        means = {m: float(np.mean(v)) for m, v in per_model.items()}
+        order = sorted(means, key=lambda m: -means[m])
+        spread = max(means.values()) - min(means.values())
+        noise = float(np.mean(within)) if within else None
+
+        rows = [
+            [str(rank), model, str(len(per_model[model])), fmt(means[model])]
+            for rank, model in enumerate(order, start=1)
+        ]
+        add_body(doc, f"Horyzont „{horizon}”:")
+        add_table(
+            doc, ["Poz.", "Architektura", "Przeb.", "Trafność średnia"], rows,
+            [1.5, 5.0, 2.0, 4.0],
+        )
+        verdict = (
+            "rozstęp mieści się w rozrzucie ziarna — ranking bez podstaw"
+            if noise is not None and spread <= noise
+            else "rozstęp przekracza rozrzut ziarna"
+            if noise is not None
+            else "brak powtórzeń, rozrzut ziarna niezmierzony"
+        )
+        add_caption(
+            doc,
+            f"Rozstęp między najlepszą a najgorszą architekturą: {spread:.3f}. "
+            + (f"Typowy rozrzut tej samej architektury pod innym ziarnem: {noise:.3f}. " if noise else "")
+            + f"Wniosek: {verdict}.",
+        )
+
+    add_heading(doc, "6.2. Wyniki szczegółowe", 2)
 
     for horizon in HORIZON_NAMES:
         rows = []
@@ -508,7 +614,7 @@ def build() -> str:
                 ])
         if not rows:
             continue
-        add_heading(doc, f"6.{HORIZON_NAMES.index(horizon) + 1}. Horyzont „{horizon}”", 2)
+        add_body(doc, f"Horyzont „{horizon}” — wszystkie symbole i ziarna:")
         add_table(
             doc,
             ["Symbol", "Model", "Przeb.", "Trafność", "Odch.", "Zakres", "ECE"],
@@ -533,12 +639,14 @@ def build() -> str:
 
     # ── 7. defekty ───────────────────────────────────────────────────────────
     doc.add_page_break()
-    add_heading(doc, "7. Defekty wykryte przez warstwę weryfikacji", 1)
+    add_heading(doc, "7. Weryfikacja poprawności implementacji", 1)
     add_body(
         doc,
-        "Zestawienie stanowi główny materiał dowodowy tezy. Wspólną cechą wszystkich pozycji "
-        "jest to, że defekt dawał wynik wyglądający na poprawny i nie ujawniał się w samej "
-        "trafności prognozy.",
+        "Rozdział dokumentuje defekty wykryte w trakcie budowy systemu i stanowi materiał "
+        "dowodowy dla ostatniego zdania tezy: warstwa weryfikacji rzeczywiście odróżnia wynik "
+        "od artefaktu. Wspólną cechą wszystkich pozycji jest to, że defekt dawał wynik "
+        "wyglądający na poprawny i nie ujawniał się w samej trafności prognozy — a więc "
+        "porównanie architektur przeprowadzone bez tej warstwy porównywałoby artefakty.",
     )
     add_table(
         doc,
@@ -619,13 +727,16 @@ def build() -> str:
     add_heading(doc, "9. Podsumowanie", 1)
     add_body(
         doc,
-        "Zbudowany system realizuje pełny potok badawczy od pobrania danych po symulację "
-        "handlową, a jego cechą wyróżniającą jest warstwa weryfikacji uniemożliwiająca "
-        "raportowanie wyniku, którego dane nie potwierdzają. Zastosowanie tej warstwy do pięciu "
-        "rodzin modeli prowadzi do wyniku negatywnego o określonej mocy statystycznej, przy "
-        "jednoczesnym uzyskaniu poprawnej kalibracji prognoz. Droga do tego wyniku — pięć "
-        "wykrytych i udokumentowanych defektów, z których każdy produkował wynik pozornie "
-        "pozytywny — stanowi główny argument za tezą pracy.",
+        "Porównano pięć rodzin architektur uczenia maszynowego w zadaniu prognozy kierunku "
+        "zmiany ceny na podstawie wyłącznie historii notowań. Żadna z nich nie osiąga trafności "
+        "odróżnialnej od losowej na horyzoncie o wystarczającej mocy statystycznej, a różnice "
+        "między nimi są mniejsze niż rozrzut wynikający z losowej inicjalizacji tej samej "
+        "architektury — co czyni ranking oparty na pojedynczym przebiegu pozbawionym podstaw. "
+        "Jest to wynik zgodny ze słabą formą hipotezy efektywności rynku, uzyskany na rynku "
+        "wybranym tak, aby mierzyć zachowanie modelu, a nie artefakty systemu obrotu. "
+        "Rozstrzygnięcie tego pytania było możliwe wyłącznie dzięki warstwie weryfikacji, "
+        "której skuteczność dokumentuje pięć wykrytych defektów, z których każdy produkował "
+        "wynik pozornie pozytywny.",
     )
 
     os.makedirs("docs", exist_ok=True)
