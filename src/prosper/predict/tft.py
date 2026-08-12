@@ -512,6 +512,14 @@ def predict_tft(
             # per bar and shared by every horizon. Still causal: it reads only
             # bars strictly before the one being predicted.
             X_tr = X_raw[max(0, i - windows.widest_window_steps) : i]
+            if X_tr.shape[0] == 0:
+                # No history behind this bar — see `gru._robust_normalise`. The
+                # statistics are undefined and there is nothing to train on, so
+                # every horizon falls through to the untrained payload rather
+                # than the run failing inside numpy.
+                tft_model = dict.fromkeys(h.name for h in horizon_specs)
+                dataset_cache, depth_cache = {}, {}
+                continue
             X_safe = np.where(np.isfinite(X_tr), X_tr, 0.0)
             med = np.median(X_safe, axis=0)
             iqr_arr = np.percentile(X_safe, 75, axis=0) - np.percentile(X_safe, 25, axis=0)

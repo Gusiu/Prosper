@@ -227,7 +227,18 @@ def _fit_gru_calibrator(
 
 # ── normalisation ─────────────────────────────────────────────────────────────
 def _robust_normalise(X_train: np.ndarray, X_all: np.ndarray):
-    """Median/IQR normalisation fitted on train, applied to all."""
+    """Median/IQR normalisation fitted on train, applied to all.
+
+    Returns ``None`` when there is nothing to fit on. That happens at the very
+    first bar of a symbol whose history begins inside the requested range — the
+    causal window reaches back from bar 0 and finds nothing — and it used to
+    crash inside `np.percentile`, which indexes `arr[-1]` and cannot do so on an
+    empty array. A bar with no history behind it has no training rows either, so
+    the honest outcome is an untrained bar (invariant 3), not an exception that
+    loses the whole run.
+    """
+    if X_train.size == 0 or X_train.shape[0] == 0:
+        return None
     # Replace NaN before statistics so numpy doesn't warn on all-NaN columns
     X_safe = np.where(np.isfinite(X_train), X_train, 0.0)
     med = np.median(X_safe, axis=0)
@@ -387,6 +398,11 @@ def predict_gru(
             # bars strictly before the one being predicted.
             norm_span = windows.widest_window_steps
             X_norm_current = _robust_normalise(X_all_raw[max(0, i - norm_span) : i], X_all_raw)
+            if X_norm_current is None:
+                # No history behind this bar: nothing to normalise on and nothing
+                # to train on. Every horizon falls through to the untrained payload.
+                models_cache = dict.fromkeys(h.name for h in horizon_specs)
+                depth_cache = {}
 
             for h in horizon_specs:
                 if h.name not in selected:
