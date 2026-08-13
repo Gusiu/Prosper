@@ -1297,8 +1297,246 @@ def _chapter_9_results(doc: Document, runs: dict) -> None:
             "niewidoczna w przedziale pojedynczego przebiegu.",
         )
 
+    _results_baserate(doc)
+    _results_calibration(doc, runs)
     _results_stability(doc)
+    _results_backtest(doc)
+    _results_max_vs_mean(doc)
     page_break(doc)
+
+
+def _results_baserate(doc: Document) -> None:
+    """Accuracy against the frequency of the more common class.
+
+    The comparison that decides whether a model knows anything: 0.50 looks like a
+    coin flip only when the classes are balanced, and over this period they are
+    not.
+    """
+    import polars as pl
+
+    rows_by = defaultdict(list)
+    for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/predictions_quality.parquet")):
+        parts = path.replace("\\", "/").split("/")
+        symbol, model = parts[-3], parts[-2].split("_")[0]
+        if symbol not in SYMBOLS or model not in MODELS:
+            continue
+        try:
+            frame = pl.read_parquet(path).filter(pl.col("status") == "scored")
+        except Exception:
+            continue
+        for horizon in HORIZON_NAMES:
+            sub = frame.filter(pl.col("horizon") == horizon)
+            if sub.is_empty():
+                continue
+            predicted = np.array(sub["pred_direction"].to_list())
+            actual = np.array(sub["actual_direction"].to_list())
+            correct = np.array([bool(x) for x in sub["correct"].to_list()])
+            share_long = float((actual == "long").mean())
+            rows_by[(horizon, model)].append(
+                (float(correct.mean()), float((predicted == "long").mean()),
+                 share_long, max(share_long, 1 - share_long))
+            )
+    if not rows_by:
+        return
+
+    add_heading(doc, "9.3. Trafność wobec częstości klasy większościowej", 2)
+    add_body(
+        doc,
+        "Trafność 0,50 oznacza rzut monetą tylko wtedy, gdy obie klasy są jednakowo częste. "
+        "W badanym okresie tak nie jest: udział wzrostów rośnie wraz z horyzontem, więc "
+        "właściwym punktem odniesienia nie jest 0,500, lecz częstość klasy liczniejszej. "
+        "Reguła \u201ezawsze wskazuj klasę liczniejszą\u201d nie zawiera żadnego uczenia.",
+    )
+    table_rows = []
+    for horizon in HORIZON_NAMES:
+        for model in MODELS:
+            values = rows_by.get((horizon, model))
+            if not values:
+                continue
+            arr = np.array(values)
+            table_rows.append([
+                horizon, model,
+                fmt(float(arr[:, 0].mean())),
+                f"{arr[:, 1].mean():.1%}",
+                f"{arr[:, 2].mean():.1%}",
+                fmt(float(arr[:, 3].mean())),
+                f"{arr[:, 0].mean() - arr[:, 3].mean():+.3f}",
+            ])
+    add_table(
+        doc,
+        ["Horyzont", "Model", "Trafność", "Mówi wzrost", "Był wzrost", "Większość", "Różnica"],
+        table_rows,
+        [2.1, 2.1, 2.0, 2.5, 2.3, 2.2, 2.2],
+        font=8,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Kolumna \u201eRóżnica\u201d to trafność pomniejszona o częstość klasy liczniejszej. "
+        "Wartość ujemna oznacza, że model wypada gorzej niż reguła bez uczenia. Zwraca uwagę "
+        "kolumna \u201eMówi wzrost\u201d: modele wystawiają prognozy bliskie zbalansowanym "
+        "również tam, gdzie rynek był wyraźnie jednostronny \u2014 czego nie należy im "
+        "poczytywać za wadę, ponieważ częstość bazowa jest znana dopiero z perspektywy czasu, "
+        "a model kroczący poznaje ją wyłącznie z własnego okna treningowego.",
+    )
+
+
+def _results_calibration(doc: Document, runs: dict) -> None:
+    """ECE per architecture: the project's one positive engineering result."""
+    table_rows = []
+    for horizon in HORIZON_NAMES:
+        for model in MODELS:
+            values = []
+            for symbol in SYMBOLS:
+                values.extend(horizon_values(runs.get((symbol, model), []), horizon, "ece"))
+            if not values:
+                continue
+            arr = np.array(values)
+            table_rows.append([
+                horizon, model, str(len(arr)),
+                fmt(float(arr.mean())),
+                f"{arr.min():.3f}\u2013{arr.max():.3f}",
+            ])
+    if not table_rows:
+        return
+    add_heading(doc, "9.4. Kalibracja", 2)
+    add_body(
+        doc,
+        "Oczekiwany błąd kalibracji mierzy rozbieżność między deklarowaną pewnością a "
+        "rzeczywistą częstością trafień. Jest to wielkość niezależna od zdolności "
+        "rozróżniania: model pozbawiony przewagi może być doskonale skalibrowany, jeżeli "
+        "poprawnie raportuje, że nic nie wie.",
+    )
+    add_table(
+        doc,
+        ["Horyzont", "Model", "Przeb.", "ECE średnie", "Zakres"],
+        table_rows,
+        [2.4, 2.4, 2.0, 3.0, 3.6],
+        font=8.5,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Błąd kalibracji na horyzont i architekturę. Niski błąd przy trafności bliskiej "
+        "poziomowi losowemu oznacza system, który poprawnie komunikuje własną niepewność "
+        "\u2014 jest to osobny, pozytywny wynik inżynierski, niezależny od braku przewagi "
+        "prognostycznej.",
+    )
+
+
+def _results_backtest(doc: Document) -> None:
+    """Trading simulation with its four nulls, read from the artifacts."""
+    found = defaultdict(list)
+    for path in sorted(glob.glob(f"{REPORT_ROOT}/backtests/*/*/backtest.json")):
+        parts = path.replace("\\", "/").split("/")
+        symbol, model = parts[-3], parts[-2].split("_")[0]
+        if symbol not in SYMBOLS or model not in MODELS:
+            continue
+        try:
+            payload = json.load(open(path, encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        nulls = payload.get("nulls") or {}
+        momentum = (nulls.get("naive_momentum") or {}).get("roi_pct") or 0
+        found[(symbol, model)].append((
+            payload.get("roi_pct"),
+            (payload.get("benchmark") or {}).get("excess_roi_pct"),
+            (nulls.get("constant_exposure") or {}).get("excess_roi_pct"),
+            (nulls.get("mistimed_replay") or {}).get("percentile"),
+            (payload.get("roi_pct") or 0) - momentum,
+            payload.get("max_drawdown_pct"),
+        ))
+    if not found:
+        return
+
+    add_heading(doc, "9.6. Symulacja handlowa", 2)
+    add_body(
+        doc,
+        "Wyniki podano wyłącznie jako kontekst ekonomiczny; nie stanowią oceny prognozy "
+        "(rozdział 8.5). Każdemu wynikowi towarzyszą cztery punkty odniesienia, z których "
+        "rozstrzygający jest percentyl względem własnych przesunięć cyklicznych: wielkość ta "
+        "zachowuje sekwencję ekspozycji i zmienia wyłącznie jej ułożenie w czasie, więc "
+        "izoluje wyczucie momentu od poziomu zaangażowania. Wartość 50 oznacza brak wyczucia, "
+        "95 byłaby sygnałem.",
+    )
+    table_rows, percentiles = [], []
+    for (symbol, model), values in sorted(found.items()):
+        arr = np.array(
+            [[v if v is not None else np.nan for v in row] for row in values], dtype=float
+        )
+        mean = np.nanmean(arr, axis=0)
+        percentiles.append(mean[3])
+        table_rows.append([
+            symbol.replace("USDT", ""), model, str(len(values)),
+            f"{mean[0]:+.0f}", f"{mean[1]:+.0f}", f"{mean[2]:+.0f}",
+            f"{mean[3]:.1f}", f"{mean[4]:+.0f}", f"{mean[5]:.0f}",
+        ])
+    add_table(
+        doc,
+        ["Symbol", "Model", "Przeb.", "ROI %", "vs hold", "vs stała", "Percentyl",
+         "vs momentum", "Obsun. %"],
+        table_rows,
+        [1.7, 1.9, 1.4, 1.8, 1.9, 1.9, 2.0, 2.2, 1.8],
+        font=8,
+    )
+    median = float(np.nanmedian(percentiles))
+    add_caption(
+        doc, "Tabela",
+        f"Symulacja na horyzoncie tygodniowym, uśredniona po ziarnach. Mediana percentyla "
+        f"wobec własnych przesunięć wynosi {median:.1f} \u2014 poniżej przypadkowych 50, co "
+        "oznacza, że rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie "
+        "arbitralne. Kolumny \u201evs\u201d podają różnicę stopy zwrotu w punktach "
+        "procentowych wobec danego punktu odniesienia; wartości ujemne oznaczają przegraną.",
+    )
+
+
+def _results_max_vs_mean(doc: Document) -> None:
+    """Why the best cell is not a result - with the project's own example."""
+    best = {}
+    for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/metrics.json")):
+        parts = path.replace("\\", "/").split("/")
+        symbol, slug = parts[-3], parts[-2]
+        if symbol not in SYMBOLS:
+            continue
+        try:
+            by_horizon = json.load(open(path, encoding="utf-8")).get("by_horizon") or {}
+        except (OSError, json.JSONDecodeError):
+            continue
+        for horizon, cell in by_horizon.items():
+            if cell.get("accuracy") is None:
+                continue
+            interval = cell.get("accuracy_ci") or {}
+            entry = (cell["accuracy"], symbol, slug.split("_")[0],
+                     interval.get("effective_samples"), interval.get("estimable"))
+            if horizon not in best or entry[0] > best[horizon][0]:
+                best[horizon] = entry
+    if not best:
+        return
+
+    add_heading(doc, "9.7. Dlaczego najlepsza komórka nie jest wynikiem", 2)
+    add_body(
+        doc,
+        "Zestawienie najlepszych komórek jest miarą kuszącą i myloną. Maksimum z wielu "
+        "zaszumionych pomiarów rośnie wraz z ich liczbą nawet wtedy, gdy żaden z nich nie "
+        "zawiera sygnału \u2014 przy kilkudziesięciu komórkach i poziomie istotności 5% "
+        "należy oczekiwać kilku przekroczeń progu wyłącznie z przypadku.",
+    )
+    add_table(
+        doc,
+        ["Horyzont", "Najlepsza komórka", "Trafność", "Obs. niezależnych", "Przedział"],
+        [[horizon, f"{sym.replace('USDT', '')} / {model}", fmt(acc),
+          "\u2014" if eff is None else f"{eff:.1f}",
+          "wyznaczony" if estimable else "ODMÓWIONY"]
+         for horizon, (acc, sym, model, eff, estimable) in best.items()],
+        [2.4, 4.0, 2.4, 3.4, 3.4],
+        font=8.5,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Najwyższa trafność na każdym horyzoncie wraz z liczbą obserwacji niezależnych, na "
+        "której ją zmierzono. Tam, gdzie liczba ta jest zbyt mała, system odmawia wyznaczenia "
+        "przedziału ufności i nie orzeka o przewadze \u2014 co jest właściwym zachowaniem: "
+        "wartość punktowa pozostaje raportowana, wycofane zostaje wyłącznie twierdzenie o jej "
+        "precyzji. Wnioski rozdziału opierają się na średnich, nie na maksimach.",
+    )
 
 
 def _results_stability(doc: Document) -> None:
@@ -1307,7 +1545,7 @@ def _results_stability(doc: Document) -> None:
     if not reports:
         return
 
-    add_heading(doc, "9.3. Stabilność w czasie", 2)
+    add_heading(doc, "9.5. Stabilność w czasie", 2)
     add_body(
         doc,
         "Średnia z całego okresu maskuje sytuację, w której model działa w jednym reżimie "
