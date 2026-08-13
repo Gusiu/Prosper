@@ -1,12 +1,7 @@
-# Pip fallback for environments without Poetry.
-# Regenerate with:  pip freeze --exclude-editable > requirements.txt
-# Poetry (pyproject.toml + poetry.lock) is the primary source of truth.
 # Install the package itself afterwards:  pip install -e .
-
-Jinja2==3.1.6
-MarkupSafe==3.0.3
-PyYAML==6.0.3
-Pygments==2.19.2
+# Pip fallback for environments without Poetry.
+# Poetry (pyproject.toml + poetry.lock) is the primary source of truth.
+# Regenerate with:  pip freeze --exclude-editable > requirements.txt
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.5
 aiosignal==1.4.0
@@ -18,21 +13,28 @@ certifi==2026.2.25
 charset-normalizer==3.4.6
 click==8.1.7
 colorama==0.4.6
+contourpy==1.3.3
 coverage==7.13.4
+cycler==0.12.1
 fastapi==0.135.3
 filelock==3.25.2
+fonttools==4.63.0
 frozenlist==1.8.0
 fsspec==2026.3.0
 h11==0.16.0
 httptools==0.7.1
 idna==3.11
 iniconfig==2.3.0
+Jinja2==3.1.6
 joblib==1.5.3
+kiwisolver==1.5.0
 librt==0.8.1
 lightning-utilities==0.15.3
 lightning==2.6.1
 lxml==6.1.1
 markdown-it-py==4.0.0
+MarkupSafe==3.0.3
+matplotlib==3.11.1
 mdurl==0.1.2
 mpmath==1.3.0
 multidict==6.7.1
@@ -43,12 +45,15 @@ numpy==2.4.3
 packaging==26.0
 pandas==3.0.2
 pathspec==1.0.4
+pillow==12.3.0
 pluggy==1.6.0
 polars==0.20.31
 propcache==0.4.1
 pydantic-settings==2.13.1
 pydantic==2.12.5
 pydantic_core==2.41.5
+Pygments==2.19.2
+pyparsing==3.3.2
 pytest-cov==4.1.0
 pytest==7.4.4
 python-dateutil==2.9.0.post0
@@ -56,6 +61,7 @@ python-docx==1.2.0
 python-dotenv==1.2.2
 pytorch-forecasting==1.7.0
 pytorch-lightning==2.6.1
+PyYAML==6.0.3
 requests==2.32.5
 rich==13.9.4
 ruff==0.1.15

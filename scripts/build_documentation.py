@@ -55,6 +55,14 @@ MUTED = RGBColor(0x55, 0x5F, 0x6B)
 
 _counters: dict[str, int] = defaultdict(int)
 
+try:
+    from documentation_figures import build_all as _build_figures
+
+    _FIGURES: dict[str, str] = _build_figures()
+except Exception as _figure_error:  # matplotlib absent, or no artifacts yet
+    print(f"[figury] pominięte: {_figure_error}")
+    _FIGURES = {}
+
 
 # ── results read from the artifacts ──────────────────────────────────────────
 
@@ -196,6 +204,24 @@ def add_caption(doc: Document, kind: str, text: str) -> None:
     run.font.size = Pt(8.5)
     run.font.color.rgb = MUTED
 
+
+def add_figure(doc: Document, key: str, caption: str) -> None:
+    """Place a rendered figure, or say nothing if it was not produced.
+
+    Figures come from `documentation_figures.build_all()`, which draws them from
+    the same artifacts the tables read. A missing figure means the data behind it
+    is absent, so the document simply omits it rather than leaving a broken
+    reference.
+    """
+    path = _FIGURES.get(key)
+    if not path or not os.path.exists(path):
+        return
+    paragraph = doc.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_before = Pt(6)
+    paragraph.paragraph_format.space_after = Pt(2)
+    paragraph.add_run().add_picture(path, width=Cm(15.5))
+    add_caption(doc, "Rysunek", caption)
 
 def add_toc(doc: Document) -> None:
     """A field Word fills in on open; python-docx cannot compute page numbers."""
@@ -548,6 +574,7 @@ def _chapter_2_theory(doc: Document) -> None:
     )
 
     add_heading(doc, "2.5. Kalibracja probabilistyczna", 2)
+    add_figure(doc, "niezawodnosc", "Krzywe niezawodności: deklarowana pewność wobec zrealizowanej częstości trafień, zbiorczo po wszystkich przebiegach. Przekątna oznacza kalibrację doskonałą.")
     add_body(
         doc,
         "Kalibracja to zgodność deklarowanej pewności z rzeczywistą częstością: spośród świec, "
@@ -966,6 +993,7 @@ def _chapter_7_models(doc: Document) -> None:
     )
 
     add_heading(doc, "7.2. Modele gradientowe", 2)
+    add_figure(doc, "waznosc", "Względna ważność cech w modelu gradientowym. Rozkład jest płaski — żadna cecha nie dominuje, co jest spójne z brakiem wykrywalnej struktury w danych wejściowych.")
     add_body(
         doc,
         "Dwie implementacje wzmacniania gradientowego — z biblioteki scikit-learn i z XGBoost — "
@@ -1107,6 +1135,7 @@ def _chapter_8_methodology(doc: Document) -> None:
     )
 
     add_heading(doc, "8.3. Moc statystyczna jako ograniczenie", 2)
+    add_figure(doc, "moc", "Średnia liczba obserwacji niezależnych na horyzont, w skali logarytmicznej. Horyzont roczny leży poniżej progu, przy którym system w ogóle wyznacza przedział ufności — i jest to własność ilości danych, nie modelu.")
     add_body(
         doc,
         "Liczba obserwacji niezależnych to liczba świec podzielona przez rozpiętość horyzontu. "
@@ -1128,6 +1157,7 @@ def _chapter_8_methodology(doc: Document) -> None:
     )
 
     add_heading(doc, "8.5. Symulacja handlowa i cztery hipotezy zerowe", 2)
+    add_figure(doc, "kapital", "Przebieg wartości portfela dla pięciu architektur wobec strategii kup i trzymaj, skala logarytmiczna. Żadna strategia oparta na prognozie nie zbliża się do prostego trzymania pozycji w badanym okresie.")
     add_body(
         doc,
         "Symulacja nie jest oceną prognozy. Ten sam przebieg odtworzony pod pięcioma politykami "
@@ -1268,6 +1298,7 @@ def _chapter_9_results(doc: Document, runs: dict) -> None:
             )
 
     add_heading(doc, "9.2. Wyniki szczegółowe", 2)
+    add_figure(doc, "porownanie", "Trafność średnia każdej architektury na czterech horyzontach. Wąsy to odchylenie standardowe między przebiegami różniącymi się wyłącznie ziarnem; przerywana linia oznacza poziom losowy. Nachodzenie wąsów na siebie i na linię 0,5 jest treścią wyniku.")
     for horizon in HORIZON_NAMES:
         rows = []
         for symbol in SYMBOLS:
@@ -1344,6 +1375,7 @@ def _results_baserate(doc: Document) -> None:
         return
 
     add_heading(doc, "9.3. Trafność wobec częstości klasy większościowej", 2)
+    add_figure(doc, "rozrzut", "Każdy przebieg jako osobny punkt, horyzont tygodniowy. Rozrzut wewnątrz jednej architektury pochodzi wyłącznie ze zmiany ziarna inicjalizacji i jest porównywalny z odległościami między architekturami — dlatego ranking oparty na pojedynczym przebiegu nie ma podstaw.")
     add_body(
         doc,
         "Trafność 0,50 oznacza rzut monetą tylko wtedy, gdy obie klasy są jednakowo częste. "
@@ -1452,6 +1484,7 @@ def _results_backtest(doc: Document) -> None:
         return
 
     add_heading(doc, "9.6. Symulacja handlowa", 2)
+    add_figure(doc, "stabilnosc", "Trafność miesiąc po miesiącu dla BTCUSDT na horyzoncie tygodniowym. Wahania wokół poziomu losowego są znacznie większe niż jakakolwiek trwała przewaga — to jest obraz, który średnia z całego okresu ukrywa.")
     add_body(
         doc,
         "Wyniki podano wyłącznie jako kontekst ekonomiczny; nie stanowią oceny prognozy "
@@ -1516,6 +1549,7 @@ def _results_max_vs_mean(doc: Document) -> None:
         return
 
     add_heading(doc, "9.7. Dlaczego najlepsza komórka nie jest wynikiem", 2)
+    add_figure(doc, "backtest", "Percentyl każdej symulacji względem jej własnych przesunięć cyklicznych. Mediana leży poniżej 50, czyli rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie arbitralne. Próg sygnału na poziomie 95 nie został osiągnięty przez żaden przebieg.")
     add_body(
         doc,
         "Zestawienie najlepszych komórek jest miarą kuszącą i myloną. Maksimum z wielu "
@@ -1550,6 +1584,7 @@ def _results_stability(doc: Document) -> None:
         return
 
     add_heading(doc, "9.5. Stabilność w czasie", 2)
+    add_figure(doc, "kalibracja", "Oczekiwany błąd kalibracji według horyzontu i architektury. Wartości rosną z horyzontem, ponieważ wycinek kalibracyjny kurczy się wraz z liczbą obserwacji niezależnych.")
     add_body(
         doc,
         "Średnia z całego okresu maskuje sytuację, w której model działa w jednym reżimie "

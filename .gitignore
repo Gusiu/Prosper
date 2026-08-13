@@ -90,3 +90,7 @@ AGENTS.md
 # overturned, and anyone reading the repository took it for the current design.
 docs/*.pdf
 docs/*.docx
+
+# Figures rendered by scripts/documentation_figures.py at build time. The
+# script is the source; the PNGs are outputs, like the document itself.
+data/_figures/
