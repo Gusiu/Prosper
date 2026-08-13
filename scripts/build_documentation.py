@@ -280,6 +280,7 @@ def build() -> str:
     _chapter_10_verification(doc)
     _chapter_11_interfaces(doc)
     _chapter_11a_worked_example(doc)
+    _chapter_11b_screenshots(doc)
     _chapter_12_limits(doc)
     _chapter_13_bibliography(doc)
     _appendix_tests(doc)
@@ -2382,6 +2383,108 @@ def _chapter_2_equations(doc: Document) -> None:
             "pojemność jest jego największym ryzykiem, nie zaletą.",
         ],
     )
+
+# ── screenshots supplied by hand ─────────────────────────────────────────────
+
+SCREENSHOT_DIR = "docs/zrzuty"
+
+# Each entry: file name, heading, caption, and what the screenshot should show.
+# The file names are fixed so the document can find them without configuration;
+# a missing file leaves a visible placeholder rather than a silent gap, because a
+# gap nobody notices is how a half-finished document ships.
+SCREENSHOTS: list[tuple[str, str, str, str]] = [
+    ("01-menedzer-danych.png", "Menedżer danych — inwentarz",
+     "Widok inwentarza jeziora danych: symbole, zakresy dat, liczba świec i rozmiar na "
+     "dysku. Stąd uruchamiane są pobieranie, agregacja i kontrola jakości.",
+     "zakładka „Data Manager” z widoczną tabelą inwentarza i co najmniej trzema symbolami"),
+    ("02-pobieranie.png", "Menedżer danych — pobieranie",
+     "Formularz pobierania danych z Binance Public Data. Zakres podawany jest miesiącami, "
+     "ponieważ taka jest jednostka publikacji po stronie źródła.",
+     "formularz pobierania z wypełnionym symbolem i zakresem dat"),
+    ("03-agregacja.png", "Menedżer danych — agregacja i kontrola jakości",
+     "Panel agregacji świec jednominutowych do interwałów wyższych oraz uruchamiania "
+     "kontroli jakości opisanych w rozdziale 4.4.",
+     "panel agregacji z wybranymi interwałami docelowymi"),
+    ("04-trening-formularz.png", "Modele — konfiguracja treningu",
+     "Formularz treningu. Wartości domyślne pobierane są z interfejsu HTTP, nie ze "
+     "znaczników strony — powód opisano w rozdziale 11.3.",
+     "zakładka „AI Models” z widocznym wyborem modelu, zakresem dat i horyzontami"),
+    ("05-trening-pula.png", "Modele — pula symboli treningowych",
+     "Rozwinięta sekcja wyboru dodatkowych symboli do puli treningowej. Symbol prognozowany "
+     "jest z niej automatycznie wykluczany, a sekcja znika dla architektur, które nie "
+     "przyjmują puli.",
+     "sekcja „Advanced: train on several symbols” rozwinięta, model xgboost, kilka symboli "
+     "zaznaczonych"),
+    ("06-kolejka.png", "Modele — kolejka zadań",
+     "Kolejka zadań utrzymywana po stronie serwera. Przeładowanie przeglądarki jej nie "
+     "gubi, ponieważ przeglądarka jedynie ją wyświetla, nie przechowuje.",
+     "kolejka z co najmniej jednym zadaniem oczekującym lub wykonywanym"),
+    ("07-ocena-metryki.png", "Ocena — miary jakości",
+     "Tabela miar jakości wraz z przedziałami ufności i liczbą obserwacji niezależnych. "
+     "Werdykt „= chance” oznacza przedział obejmujący poziom losowy.",
+     "zakładka „Evaluation” z tabelą metryk dla wybranego przebiegu"),
+    ("08-ocena-stabilnosc.png", "Ocena — stabilność w czasie",
+     "Wykres jakości prognozy miesiąc po miesiącu, ten sam, który w formie zbiorczej "
+     "przedstawia rysunek stabilności w rozdziale 9.",
+     "wykres stabilności miesięcznej z widocznymi czterema horyzontami"),
+    ("09-backtest-parametry.png", "Symulacja — założenia wykonawcze",
+     "Siedem założeń wykonawczych symulacji wystawionych jako parametry: prowizja, "
+     "poślizg, próg kosztowy, minimalna zmiana pozycji i polityka ekspozycji.",
+     "zakładka „Backtest” z rozwiniętym formularzem parametrów"),
+    ("10-backtest-wynik.png", "Symulacja — wynik i hipotezy zerowe",
+     "Wynik symulacji podany zawsze łącznie z czterema punktami odniesienia, w tym "
+     "percentylem względem własnych przesunięć cyklicznych.",
+     "wynik backtestu z widoczną sekcją hipotez zerowych"),
+    ("11-analiza-wykres.png", "Analiza — prognoza na tle notowań",
+     "Wykres świecowy z naniesionymi prognozami i rekomendacjami dla wybranego przebiegu.",
+     "wykres analizy z widocznymi prognozami"),
+]
+
+
+def _screenshot_placeholder(doc: Document, expected: str) -> None:
+    """A visible frame saying what belongs here and where to put it."""
+    table = doc.add_table(rows=1, cols=1)
+    table.style = "Table Grid"
+    cell = table.rows[0].cells[0]
+    cell.width = Cm(15.5)
+    paragraph = cell.paragraphs[0]
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_before = Pt(24)
+    paragraph.paragraph_format.space_after = Pt(24)
+    run = paragraph.add_run(f"[ MIEJSCE NA ZRZUT EKRANU ]\n{expected}")
+    run.italic = True
+    run.font.size = Pt(9)
+    run.font.color.rgb = MUTED
+    doc.add_paragraph()
+
+
+def _chapter_11b_screenshots(doc: Document) -> None:
+    add_heading(doc, "11.6. Panel przeglądarkowy — widoki", 2)
+    present = sum(
+        1 for name, *_ in SCREENSHOTS if os.path.exists(os.path.join(SCREENSHOT_DIR, name))
+    )
+    add_body(
+        doc,
+        f"Poniżej zebrano widoki panelu odpowiadające etapom potoku. Zrzuty wykonywane są "
+        f"ręcznie i umieszczane w katalogu {SCREENSHOT_DIR}/ pod ustalonymi nazwami; "
+        f"dokument osadza je automatycznie przy kolejnym wygenerowaniu. Obecnie dostępnych "
+        f"jest {present} z {len(SCREENSHOTS)}.",
+    )
+    for name, heading, caption, expected in SCREENSHOTS:
+        add_heading(doc, heading, 3)
+        path = os.path.join(SCREENSHOT_DIR, name)
+        if os.path.exists(path):
+            paragraph = doc.add_paragraph()
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            paragraph.paragraph_format.space_after = Pt(2)
+            try:
+                paragraph.add_run().add_picture(path, width=Cm(15.5))
+            except Exception:
+                _screenshot_placeholder(doc, f"plik {name} istnieje, ale nie daje się osadzić")
+        else:
+            _screenshot_placeholder(doc, f"{name} — {expected}")
+        add_caption(doc, "Rysunek", caption)
+
 
 if __name__ == "__main__":
     written = build()
