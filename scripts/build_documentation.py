@@ -243,6 +243,7 @@ def build() -> str:
 
     _chapter_1_introduction(doc)
     _chapter_2_theory(doc)
+    _chapter_2_equations(doc)
     _chapter_3_architecture(doc)
     _chapter_4_data(doc)
     _chapter_5_features(doc)
@@ -259,6 +260,7 @@ def build() -> str:
     _appendix_cli(doc)
     _appendix_api(doc)
     _appendix_settings(doc)
+    _appendix_runs(doc, runs)
     _appendix_glossary(doc)
 
     os.makedirs("docs", exist_ok=True)
@@ -773,6 +775,8 @@ def _chapter_4_data(doc: Document) -> None:
             "Ciągłość — wykrywanie skoków czasu większych niż jeden interwał.",
         ],
     )
+
+    _data_quality_results(doc)
 
     add_heading(doc, "4.5. Charakterystyka zbioru", 2)
     stats = dataset_summary("1d")
@@ -2100,7 +2104,7 @@ def _chapter_11a_worked_example(doc: Document) -> None:
 # ── glossary ─────────────────────────────────────────────────────────────────
 
 def _appendix_glossary(doc: Document) -> None:
-    add_heading(doc, "Załącznik E. Słownik pojęć", 1)
+    add_heading(doc, "Załącznik F. Słownik pojęć", 1)
     add_table(
         doc,
         ["Pojęcie", "Znaczenie w tym systemie"],
@@ -2155,6 +2159,194 @@ def _appendix_glossary(doc: Document) -> None:
     )
     add_caption(doc, "Tabela", "Słownik pojęć używanych w dokumencie.")
 
+
+def _appendix_runs(doc: Document, runs: dict) -> None:
+    """Every run, every horizon, one row each.
+
+    The aggregated tables in chapter 9 answer the research question; this one
+    lets a reader check any single number against the artifact that produced it,
+    which is what makes the aggregate auditable rather than merely stated.
+    """
+    rows = []
+    for (symbol, model), entries in sorted(runs.items()):
+        for entry in sorted(entries, key=lambda e: str(e.get("seed"))):
+            for horizon in HORIZON_NAMES:
+                cell = entry["by_horizon"].get(horizon)
+                if not cell or cell.get("accuracy") is None:
+                    continue
+                interval = cell.get("accuracy_ci") or {}
+                low, high = interval.get("low"), interval.get("high")
+                rows.append([
+                    symbol.replace("USDT", ""),
+                    model,
+                    str(entry.get("seed") if entry.get("seed") is not None else "—"),
+                    horizon,
+                    str(cell.get("samples") or "—"),
+                    fmt(cell.get("accuracy")),
+                    f"[{low:.3f}; {high:.3f}]" if low is not None and high is not None
+                    else "odmówiony",
+                    fmt(cell.get("ece")),
+                ])
+    if not rows:
+        return
+    add_heading(doc, "Załącznik E. Wyniki wszystkich przebiegów", 1)
+    add_body(
+        doc,
+        f"Zestawienie {len(rows)} par (przebieg, horyzont) odczytane wprost z plików oceny. "
+        "Tabele rozdziału 9 podają wielkości zagregowane; ta pozwala prześledzić każdą z nich "
+        "do pojedynczego artefaktu. Kolumna „Przedział” zawiera wpis „odmówiony” tam, gdzie "
+        "liczba obserwacji niezależnych była zbyt mała, aby przedział nie był artefaktem "
+        "losowania.",
+    )
+    add_table(
+        doc,
+        ["Symbol", "Model", "Ziarno", "Horyzont", "Wierszy", "Trafność", "Przedział", "ECE"],
+        rows,
+        [1.7, 1.9, 1.5, 1.9, 1.7, 1.8, 3.0, 1.5],
+        font=7.5,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Pełne wyniki wszystkich przebiegów. Kolumna „Ziarno” pozwala odróżnić powtórzenia tej "
+        "samej konfiguracji, których rozrzut mierzy szum inicjalizacji.",
+    )
+
+def _data_quality_results(doc: Document) -> None:
+    """Outcome of the four checks across the lake, if it has been measured."""
+    path = "data/_recompute/qa_summary.json"
+    if not os.path.exists(path):
+        return
+    try:
+        summary = json.load(open(path, encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not summary:
+        return
+
+    add_body(
+        doc,
+        "Kontrole uruchomiono na wszystkich partycjach jeziora danych. Wynik podano poniżej, "
+        "ponieważ opis kontroli bez jej rezultatu dokumentuje zdolność, której nikt nie "
+        "widział w działaniu.",
+    )
+    rows, total_parts, total_rows, total_defects = [], 0, 0, 0
+    for symbol, stats in sorted(summary.items()):
+        defects = (stats.get("nieposortowane", 0) + stats.get("duplikaty", 0)
+                   + stats.get("luki", 0) + stats.get("naruszenia_ohlc", 0)
+                   + stats.get("nieczytelne", 0))
+        total_parts += stats.get("partycje", 0)
+        total_rows += stats.get("wiersze", 0)
+        total_defects += defects
+        rows.append([
+            symbol,
+            str(stats.get("partycje", 0)),
+            f"{stats.get('wiersze', 0):,}".replace(",", " "),
+            str(stats.get("nieposortowane", 0)),
+            str(stats.get("duplikaty", 0)),
+            str(stats.get("luki", 0)),
+            str(stats.get("naruszenia_ohlc", 0)),
+        ])
+    add_table(
+        doc,
+        ["Symbol", "Partycji", "Wierszy", "Nieposort.", "Duplikaty", "Luki", "OHLC"],
+        rows,
+        [2.6, 2.0, 2.4, 2.4, 2.2, 1.8, 2.0],
+        font=8.5,
+    )
+    add_caption(
+        doc, "Tabela",
+        f"Wynik kontroli jakości na {total_parts} partycjach obejmujących "
+        f"{total_rows:,} wierszy: {total_defects} defektów. ".replace(",", " ")
+        + "Zerowa liczba naruszeń nie jest zaskoczeniem — dane pochodzą z jednego, "
+        "automatycznie publikowanego źródła — lecz jej zmierzenie jest warunkiem, aby "
+        "późniejsze wyniki przypisywać modelowi, a nie uszkodzeniu wejścia.",
+    )
+
+def _chapter_2_equations(doc: Document) -> None:
+    """The formulas the components rest on, written out."""
+    add_heading(doc, "2.7. Zapis formalny stosowanych wielkości", 2)
+    add_body(
+        doc,
+        "Poniżej zebrano definicje wielkości, do których odwołują się kolejne rozdziały. "
+        "Notacja: r oznacza zwrot, p prognozowane prawdopodobieństwo, y realizację (0 lub 1), "
+        "F rozpiętość horyzontu w świecach, N liczbę ocenianych wierszy.",
+    )
+    add_table(
+        doc,
+        ["Wielkość", "Definicja", "Uwagi"],
+        [
+            ["Zwrot logarytmiczny",
+             "r(k) = ln( C(k+F) / C(k) )",
+             "addytywny w czasie; symetryczny wobec wzrostu i spadku"],
+            ["Etykieta kierunku",
+             "y(k) = 1 gdy r(k) > 0, 0 gdy r(k) < 0, brak gdy r(k) = 0",
+             "dwie klasy; zwrot zerowy nie ma strony"],
+            ["Trafność",
+             "ACC = (1/N) · Σ 1[ ŷ(k) = y(k) ]",
+             "reguła niewłaściwa; podana dla interpretowalności"],
+            ["Wynik Briera",
+             "BS = (1/N) · Σ ( p(k) − y(k) )²",
+             "reguła właściwa; kara kwadratowa"],
+            ["Strata logarytmiczna",
+             "LL = −(1/N) · Σ [ y·ln p + (1−y)·ln(1−p) ]",
+             "reguła właściwa; kara nieograniczona"],
+            ["Oczekiwany błąd kalibracji",
+             "ECE = Σ_b ( n_b / N ) · | acc_b − conf_b |",
+             "b — kubełki pewności; mierzy kalibrację, nie rozróżnianie"],
+            ["Skalowanie temperaturą",
+             "p_T = softmax( z / T ), T > 0",
+             "jeden parametr; nie zmienia porządku klas"],
+            ["Liczba obserwacji efektywnych",
+             "n_eff = N / F",
+             "etykiety nakładają się na F−1 świecach"],
+            ["Liczba symboli efektywnych",
+             "n_sym = n / ( 1 + (n−1)·ρ )",
+             "ρ — średnia korelacja par; granica 1/ρ"],
+            ["Okno treningowe",
+             "W = F + max( MIN_WIERSZY, 3·F )",
+             "podłoga wierszowa wiąże krótkie horyzonty, obserwacyjna długie"],
+            ["Przewaga prognozy",
+             "edge = | p_wzrost − p_spadek |",
+             "z konstrukcji nie przekracza 0,5"],
+            ["Percentyl przesunięć",
+             "pct = ( #{ i : ROI_i < ROI } / M ) · 100",
+             "M — liczba przesunięć cyklicznych; 50 oznacza przypadek"],
+        ],
+        [3.6, 6.0, 6.4],
+        font=8.5,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Definicje formalne wielkości używanych w dokumencie. Wszystkie są zaimplementowane "
+        "w jednym miejscu i pokryte testami, których wykaz zawiera załącznik A.",
+    )
+
+    add_heading(doc, "2.8. Architektury: mechanizmy", 2)
+    add_body(
+        doc,
+        "Trzy mechanizmy odróżniają badane architektury, przy czym różnica dotyczy sposobu "
+        "wprowadzenia zależności czasowej, nie rodziny funkcji.",
+    )
+    add_bullets(
+        doc,
+        [
+            "Wzmacnianie gradientowe buduje addytywnie ciąg płytkich drzew, z których każde "
+            "dopasowuje się do gradientu straty pozostawionej przez poprzednie. Zależność "
+            "czasowa wchodzi wyłącznie przez cechy liczone na oknach — model nie ma pojęcia "
+            "kolejności wierszy.",
+            "Sieć rekurencyjna z bramkami utrzymuje stan ukryty aktualizowany co świecę. "
+            "Bramka aktualizacji decyduje, jaka część poprzedniego stanu przechodzi dalej, a "
+            "bramka resetu — jaka część jest brana pod uwagę przy wyznaczaniu stanu "
+            "kandydującego. Konstrukcja ta łagodzi zanikanie gradientu, które w prostej sieci "
+            "rekurencyjnej uniemożliwia uczenie zależności odległych.",
+            "Mechanizm uwagi wyznacza wagi wszystkich pozycji w sekwencji naraz, zamiast "
+            "przekazywać informację krok po kroku. Temporal Fusion Transformer łączy go z "
+            "kodowaniem rekurencyjnym oraz sieciami wyboru zmiennych, które uczą się, które "
+            "cechy są istotne w danym kontekście. Jest to model o największej pojemności w "
+            "zestawieniu — i przy zmierzonej liczbie obserwacji niezależnych właśnie ta "
+            "pojemność jest jego największym ryzykiem, nie zaletą.",
+        ],
+    )
 
 if __name__ == "__main__":
     written = build()

@@ -261,6 +261,12 @@ def _first_sentence(text: str | None, limit: int = 400) -> str:
     return sentence if len(sentence) <= limit else sentence[: limit - 1] + "…"
 
 
+def _collapse(text: str | None) -> str:
+    """Whitespace-normalised docstring, kept whole."""
+    if not text:
+        return "—"
+    return re.sub(r"\s+", " ", text.strip())
+
 def _humanise(name: str) -> str:
     """`test_the_window_reports_power` -> `the window reports power`.
 
@@ -286,7 +292,11 @@ def test_inventory(root: str = "tests") -> list[TestModule]:
         cases = [
             TestCase(
                 name=node.name,
-                intent=_first_sentence(ast.get_docstring(node)) if ast.get_docstring(node)
+                # The whole rationale, not its opening line. A test docstring in
+                # this suite explains which defect the assertion prevents, and
+                # that explanation is the part worth documenting — the first
+                # sentence usually only states what is asserted.
+                intent=_collapse(ast.get_docstring(node)) if ast.get_docstring(node)
                 else _humanise(node.name),
             )
             for node in ast.walk(tree)
