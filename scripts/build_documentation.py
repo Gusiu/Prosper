@@ -508,6 +508,12 @@ def _chapter_2_theory(doc: Document) -> None:
     )
 
     add_heading(doc, "2.2. Własności finansowych szeregów czasowych", 2)
+    add_body(
+        doc,
+        "Szeregi zwrotów aktywów wykazują zbiór własności powtarzalnych na różnych rynkach i "
+        "w różnych okresach, zebranych i usystematyzowanych przez Conta (2001). Cztery z nich "
+        "mają bezpośredni wpływ na konstrukcję opisywanego systemu.",
+    )
     add_bullets(
         doc,
         [
@@ -544,7 +550,8 @@ def _chapter_2_theory(doc: Document) -> None:
     add_heading(doc, "2.4. Reguły oceny właściwej", 2)
     add_body(
         doc,
-        "Regułą właściwą nazywamy funkcję oceny prognozy probabilistycznej, która osiąga "
+        "Regułą właściwą (Gneiting i Raftery, 2007) nazywamy funkcję oceny prognozy "
+        "probabilistycznej, która osiąga "
         "optimum wtedy i tylko wtedy, gdy prognoza podaje prawdziwe prawdopodobieństwo. Reguła "
         "niewłaściwa nagradza zniekształcanie prognozy — na przykład sama trafność nagradza "
         "deklarowanie skrajnej pewności.",
@@ -604,7 +611,8 @@ def _chapter_2_theory(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Bootstrap blokowy losuje ciągi kolejnych obserwacji o długości równej rozpiętości "
+        "Bootstrap blokowy (Künsch, 1989; Politis i Romano, 1994) losuje ciągi kolejnych "
+        "obserwacji o długości równej rozpiętości "
         "horyzontu, dzięki czemu zachowuje zależność wewnątrz bloku i szacuje wariancję, która "
         "nie jest zaniżona. Efektywna liczba obserwacji wynosi w przybliżeniu liczbę świec "
         "podzieloną przez rozpiętość horyzontu; poniżej dziesięciu bloków system odmawia podania "
@@ -997,7 +1005,8 @@ def _chapter_7_models(doc: Document) -> None:
     add_figure(doc, "waznosc", "Względna ważność cech w modelu gradientowym. Rozkład jest płaski — żadna cecha nie dominuje, co jest spójne z brakiem wykrywalnej struktury w danych wejściowych.")
     add_body(
         doc,
-        "Dwie implementacje wzmacniania gradientowego — z biblioteki scikit-learn i z XGBoost — "
+        "Dwie implementacje wzmacniania gradientowego — z biblioteki scikit-learn i z XGBoost "
+        "(Chen i Guestrin, 2016) — "
         "reprezentują podejście tabelaryczne, w którym każda świeca jest niezależnym wektorem "
         "cech. Nie modelują zależności czasowej wprost; informacja o przeszłości wchodzi "
         "wyłącznie przez cechy liczone na oknach. Są tanie obliczeniowo, co pozwala uruchamiać "
@@ -1007,7 +1016,8 @@ def _chapter_7_models(doc: Document) -> None:
     add_heading(doc, "7.3. Sieć rekurencyjna GRU", 2)
     add_body(
         doc,
-        "Sieć rekurencyjna z bramkami przetwarza sekwencję kolejnych świec, utrzymując stan "
+        "Sieć rekurencyjna z bramkami (Cho i in., 2014) przetwarza sekwencję kolejnych świec, "
+        "utrzymując stan "
         "ukryty. Bramki aktualizacji i resetu regulują, jaka część stanu przechodzi dalej, co "
         "łagodzi problem zanikającego gradientu występujący w prostych sieciach rekurencyjnych. "
         "W odróżnieniu od modeli tabelarycznych zależność czasowa jest tu modelowana wprost, "
@@ -1017,7 +1027,8 @@ def _chapter_7_models(doc: Document) -> None:
     add_heading(doc, "7.4. Temporal Fusion Transformer", 2)
     add_body(
         doc,
-        "Architektura łącząca kodowanie rekurencyjne z mechanizmem uwagi po osi czasu oraz "
+        "Architektura (Lim i in., 2021) łącząca kodowanie rekurencyjne z mechanizmem uwagi po "
+        "osi czasu oraz "
         "sieciami wyboru zmiennych, które uczą się wagi poszczególnych cech. Jest to model o "
         "największej pojemności w zestawieniu i zarazem najdroższy — jeden przebieg na jednym "
         "symbolu kosztuje około godziny i pół, czyli o rząd wielkości więcej niż pozostałe "
@@ -1082,7 +1093,8 @@ def _chapter_7_models(doc: Document) -> None:
     add_heading(doc, "7.8. Kalibracja i kryterium zatrzymania", 2)
     add_body(
         doc,
-        "Prawdopodobieństwa kalibrowane są skalowaniem temperatury na wycinku wydzielonym "
+        "Prawdopodobieństwa kalibrowane są skalowaniem temperatury (Guo i in., 2017) na "
+        "wycinku wydzielonym "
         "wewnątrz okna treningowego — nigdy na świecach późniejszych, ponieważ kalibrator "
         "widziałby wtedy etykiety niedostępne prognozie.",
     )
@@ -1121,7 +1133,9 @@ def _chapter_8_methodology(doc: Document) -> None:
     add_heading(doc, "8.2. Przedziały ufności przy nakładających się etykietach", 2)
     add_body(
         doc,
-        "Każda trafność jest średnią po świecach o nakładających się etykietach. Naiwny przedział "
+        "Każda trafność jest średnią po świecach o nakładających się etykietach — problem "
+        "opisany szczegółowo przez López de Prado (2018) w kontekście uczenia maszynowego na "
+        "danych finansowych. Naiwny przedział "
         "ufności traktuje je jako niezależne i wychodzi kilkukrotnie za wąski, przez co wynik "
         "nieodróżnialny od losowego wyglądałby na istotny. System stosuje bootstrap blokowy o "
         "długości bloku równej rozpiętości horyzontu.",
@@ -1553,7 +1567,8 @@ def _results_max_vs_mean(doc: Document) -> None:
     add_figure(doc, "backtest", "Percentyl każdej symulacji względem jej własnych przesunięć cyklicznych. Mediana leży poniżej 50, czyli rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie arbitralne. Próg sygnału na poziomie 95 nie został osiągnięty przez żaden przebieg.")
     add_body(
         doc,
-        "Zestawienie najlepszych komórek jest miarą kuszącą i myloną. Maksimum z wielu "
+        "Zestawienie najlepszych komórek jest miarą kuszącą i myloną (Bailey i López de "
+        "Prado, 2014). Maksimum z wielu "
         "zaszumionych pomiarów rośnie wraz z ich liczbą nawet wtedy, gdy żaden z nich nie "
         "zawiera sygnału \u2014 przy kilkudziesięciu komórkach i poziomie istotności 5% "
         "należy oczekiwać kilku przekroczeń progu wyłącznie z przypadku.",
