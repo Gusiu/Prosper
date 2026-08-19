@@ -34,17 +34,17 @@ FEATURE_NOTES: dict[str, tuple[str, str]] = {
     "log_return": ("Zwroty", "Logarytmiczny zwrot z n świec wstecz. Addytywny w czasie i "
                              "symetryczny względem wzrostów i spadków."),
     "rsi": ("Oscylatory", "Relative Strength Index: stosunek średniego wzrostu do średniego "
-                          "spadku w oknie, przeskalowany do 0–100."),
+                          "spadku w oknie, przeskalowany do 0-100."),
     "macd": ("Oscylatory", "Różnica dwóch wykładniczych średnich kroczących oraz jej odległość "
                            "od własnej średniej sygnałowej."),
-    "stoch": ("Oscylatory", "Położenie zamknięcia względem zakresu maks.–min. w oknie."),
+    "stoch": ("Oscylatory", "Położenie zamknięcia względem zakresu maks.-min. w oknie."),
     "williams": ("Oscylatory", "Odwrócony wskaźnik położenia zamknięcia w zakresie okna."),
     "cci": ("Oscylatory", "Odchylenie ceny typowej od jej średniej, skalowane odchyleniem "
                           "bezwzględnym."),
     "roc": ("Momentum", "Tempo zmiany: procentowa zmiana ceny względem n świec wstecz."),
     "momentum": ("Momentum", "Bezwzględna różnica ceny względem n świec wstecz, wyrażona "
                              "względnie."),
-    "ma": ("Trend", "Odległość ceny od średniej kroczącej, wyrażona jako ułamek tej średniej — "
+    "ma": ("Trend", "Odległość ceny od średniej kroczącej, wyrażona jako ułamek tej średniej - "
                     "dzięki czemu wielkość nie zależy od poziomu ceny."),
     "ema": ("Trend", "Jak wyżej, dla średniej wykładniczej."),
     "bb": ("Zmienność", "Położenie ceny wewnątrz wstęgi Bollingera oraz szerokość wstęgi "
@@ -58,13 +58,13 @@ FEATURE_NOTES: dict[str, tuple[str, str]] = {
     "obv": ("Wolumen", "On-Balance Volume: skumulowany wolumen ze znakiem zwrotu, raportowany "
                        "jako zmiana względna."),
     "taker_buy": ("Przepływ zleceń", "Udział wolumenu inicjowanego przez kupujących w wolumenie "
-                                     "całkowitym — dostępny tylko dla danych zawierających "
+                                     "całkowitym - dostępny tylko dla danych zawierających "
                                      "kolumny przepływu."),
     "trade": ("Przepływ zleceń", "Charakterystyki liczby i wielkości transakcji w świecy."),
     "candle": ("Kształt świecy", "Proporcje korpusu i cieni względem pełnego zakresu świecy."),
     "gap": ("Kształt świecy", "Odległość otwarcia od poprzedniego zamknięcia."),
     "jump": ("Kształt świecy", "Liczba zwrotów przekraczających wielokrotność bieżącej "
-                               "zmienności — miara nieciągłości."),
+                               "zmienności - miara nieciągłości."),
     "drawdown": ("Ryzyko", "Maksymalne obsunięcie wewnątrz okna."),
     "intraday": ("Ryzyko", "Charakterystyki wyliczone z danych o wyższej częstotliwości."),
     "day_of": ("Kalendarz", "Zmienne kalendarzowe kodujące porę tygodnia lub miesiąca."),

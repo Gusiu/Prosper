@@ -142,7 +142,7 @@ def stability_over_time() -> str | None:
     axis.axhline(0.5, color="#C0392B", linewidth=1.0, linestyle="--", label="poziom losowy")
     axis.set_xlabel("kolejny miesiąc okresu oceny")
     axis.set_ylabel("trafność w miesiącu")
-    axis.set_title("BTCUSDT, horyzont tygodniowy — jakość miesiąc po miesiącu")
+    axis.set_title("BTCUSDT, horyzont tygodniowy - jakość miesiąc po miesiącu")
     axis.legend(frameon=False, ncol=6, fontsize=7, loc="upper center",
                 bbox_to_anchor=(0.5, -0.22))
     return _save(fig, "stabilnosc.png")
@@ -175,7 +175,7 @@ def seed_spread() -> str | None:
     axis.set_xticks(range(len(MODELS)))
     axis.set_xticklabels(MODELS)
     axis.set_ylabel("trafność, horyzont tygodniowy")
-    axis.set_title("Każdy przebieg osobno — rozrzut wewnątrz architektury wobec różnic między nimi")
+    axis.set_title("Każdy przebieg osobno - rozrzut wewnątrz architektury wobec różnic między nimi")
     return _save(fig, "rozrzut_ziarna.png")
 
 
@@ -232,7 +232,7 @@ def backtest_percentiles() -> str | None:
                  label="ułożenie przypadkowe")
     axis.axhline(95, color="#2E7D32", linewidth=1.0, linestyle=":", label="próg sygnału")
     axis.set_ylabel("percentyl wobec własnych przesunięć")
-    axis.set_title("Test wyczucia momentu — wartości poniżej 50 oznaczają gorzej niż przypadek")
+    axis.set_title("Test wyczucia momentu - wartości poniżej 50 oznaczają gorzej niż przypadek")
     axis.legend(frameon=False, fontsize=7)
     return _save(fig, "backtest_percentyle.png")
 
@@ -322,7 +322,7 @@ def equity_curves() -> str | None:
     axis.set_yscale("log")
     axis.set_xlabel("kolejna świeca okresu symulacji")
     axis.set_ylabel("wartość portfela [USDT, skala log.]")
-    axis.set_title("BTCUSDT — przebieg kapitału wobec strategii kup i trzymaj")
+    axis.set_title("BTCUSDT - przebieg kapitału wobec strategii kup i trzymaj")
     axis.legend(frameon=False, ncol=6, fontsize=7, loc="upper center",
                 bbox_to_anchor=(0.5, -0.22))
     return _save(fig, "krzywe_kapitalu.png")
@@ -352,7 +352,7 @@ def feature_importance() -> str | None:
     axis.set_yticks(range(len(names)))
     axis.set_yticklabels(names, fontsize=7)
     axis.set_xlabel("względna ważność")
-    axis.set_title(f"XGBoost, BTCUSDT, horyzont „{horizon}” — 18 najważniejszych cech")
+    axis.set_title(f"XGBoost, BTCUSDT, horyzont „{horizon}” - 18 najważniejszych cech")
     return _save(fig, "waznosc_cech.png")
 
 
@@ -385,7 +385,7 @@ def observation_power() -> str | None:
     axis.set_xticks(range(len(labels)))
     axis.set_xticklabels(labels)
     axis.set_ylabel("obserwacje niezależne (skala log.)")
-    axis.set_title("Moc statystyczna według horyzontu — wiążące ograniczenie projektu")
+    axis.set_title("Moc statystyczna według horyzontu - wiążące ograniczenie projektu")
     axis.legend(frameon=False, fontsize=7)
     return _save(fig, "moc_statystyczna.png")
 
