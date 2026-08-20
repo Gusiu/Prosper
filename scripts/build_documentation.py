@@ -386,19 +386,34 @@ def _chapter_1_introduction(doc: Document) -> None:
     add_heading(doc, "1.3. Teza", 2)
     add_quote(
         doc,
-        "Różnice między badanymi architekturami uczenia maszynowego w zadaniu prognozy kierunku "
-        "ceny z samej historii notowań są mniejsze niż rozrzut wyników wynikający z losowej "
-        "inicjalizacji tej samej architektury, a żadna z nich nie osiąga przewagi odróżnialnej "
-        "od losowej. Orzeczenie tego wymaga warstwy weryfikacji zdolnej odróżnić brak różnicy od "
-        "niedostatecznej dokładności pomiaru.",
+        "Żadna z badanych architektur uczenia maszynowego nie osiąga w prognozie kierunku ceny "
+        "z samej historii notowań trafności na poziomie losowym, a wszystkie wypadają poniżej "
+        "reguły opartej na częstości klasy większościowej. Różnice między architekturami "
+        "wewnątrz jednego horyzontu przekraczają rozrzut wynikający z losowej inicjalizacji, "
+        "lecz ich porządek nie utrzymuje się przy zmianie horyzontu, nie odzwierciedlają więc "
+        "trwałej właściwości architektury. Orzeczenie tego wymaga warstwy weryfikacji zdolnej "
+        "odróżnić brak różnicy od niedostatecznej dokładności pomiaru.",
     )
     add_body(
         doc,
-        "Zdanie ostatnie jest istotne. Stwierdzenie „architektury nie różnią się między sobą” "
-        "jest nieodróżnialne od stwierdzenia „pomiar był zbyt zaszumiony, aby je rozróżnić”, "
-        "dopóki poziom szumu nie zostanie zmierzony. Z tego powodu każdą konfigurację uruchomiono "
-        "wielokrotnie pod różnymi ziarnami generatora liczb losowych, a rozdział 9 raportuje "
-        "rozstęp między architekturami obok rozrzutu wynikającego z samej inicjalizacji.",
+        "Teza rozstrzyga trzy rzeczy naraz i warto je rozdzielić. Pierwsza dotyczy poziomu: "
+        "żadna architektura nie przekracza progu losowego, a punktem odniesienia nie jest "
+        "0,500, lecz częstość klasy liczniejszej, ponieważ w badanym okresie klasy nie są "
+        "zrównoważone. Druga dotyczy różnic: są one mierzalne, to znaczy większe niż szum "
+        "inicjalizacji - poprzednia wersja tezy twierdziła inaczej i została skorygowana po "
+        "zakończeniu pełnego przeliczenia. Trzecia dotyczy trwałości tych różnic: architektura "
+        "najlepsza na jednym horyzoncie bywa najgorsza na innym, więc różnica opisuje parę "
+        "(architektura, horyzont), a nie samą architekturę.",
+    )
+
+    add_body(
+        doc,
+        "Zdanie ostatnie tezy jest metodyczne. Stwierdzenie „architektury nie różnią się "
+        "między sobą” jest nieodróżnialne od stwierdzenia „pomiar był zbyt zaszumiony, aby je "
+        "rozróżnić”, dopóki poziom szumu nie zostanie zmierzony. Z tego powodu każdą "
+        "konfigurację uruchomiono wielokrotnie pod różnymi ziarnami generatora liczb losowych, "
+        "a rozdział 9 raportuje rozstęp między architekturami obok rozrzutu wynikającego z "
+        "samej inicjalizacji oraz stabilność rankingu między horyzontami.",
     )
 
     add_heading(doc, "1.4. Uzasadnienie wyboru rynku", 2)
@@ -441,9 +456,13 @@ def _chapter_1_introduction(doc: Document) -> None:
             "Żadna z pięciu badanych architektur nie osiąga trafności kierunkowej istotnie "
             "większej od losowej na horyzoncie o wystarczającej mocy statystycznej. Jest to "
             "wynik ograniczony od góry, a nie twierdzenie o niemożliwości prognozowania.",
-            "Rozrzut trafności tej samej architektury pod różnymi ziarnami inicjalizacji jest "
-            "porównywalny z różnicami między architekturami, co czyni ranking architektur "
-            "oparty na pojedynczym przebiegu pozbawionym podstaw.",
+            "Różnice między architekturami wewnątrz jednego horyzontu są mierzalne - "
+            "przekraczają rozrzut wynikający z ziarna inicjalizacji - lecz ranking architektur "
+            "zmienia się wraz z horyzontem, przy korelacji rang bliskiej zeru. Wybór "
+            "architektury na podstawie jednego horyzontu nie przenosi się na inny.",
+            "Trafność pojedynczego przebiegu obarczona jest szumem inicjalizacji, którego "
+            "przedział ufności liczony wewnątrz tego przebiegu nie obejmuje. Każdą "
+            "konfigurację uruchomiono zatem trzykrotnie, pod różnymi ziarnami.",
             "Kalibracja prognoz jest osiągalna tam, gdzie trafność nie jest: system poprawnie "
             "raportuje własną niepewność, co stanowi osobny, pozytywny wynik inżynierski.",
             "Wiążącym ograniczeniem jest liczba niezależnych obserwacji, nie pojemność modelu. "
@@ -1323,7 +1342,9 @@ def _chapter_9_results(doc: Document, runs: dict) -> None:
                 "ziarnami - rozrzutu inicjalizacji nie zmierzono.",
             )
 
-    add_heading(doc, "9.2. Wyniki szczegółowe", 2)
+    _results_rank_stability(doc, runs)
+
+    add_heading(doc, "9.3. Wyniki szczegółowe", 2)
     add_figure(doc, "porownanie", "Trafność średnia każdej architektury na czterech horyzontach. Wąsy to odchylenie standardowe między przebiegami różniącymi się wyłącznie ziarnem; przerywana linia oznacza poziom losowy. Nachodzenie wąsów na siebie i na linię 0,5 jest treścią wyniku.")
     for horizon in HORIZON_NAMES:
         rows = []
@@ -1400,7 +1421,7 @@ def _results_baserate(doc: Document) -> None:
     if not rows_by:
         return
 
-    add_heading(doc, "9.3. Trafność wobec częstości klasy większościowej", 2)
+    add_heading(doc, "9.4. Trafność wobec częstości klasy większościowej", 2)
     add_figure(doc, "rozrzut", "Każdy przebieg jako osobny punkt, horyzont tygodniowy. Rozrzut wewnątrz jednej architektury pochodzi wyłącznie ze zmiany ziarna inicjalizacji i jest porównywalny z odległościami między architekturami - dlatego ranking oparty na pojedynczym przebiegu nie ma podstaw.")
     add_body(
         doc,
@@ -1460,7 +1481,7 @@ def _results_calibration(doc: Document, runs: dict) -> None:
             ])
     if not table_rows:
         return
-    add_heading(doc, "9.4. Kalibracja", 2)
+    add_heading(doc, "9.5. Kalibracja", 2)
     add_body(
         doc,
         "Oczekiwany błąd kalibracji mierzy rozbieżność między deklarowaną pewnością a "
@@ -1509,7 +1530,7 @@ def _results_backtest(doc: Document) -> None:
     if not found:
         return
 
-    add_heading(doc, "9.6. Symulacja handlowa", 2)
+    add_heading(doc, "9.7. Symulacja handlowa", 2)
     add_figure(doc, "stabilnosc", "Trafność miesiąc po miesiącu dla BTCUSDT na horyzoncie tygodniowym. Wahania wokół poziomu losowego są znacznie większe niż jakakolwiek trwała przewaga - to jest obraz, który średnia z całego okresu ukrywa.")
     add_body(
         doc,
@@ -1574,7 +1595,7 @@ def _results_max_vs_mean(doc: Document) -> None:
     if not best:
         return
 
-    add_heading(doc, "9.7. Dlaczego najlepsza komórka nie jest wynikiem", 2)
+    add_heading(doc, "9.8. Dlaczego najlepsza komórka nie jest wynikiem", 2)
     add_figure(doc, "backtest", "Percentyl każdej symulacji względem jej własnych przesunięć cyklicznych. Mediana leży poniżej 50, czyli rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie arbitralne. Próg sygnału na poziomie 95 nie został osiągnięty przez żaden przebieg.")
     add_body(
         doc,
@@ -1610,7 +1631,7 @@ def _results_stability(doc: Document) -> None:
     if not reports:
         return
 
-    add_heading(doc, "9.5. Stabilność w czasie", 2)
+    add_heading(doc, "9.6. Stabilność w czasie", 2)
     add_figure(doc, "kalibracja", "Oczekiwany błąd kalibracji według horyzontu i architektury. Wartości rosną z horyzontem, ponieważ wycinek kalibracyjny kurczy się wraz z liczbą obserwacji niezależnych.")
     add_body(
         doc,
@@ -1961,10 +1982,13 @@ def _chapter_12_limits(doc: Document) -> None:
     add_body(
         doc,
         "Porównano pięć rodzin architektur uczenia maszynowego w zadaniu prognozy kierunku "
-        "zmiany ceny na podstawie wyłącznie historii notowań. Żadna z nich nie osiąga trafności "
-        "odróżnialnej od losowej na horyzoncie o wystarczającej mocy statystycznej, a różnice "
-        "między nimi są mniejsze niż rozrzut wynikający z losowej inicjalizacji tej samej "
-        "architektury - co czyni ranking oparty na pojedynczym przebiegu pozbawionym podstaw.",
+        "zmiany ceny na podstawie wyłącznie historii notowań, w 39 przebiegach obejmujących "
+        "trzy instrumenty i trzy ziarna inicjalizacji. Żadna architektura nie osiąga trafności "
+        "na poziomie losowym, a wszystkie wypadają poniżej reguły opartej na częstości klasy "
+        "liczniejszej. Różnice między nimi wewnątrz jednego horyzontu są mierzalne, ale ich "
+        "porządek zmienia się wraz z horyzontem: architektura najlepsza na horyzoncie "
+        "kwartalnym jest najgorsza na tygodniowym i miesięcznym. Ranking architektur nie jest "
+        "zatem właściwością architektury.",
     )
     add_body(
         doc,
@@ -2510,6 +2534,78 @@ def _chapter_11b_screenshots(doc: Document) -> None:
         else:
             _screenshot_placeholder(doc, f"{name} — {expected}")
         add_caption(doc, "Rysunek", caption)
+
+
+def _results_rank_stability(doc: Document, runs: dict) -> None:
+    """Does the ordering of architectures survive a change of horizon?
+
+    The thesis rests on this, so it is computed rather than asserted. The
+    baseline is excluded: it does not learn, it is consistently last, and
+    including it would inflate the apparent agreement between horizons.
+    """
+    learners = [m for m in MODELS if m != "baseline"]
+    means_by_horizon: dict[str, dict[str, float]] = {}
+    for horizon in HORIZON_NAMES:
+        per_model = {}
+        for model in learners:
+            values = []
+            for symbol in SYMBOLS:
+                values.extend(horizon_values(runs.get((symbol, model), []), horizon, "accuracy"))
+            if values:
+                per_model[model] = float(np.mean(values))
+        if len(per_model) == len(learners):
+            means_by_horizon[horizon] = per_model
+    if len(means_by_horizon) < 2:
+        return
+
+    order = {
+        horizon: sorted(per_model, key=lambda m: -per_model[m])
+        for horizon, per_model in means_by_horizon.items()
+    }
+
+    add_heading(doc, "9.2. Czy ranking architektur jest trwały?", 2)
+    add_body(
+        doc,
+        "Rozstęp między architekturami przekracza rozrzut ziarna, różnice są więc mierzalne. "
+        "Pozostaje pytanie, czy opisują architekturę, czy parę architektura-horyzont. "
+        "Odpowiedzią jest kolejność miejsc.",
+    )
+    add_table(
+        doc,
+        ["Horyzont", "1. miejsce", "2. miejsce", "3. miejsce", "4. miejsce"],
+        [[horizon, *order[horizon]] for horizon in order],
+        [2.8, 3.2, 3.2, 3.2, 3.2],
+        font=9,
+    )
+
+    ranks = {h: {m: i for i, m in enumerate(o)} for h, o in order.items()}
+    horizons = list(order)
+    correlations = []
+    for index, first in enumerate(horizons):
+        for second in horizons[index + 1:]:
+            left = np.array([ranks[first][m] for m in learners], dtype=float)
+            right = np.array([ranks[second][m] for m in learners], dtype=float)
+            if left.std() and right.std():
+                correlations.append(float(np.corrcoef(left, right)[0, 1]))
+    average = float(np.mean(correlations)) if correlations else float("nan")
+
+    positions = {m: [ranks[h][m] + 1 for h in horizons] for m in learners}
+    add_table(
+        doc,
+        ["Architektura", "Zajmowane miejsca", "Najlepsze", "Najgorsze"],
+        [[m, ", ".join(str(p) for p in positions[m]), str(min(positions[m])),
+          str(max(positions[m]))] for m in learners],
+        [4.0, 5.0, 3.2, 3.2],
+        font=9,
+    )
+    add_caption(
+        doc, "Tabela",
+        f"Średnia korelacja rang między horyzontami wynosi {average:+.2f}, gdzie +1 oznaczałoby "
+        "ten sam ranking wszędzie, a 0 ranking niezwiązany. Dwie architektury zajmują zarówno "
+        "pierwsze, jak i ostatnie miejsce, zależnie od horyzontu. Różnica mierzona w jednym "
+        "horyzoncie nie przenosi się zatem na inny i nie stanowi podstawy do wyboru architektury.",
+    )
+
 
 
 if __name__ == "__main__":
