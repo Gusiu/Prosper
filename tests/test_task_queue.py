@@ -7,6 +7,7 @@ about what was scheduled.
 
 from __future__ import annotations
 
+import pathlib
 import sys
 import time
 
@@ -20,6 +21,43 @@ def _noop(marker: str) -> list[list[str]]:
     """A command chain that exits immediately and prints a marker."""
     return [[sys.executable, "-c", f"print({marker!r})"]]
 
+
+def _blocker(release: pathlib.Path) -> list[list[str]]:
+    """A command that occupies the worker until *release* appears.
+
+    The queue tests need the worker busy while they inspect and reorder what is
+    pending. Doing that with a sleep puts the clock inside the test: if the
+    subprocess is slow to start, or the test thread is descheduled, the worker
+    reaches the next task before the assertion runs and the test fails on a queue
+    that is correct. Waiting for a file the test controls is deterministic under
+    any load.
+    """
+    # Built by joining lines rather than embedding escapes: the script is
+    # readable here and needs no quoting gymnastics.
+    script = chr(10).join((
+        "import pathlib, sys, time",
+        "target = pathlib.Path(sys.argv[1])",
+        "while not target.exists():",
+        "    time.sleep(0.01)",
+    ))
+    return [[sys.executable, "-c", script, str(release)]]
+
+def _await_current(runner: TaskRunner, name: str, timeout: float = 10.0) -> None:
+    """Block until *name* is the task the worker is actually running.
+
+    Submitting is not starting. These tests assert on what is pending while the
+    worker is busy, and without this wait the blocker itself is still sitting in
+    the pending list when the assertion runs - which is how the queue tests
+    failed intermittently, and it failed that way whether the blocker slept or
+    waited on a file.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        current = runner.snapshot()["current"]
+        if current and current["name"] == name:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"{name} nie ruszylo w ciagu {timeout}s")
 
 def _drain(runner: TaskRunner, timeout: float = 20.0) -> None:
     deadline = time.time() + timeout
@@ -43,10 +81,13 @@ def test_tasks_run_one_after_another() -> None:
     assert runner.is_running is False
 
 
-def test_queue_reports_current_and_pending() -> None:
+def test_queue_reports_current_and_pending(tmp_path) -> None:
     runner = TaskRunner()
-    # A job slow enough to still be running when we look.
-    runner.submit("slow", [[sys.executable, "-c", "import time; time.sleep(1.5)"]])
+    # Held open until this test lets go, so "still running when we look" is
+    # a fact rather than a bet on how long a subprocess takes to start.
+    release = tmp_path / "release"
+    runner.submit("slow", _blocker(release))
+    _await_current(runner, "slow")
     runner.submit("next", _noop("next"))
 
     deadline = time.time() + 5
@@ -58,12 +99,15 @@ def test_queue_reports_current_and_pending() -> None:
     assert snapshot["current"]["name"] == "slow"
     assert [t["name"] for t in snapshot["pending"]] == ["next"]
     assert snapshot["queued"] == 1
+    release.touch()
     _drain(runner)
 
 
-def test_pending_tasks_can_be_cancelled_and_reordered() -> None:
+def test_pending_tasks_can_be_cancelled_and_reordered(tmp_path) -> None:
     runner = TaskRunner()
-    runner.submit("blocker", [[sys.executable, "-c", "import time; time.sleep(1.0)"]])
+    release = tmp_path / "release"
+    runner.submit("blocker", _blocker(release))
+    _await_current(runner, "blocker")
     first = runner.submit("first", _noop("first"))
     second = runner.submit("second", _noop("second"))
     third = runner.submit("third", _noop("third"))
@@ -81,6 +125,7 @@ def test_pending_tasks_can_be_cancelled_and_reordered() -> None:
     # A task that is not pending cannot be cancelled or moved.
     assert runner.cancel(first.id) is False
     assert runner.move(second.id, 1) is False, "already last"
+    release.touch()
     _drain(runner)
 
 
@@ -106,11 +151,13 @@ def test_a_failing_task_does_not_stall_the_queue() -> None:
     assert any("exit code 3" in line for line in runner.logs) or runner.logs
 
 
-def test_queue_endpoints_report_and_reject(monkeypatch) -> None:
+def test_queue_endpoints_report_and_reject(monkeypatch, tmp_path) -> None:
     runner = TaskRunner()
     monkeypatch.setattr("prosper.api.routes.tasks.runner", runner)
 
-    runner.submit("blocker", [[sys.executable, "-c", "import time; time.sleep(1.0)"]])
+    release = tmp_path / "release"
+    runner.submit("blocker", _blocker(release))
+    _await_current(runner, "blocker")
     pending = runner.submit("pending", _noop("pending"))
 
     payload = get_task_queue()
@@ -125,4 +172,5 @@ def test_queue_endpoints_report_and_reject(monkeypatch) -> None:
     assert exc.value.status_code == 404
 
     assert cancel_task(pending.id)["status"] == "cancelled"
+    release.touch()
     _drain(runner)
