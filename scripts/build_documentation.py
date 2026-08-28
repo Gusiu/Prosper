@@ -279,21 +279,22 @@ def build() -> str:
     page_break(doc)
 
     _chapter_1_introduction(doc)
-    _chapter_2_theory(doc)
-    _chapter_2_equations(doc)
-    _chapter_3_architecture(doc)
-    _chapter_4_data(doc)
-    _chapter_5_features(doc)
-    _chapter_6_labels(doc)
-    _chapter_7_models(doc)
-    _chapter_8_methodology(doc)
-    _chapter_9_results(doc, runs)
-    _chapter_10_verification(doc)
-    _chapter_11_interfaces(doc)
-    _chapter_11a_worked_example(doc)
-    _chapter_11b_screenshots(doc)
-    _chapter_12_limits(doc)
-    _chapter_13_bibliography(doc)
+    _chapter_2_requirements(doc)
+    _chapter_3_theory(doc)
+    _chapter_3_equations(doc)
+    _chapter_4_architecture(doc)
+    _chapter_5_data(doc)
+    _chapter_6_features(doc)
+    _chapter_7_labels(doc)
+    _chapter_8_models(doc)
+    _chapter_9_methodology(doc)
+    _chapter_10_results(doc, runs)
+    _chapter_11_verification(doc)
+    _chapter_12_interfaces(doc)
+    _chapter_12a_worked_example(doc)
+    _chapter_12b_screenshots(doc)
+    _chapter_13_limits(doc)
+    _chapter_14_bibliography(doc)
     _appendix_tests(doc)
     _appendix_cli(doc)
     _appendix_api(doc)
@@ -412,7 +413,7 @@ def _chapter_1_introduction(doc: Document) -> None:
         "między sobą” jest nieodróżnialne od stwierdzenia „pomiar był zbyt zaszumiony, aby je "
         "rozróżnić”, dopóki poziom szumu nie zostanie zmierzony. Z tego powodu każdą "
         "konfigurację uruchomiono wielokrotnie pod różnymi ziarnami generatora liczb losowych, "
-        "a rozdział 9 raportuje rozstęp między architekturami obok rozrzutu wynikającego z "
+        "a rozdział 10 raportuje rozstęp między architekturami obok rozrzutu wynikającego z "
         "samej inicjalizacji oraz stabilność rankingu między horyzontami.",
     )
 
@@ -446,7 +447,7 @@ def _chapter_1_introduction(doc: Document) -> None:
         doc,
         "Wybrano zatem rynek, na którym mierzone jest zachowanie modelu, a nie artefakty "
         "specyficzne dla danego systemu obrotu. Rozszerzenie na pozostałe rynki pozostaje "
-        "kierunkiem dalszych prac (rozdział 12).",
+        "kierunkiem dalszych prac (rozdział 13).",
     )
 
     add_heading(doc, "1.5. Twierdzenia szczegółowe", 2)
@@ -478,19 +479,22 @@ def _chapter_1_introduction(doc: Document) -> None:
         doc,
         ["Rozdział", "Zawartość"],
         [
-            ["2", "Podstawy teoretyczne: efektywność rynku, reguły oceny właściwej, kalibracja, "
+            ["2", "Wymagania funkcjonalne i niefunkcjonalne, kryteria akceptacji, granice zakresu"],
+            ["3", "Podstawy teoretyczne: efektywność rynku, reguły oceny właściwej, kalibracja, "
                   "bootstrap blokowy"],
-            ["3", "Architektura systemu i decyzje technologiczne"],
-            ["4", "Dane: źródło, format, agregacja, kontrola jakości"],
-            ["5", "Cechy: zasada niezmienniczości względem skali i pełny katalog"],
-            ["6", "Etykiety: kierunek, głębokość, horyzonty"],
-            ["7", "Architektury modeli i wspólny protokół kroczący"],
-            ["8", "Metodyka pomiaru"],
-            ["9", "Wyniki: porównanie architektur"],
-            ["10", "Weryfikacja poprawności implementacji - studia przypadków"],
-            ["11", "Interfejsy: wiersz poleceń, HTTP, panel przeglądarkowy"],
-            ["12", "Ograniczenia i kierunki dalszych prac"],
-            ["A–D", "Załączniki: inwentarz testów, referencja CLI, referencja API, konfiguracja"],
+            ["4", "Architektura systemu i decyzje technologiczne"],
+            ["5", "Dane: źródło, format, agregacja, kontrola jakości"],
+            ["6", "Cechy: zasada niezmienniczości względem skali i pełny katalog"],
+            ["7", "Etykiety: kierunek, głębokość, horyzonty"],
+            ["8", "Architektury modeli i wspólny protokół kroczący"],
+            ["9", "Metodyka pomiaru"],
+            ["10", "Wyniki: porównanie architektur"],
+            ["11", "Weryfikacja poprawności implementacji - studia przypadków"],
+            ["12", "Interfejsy: wiersz poleceń, HTTP, panel przeglądarkowy"],
+            ["13", "Ograniczenia i kierunki dalszych prac"],
+            ["14", "Podsumowanie"],
+            ["A-F", "Załączniki: inwentarz testów, referencja CLI, referencja HTTP, konfiguracja, "
+                    "wyniki wszystkich przebiegów, słownik pojęć"],
         ],
         [2.5, 13.5],
     )
@@ -500,10 +504,527 @@ def _chapter_1_introduction(doc: Document) -> None:
 
 # ── 2 ────────────────────────────────────────────────────────────────────────
 
-def _chapter_2_theory(doc: Document) -> None:
-    add_heading(doc, "2. Podstawy teoretyczne", 1)
+def _verified_by(*modules: str) -> str:
+    """Join test module names, refusing any that is not in the suite.
 
-    add_heading(doc, "2.1. Hipoteza efektywności rynku", 2)
+    The requirements table is the one place in this document where a reference
+    is written by hand rather than read from the system, so it is the one place
+    where a name can be invented. Failing the build is the cheapest moment to
+    find out: a requirement pointing at a test that does not exist is worse than
+    a requirement with no test at all, because it reads as covered.
+    """
+    for name in modules:
+        if not os.path.exists(os.path.join("tests", name)):
+            raise SystemExit(f"[wymagania] nie ma takiego modułu testowego: tests/{name}")
+    return ", ".join(modules)
+
+
+def _chapter_2_requirements(doc: Document) -> None:
+    add_heading(doc, "2. Wymagania", 1)
+
+    add_heading(doc, "2.1. Dwa źródła wymagań", 2)
+    add_body(
+        doc,
+        "Wymagania tego projektu powstały w dwóch trybach i rozdzielenie ich jest samo w sobie "
+        "wynikiem wartym zapisania. Część dała się sformułować przed napisaniem pierwszej linii "
+        "kodu, ponieważ wynikała z dziedziny albo z rzemiosła inżynierskiego. Część nie mogła "
+        "powstać wcześniej niż pomiar, który ją wymusił - i próba zapisania jej z góry dałaby "
+        "sformułowanie błędne, nie niepełne.",
+    )
+    add_body(
+        doc,
+        "Przykładem pierwszej grupy jest zakaz zaglądania w przyszłość. Wiadomo z góry, że "
+        "etykieta świecy k odwołuje się do zamknięcia świecy k+F, jest więc dostępna dopiero po "
+        "upływie horyzontu; reguła ta nie wymaga żadnego eksperymentu. Przykładem drugiej jest "
+        "sposób wyznaczania szerokości okna treningowego. Pierwotnie była to stała podawana w "
+        "konfiguracji, ponieważ tak wygląda ten parametr w większości opracowań. Dopiero pomiar "
+        "pokazał, że jedna szerokość dla wszystkich horyzontów oznacza 103 niezależne "
+        "obserwacje na horyzoncie tygodniowym i 1,0 na rocznym, co czyni drugi z nich "
+        "niemierzalnym. Wymaganie w brzmieniu ostatecznym - szerokość okna jest wielkością "
+        "wyprowadzaną z horyzontu i długości dostępnej historii, nigdy stałą - jest sprzeczne z "
+        "wymaganiem pierwotnym, a nie jego uszczegółowieniem.",
+    )
+    add_quote(
+        doc,
+        "Specyfikacja spisana wyłącznie z góry zawierałaby pierwszą grupę wymagań w brzmieniu "
+        "poprawnym, a drugą w brzmieniu mylnym, i to właśnie druga grupa decyduje o "
+        "wiarygodności wyników.",
+    )
+    add_body(
+        doc,
+        "Rozdział ten podaje zatem wymagania w trzech zestawieniach: funkcjonalne "
+        "(podrozdział 2.2), niefunkcjonalne (2.3) oraz osobno te, które wyprowadzono w trakcie "
+        "badania wraz ze wskazaniem, co je wymusiło (2.4). Podrozdział 2.5 wyznacza granice "
+        "zakresu, czyli zadania świadomie pozostawione poza systemem, a 2.6 podaje kryteria "
+        "akceptacji wraz z ich obecnym stanem. Numeracja wymagań jest przywoływana w dalszych "
+        "rozdziałach tam, gdzie opisywana jest realizacja.",
+    )
+
+    add_heading(doc, "2.2. Wymagania funkcjonalne", 2)
+    add_body(
+        doc,
+        "Wymagania funkcjonalne opisują, co system ma robić. Uporządkowano je zgodnie z "
+        "kolejnością etapów potoku przetwarzania, ponieważ taka jest też kolejność zależności: "
+        "żaden etap nie może zostać zrealizowany przed poprzednim. Kolumna Weryfikacja wskazuje "
+        "moduł testowy, na podstawie którego można stwierdzić spełnienie wymagania. Nazwy w tej "
+        "kolumnie sprawdzane są przy generowaniu dokumentu wobec zawartości katalogu testów: "
+        "odwołanie do modułu, którego nie ma, przerywa budowę, ponieważ wymaganie wskazujące "
+        "nieistniejący test czyta się jako pokryte i jest gorsze od wymagania bez testu.",
+    )
+    add_table(
+        doc,
+        ["Nr", "Wymaganie", "Realizacja", "Weryfikacja"],
+        [
+            ["WF-01",
+             "Pozyskanie historycznych notowań z publicznego źródła, w rozdzielczości "
+             "jednominutowej, dla dowolnego symbolu SPOT i dowolnego zakresu miesięcy.",
+             "prosper backfill; pobieranie archiwów ZIP z Binance Public Data",
+             _verified_by("test_integration.py", "test_cli_exit_codes.py")],
+            ["WF-02",
+             "Utrzymanie lokalnego jeziora danych odpornego na powtórne pobranie tego samego "
+             "zakresu: ponowne uruchomienie nie może duplikować ani gubić świec.",
+             "zapis partycjonowany symbol=/year=/month=, nadpisanie partycji",
+             _verified_by("test_integration.py", "test_data_manager.py")],
+            ["WF-03",
+             "Agregacja świec jednominutowych do interwałów wyższych bez utraty poprawności "
+             "OHLCV oraz kolumn przepływu zleceń.",
+             "prosper aggregate; 1m do 1h, 1d, 1w",
+             _verified_by("test_aggregate.py", "test_order_flow_features.py")],
+            ["WF-04",
+             "Kontrola jakości danych wykrywająca braki ciągłości, duplikaty, złe sortowanie i "
+             "naruszenia niezmienników świecy.",
+             "prosper qa check; raport z liczbą defektów w podziale na partycje",
+             _verified_by("test_qa_checks.py")],
+            ["WF-05",
+             "Wyliczenie zestawu cech technicznych niezależnych od poziomu ceny, "
+             "umożliwiającego łączenie danych z różnych instrumentów.",
+             "prosper features build; lista TRAINING_FEATURE_COLUMNS w domain.py",
+             _verified_by("test_features_build.py", "test_scale_free_features.py")],
+            ["WF-06",
+             "Wyznaczenie etykiet kierunku oraz głębokości ruchu dla każdego horyzontu, z "
+             "jawnym oznaczeniem świec, dla których etykieta nie jest jeszcze znana.",
+             "prosper labels build; dwie klasy kierunku, kubełki głębokości",
+             _verified_by("test_labels.py", "test_depth_scheme.py", "test_horizon_set.py")],
+            ["WF-07",
+             "Wytrenowanie modelu prognozującego rozkład prawdopodobieństwa kierunku i "
+             "głębokości dla każdego z czterech horyzontów.",
+             "prosper predict baseline / ml / xgboost / gru / tft",
+             _verified_by("test_predictor_training_edges.py",
+                          "test_predict_interval_integration.py")],
+            ["WF-08",
+             "Udostępnienie co najmniej pięciu architektur o różnym sposobie wprowadzenia "
+             "zależności czasowej, porównywalnych w ramach jednego protokołu.",
+             "model odniesienia, regresja logistyczna, XGBoost, GRU, TFT",
+             _verified_by("test_predict_interval_integration.py",
+                          "test_tft_class_order.py")],
+            ["WF-09",
+             "Trening kroczący z okresowym przeuczeniem, w którym prognoza dla danego miesiąca "
+             "korzysta wyłącznie z danych wcześniejszych.",
+             "predict/window.py; przeuczenie miesięczne",
+             _verified_by("test_predict_leakage.py", "test_train_window.py")],
+            ["WF-10",
+             "Możliwość zasilenia treningu danymi z kilku symboli naraz, z zachowaniem "
+             "poprawności czasowej doboru wierszy.",
+             "predict/pool.py; flaga --symbols dla modeli przyjmujących pulę",
+             _verified_by("test_pooled_training.py", "test_api_pool_command.py")],
+            ["WF-11",
+             "Kalibracja zwracanych prawdopodobieństw na wydzielonym fragmencie okna "
+             "treningowego, nigdy na danych późniejszych niż prognoza.",
+             "skalowanie temperaturą; calibration_split",
+             _verified_by("test_calibration.py")],
+            ["WF-12",
+             "Ocena przebiegu regułami oceny właściwej wraz z przedziałami ufności "
+             "uwzględniającymi nakładanie się etykiet.",
+             "prosper eval predictions; trafność, Brier, logloss, ECE, bootstrap blokowy",
+             _verified_by("test_prediction_evaluation.py", "test_significance.py")],
+            ["WF-13",
+             "Ocena stabilności prognozy w czasie, w podziale na miesiące, z oznaczeniem "
+             "okresów o zbyt małej liczbie obserwacji.",
+             "prosper eval stability",
+             _verified_by("test_eval_stability.py")],
+            ["WF-14",
+             "Zestawienie wszystkich ocenionych przebiegów w jednym rankingu oraz ocena "
+             "wsadowa nadająca się do uruchomienia z harmonogramu.",
+             "prosper eval compare; prosper eval batch",
+             _verified_by("test_api_server.py", "test_cli_exit_codes.py")],
+            ["WF-15",
+             "Przełożenie prognozy na skalę rekomendacji od Strong Buy do Strong Sell, z "
+             "progiem kosztowym i bramkami ryzyka.",
+             "prosper planner windows; SequenceGrader",
+             _verified_by("test_planner_windows.py", "test_cost_threshold.py",
+                          "test_risk_gates.py", "test_risk_is_directional.py")],
+            ["WF-16",
+             "Symulacja handlowa odtwarzająca przebieg na danych historycznych, z jawnymi "
+             "założeniami wykonawczymi.",
+             "prosper eval backtest; prowizja, poślizg, próg kosztowy, polityka ekspozycji",
+             _verified_by("test_backtest_execution.py", "test_backtest_parameters.py")],
+            ["WF-17",
+             "Podanie wyniku symulacji zawsze wraz z punktami odniesienia, w tym z rozkładem "
+             "wyników tej samej ścieżki ekspozycji przesuniętej w czasie.",
+             "sekcja nulls: kupno i trzymanie, stała ekspozycja, przesunięcia cykliczne, "
+             "reguła momentum",
+             _verified_by("test_backtest_nulls.py")],
+            ["WF-18",
+             "Wersjonowanie przebiegów: każdy artefakt pochodny wskazuje przebieg, z którego "
+             "powstał, a usunięcie przebiegu usuwa wszystko, co z niego wynika.",
+             "storage/runs.py; katalog symbol / model_interwał_znacznik-czasu",
+             _verified_by("test_run_attribution.py", "test_versioned_predictions.py")],
+            ["WF-19",
+             "Obsługa całego potoku z wiersza poleceń, w formie nadającej się do wywołania z "
+             "harmonogramu zadań.",
+             "aplikacja Typer; pełna referencja w załączniku B",
+             _verified_by("test_cli_exit_codes.py", "test_cli_api_contract.py")],
+            ["WF-20",
+             "Obsługa całego potoku z przeglądarki, bez konieczności znajomości wiersza "
+             "poleceń.",
+             "FastAPI oraz panel w natywnych modułach ES",
+             _verified_by("test_api_server.py", "test_api_performance.py")],
+            ["WF-21",
+             "Kolejkowanie długotrwałych zadań po stronie serwera, odporne na przeładowanie "
+             "przeglądarki.",
+             "api/tasks.py; jeden wątek roboczy, kolejka po stronie serwera",
+             _verified_by("test_task_queue.py")],
+            ["WF-22",
+             "Prezentacja stanu jeziora danych: symbole, zakresy, liczba świec, zajętość "
+             "dysku, wraz z możliwością usunięcia symbolu.",
+             "inventory.py; DataManager",
+             _verified_by("test_data_manager.py", "test_inventory_cache.py")],
+        ],
+        [1.5, 5.2, 4.4, 4.4],
+        font=8,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Wymagania funkcjonalne. Kolumna Realizacja wskazuje polecenie lub moduł, kolumna "
+        "Weryfikacja - moduł testowy, który sprawdza spełnienie. Pełny inwentarz testów wraz z "
+        "opisem każdego przypadku zawiera załącznik A.",
+    )
+
+    add_heading(doc, "2.3. Wymagania niefunkcjonalne", 2)
+    add_body(
+        doc,
+        "Wymagania niefunkcjonalne dotyczą własności, które system ma mieć niezależnie od "
+        "wykonywanej czynności. W projekcie badawczym mają one wagę większą niż zwykle: praca "
+        "nie kończy się działającym programem, lecz liczbą, którą ktoś ma potraktować "
+        "poważnie. Liczba pochodząca z systemu nieodtwarzalnego albo pozwalającego modelowi "
+        "zobaczyć przyszłość nie jest wynikiem gorszym - nie jest wynikiem w ogóle.",
+    )
+    add_table(
+        doc,
+        ["Nr", "Wymaganie", "Sposób spełnienia", "Weryfikacja"],
+        [
+            ["WN-01",
+             "Brak zaglądania w przyszłość na każdym etapie: uczenia, kalibracji, oceny i "
+             "symulacji.",
+             "training_bounds(); sygnał ze świecy t realizowany po cenie otwarcia świecy t+1",
+             _verified_by("test_predict_leakage.py", "test_backtest_execution.py")],
+            ["WN-02",
+             "Odtwarzalność: ten sam zestaw parametrów wraz z ziarnem daje ten sam wynik przy "
+             "powtórnym uruchomieniu.",
+             "flagi --deterministic --seed; ziarnowanie na okno przez window_seed()",
+             _verified_by("test_window_seed.py")],
+            ["WN-03",
+             "Izolacja konfiguracji: zmiana parametru jednego horyzontu nie może wpłynąć na "
+             "wynik pozostałych.",
+             "ziarno wyprowadzane z krotki model, horyzont, rok, miesiąc, symbol",
+             _verified_by("test_window_seed.py") + "; rozdział 11.5"],
+            ["WN-04",
+             "Rozpoznawalność pochodzenia wyniku: z samego artefaktu na dysku musi dać się "
+             "odczytać model, interwał, ziarno i tryb deterministyczny.",
+             "run_summary.json zapisywany przy każdym przebiegu",
+             _verified_by("test_run_provenance.py")],
+            ["WN-05",
+             "Niezmienniczość cech względem poziomu ceny, warunkująca poprawność treningu na "
+             "puli symboli.",
+             "lista włączająca TRAINING_FEATURE_COLUMNS zamiast listy wykluczającej",
+             _verified_by("test_scale_free_features.py")],
+            ["WN-06",
+             "Jawne raportowanie mocy statystycznej: wynik podawany jest wraz z liczbą "
+             "obserwacji niezależnych po obu stronach podziału.",
+             "warn_low_power() wywoływane dla części uczącej i ocenianej",
+             _verified_by("test_train_window.py", "test_significance.py")],
+            ["WN-07",
+             "Nierozstrzyganie o jakości modelu na podstawie symulacji handlowej.",
+             "wynik symulacji podawany wyłącznie z czterema hipotezami zerowymi",
+             _verified_by("test_backtest_nulls.py") + "; rozdział 10.7"],
+            ["WN-08",
+             "Jedno miejsce definicji dla pojęć wspólnych: horyzontów, klas kierunku, kubełków "
+             "głębokości, arytmetyki interwałów.",
+             "moduł domain.py na poziomie pakietu",
+             _verified_by("test_horizon_set.py", "test_depth_scheme.py")],
+            ["WN-09",
+             "Jedno miejsce podejmowania decyzji o werdykcie, wspólne dla planera, symulacji i "
+             "oceny.",
+             "planner/windows.py, klasa SequenceGrader",
+             _verified_by("test_one_grader.py")],
+            ["WN-10",
+             "Brak stanu współdzielonego między przebiegami: nie istnieje katalog ostatniego "
+             "wyniku, do którego zapisuje każdy przebieg.",
+             "artefakty adresowane wyłącznie identyfikatorem przebiegu",
+             _verified_by("test_run_attribution.py") + "; rozdział 11.3"],
+            ["WN-11",
+             "Warstwa HTTP nie wykonuje długotrwałych obliczeń we własnym procesie i nie "
+             "buduje własnej wersji poleceń.",
+             "uruchomienie python -m prosper.cli z shell=False; budowa argumentów w jednym "
+             "module",
+             _verified_by("test_cli_api_contract.py", "test_api_pool_command.py")],
+            ["WN-12",
+             "Panel przeglądarkowy działa bez etapu budowania i bez zewnętrznych zależności "
+             "pobieranych w czasie działania.",
+             "natywne moduły ES; brak menedżera pakietów i pliku konfiguracji budowania po "
+             "stronie klienta",
+             "przegląd katalogu frontend/"],
+            ["WN-13",
+             "Praca w całości na danych lokalnych: po pobraniu archiwów system nie wymaga "
+             "połączenia z siecią.",
+             "jezioro danych w formacie Parquet pod katalogiem data/",
+             _verified_by("test_integration.py") + " (bez rzeczywistej sieci)"],
+            ["WN-14",
+             "Zachowanie jakości kodu: brak ostrzeżeń narzędzia kontroli statycznej, komplet "
+             "testów przechodzący przed każdą zmianą.",
+             "ruff check; pytest",
+             "uruchomienie w cyklu pracy"],
+            ["WN-15",
+             "Czas przetworzenia jednego symbolu w standardowym zakresie pozostaje w granicach "
+             "umożliwiających powtórzenie eksperymentu pod kilkoma ziarnami.",
+             "predykcja miesiąca w jednym przebiegu wsadowym zamiast osobnego zbioru na świecę",
+             _verified_by("test_tft_batched_inference.py")],
+            ["WN-16",
+             "Odporność na dane niekompletne i na przerwanie: symbol o krótszej historii nie "
+             "przerywa przebiegu, a przerwany przebieg nie pozostawia artefaktu częściowego.",
+             "zapis wyników dopiero po zakończeniu pętli kroczącej; świeca bez okna "
+             "normalizacji oznaczana jako nietrenowana",
+             _verified_by("test_history_shorter_than_range.py")],
+        ],
+        [1.5, 5.2, 4.6, 4.2],
+        font=8,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Wymagania niefunkcjonalne. Sześć z nich (WN-01, WN-03, WN-04, WN-05, WN-06, WN-10) "
+        "zapisano dopiero po tym, jak ich naruszenie zostało wykryte w działającym systemie; "
+        "opisy tych zdarzeń zawiera rozdział 11.",
+    )
+
+    add_heading(doc, "2.4. Wymagania wyprowadzone w trakcie badania", 2)
+    add_body(
+        doc,
+        "Poniższe zestawienie podaje wymagania, których nie dało się sformułować przed "
+        "uruchomieniem systemu, wraz z obserwacją, która je wymusiła. Zestawienie to jest "
+        "elementem metodyki, nie kroniką pomyłek: w każdym z tych przypadków wcześniejsze "
+        "brzmienie wymagania było wewnętrznie spójne i dawało wyniki wyglądające poprawnie. "
+        "Właśnie dlatego wykrycie wymagało pomiaru, a nie przeglądu kodu.",
+    )
+    add_table(
+        doc,
+        ["Wymaganie w brzmieniu ostatecznym", "Brzmienie pierwotne", "Co je zmieniło", "Opis"],
+        [
+            ["Szerokość okna treningowego jest wyprowadzana osobno dla każdego horyzontu z "
+             "jego rozpiętości i długości historii.",
+             "Jedna szerokość okna podawana w konfiguracji.",
+             "Przy stałej szerokości horyzont roczny dysponował 1,0 obserwacji niezależnej "
+             "wobec 103 na tygodniowym. Rozszerzenie okna dla wszystkich odbiera obserwacje "
+             "stronie ocenianej, więc nie jest rozwiązaniem.",
+             "8.7"],
+            ["Horyzonty są rozpiętościami kalendarzowymi przeliczanymi na świece osobno dla "
+             "każdego interwału; zbiór to tydzień, miesiąc, kwartał i rok.",
+             "Trzy horyzonty nazwane short, medium i long, wyrażone w liczbie świec.",
+             "Nazwy short i long kolidowały z nazwami klas kierunku. Rozpiętość roczna po "
+             "zaokrągleniu dawała 364 dni przy interwale tygodniowym i 365 przy dziennym, więc "
+             "ten sam horyzont oznaczał dwa różne pytania.",
+             "7.3"],
+            ["Ziarno generatora liczb losowych wyprowadzane jest z krotki obejmującej symbol.",
+             "Jedno ziarno ustawiane przed pętlą kroczącą.",
+             "Bez symbolu w krotce wszystkie symbole dzieliły strumień inicjalizacji, przez co "
+             "przebiegi uznane za niezależne nie były niezależne, a test istotności wskazał "
+             "efekt, którego nie ma.",
+             "11.5"],
+            ["Kryterium zatrzymania uczenia liczone jest po kalibracji.",
+             "Zatrzymanie na surowej entropii krzyżowej zbioru walidacyjnego.",
+             "Surowa entropia karze za pewność siebie. Sieć wyostrza rozkład na długo przed "
+             "utratą zdolności rozróżniania, a kalibrator odwraca to krok później - "
+             "zatrzymanie następowało po jednej epoce, przy wciąż rosnącej trafności.",
+             "8.8"],
+            ["Cechy treningowe wybierane są z listy włączającej.",
+             "Wszystkie kolumny pliku cech poza wymienionymi wyjątkami.",
+             "Lista wykluczająca wpuszczała kolumny w wartościach bezwzględnych. Przy jednym "
+             "symbolu normalizacja usuwa poziom i nic się nie dzieje; przy puli symboli poziom "
+             "staje się etykietą symbolu.",
+             "6.1"],
+            ["Wiersze do treningu na puli symboli wybierane są po znaczniku czasu.",
+             "Wybór po numerze wiersza, wspólny dla wszystkich symboli.",
+             "Wiersz o tym samym numerze oznacza w różnych symbolach różne daty, więc okno "
+             "wyznaczone indeksem uczyło prognozę na świecach, które jeszcze nie zaszły. "
+             "Jedynym objawem była wyższa trafność.",
+             "8.5"],
+            ["Symulacja handlowa podawana jest wraz z regułą momentum jako punktem "
+             "odniesienia.",
+             "Porównanie z kupnem i trzymaniem.",
+             "Strategia długa wychodząca z rynku na czas spadków bije kupno i trzymanie samym "
+             "składaniem zysków, bez żadnej prognozy. Potrzebny był punkt odniesienia, który "
+             "też wychodzi z rynku.",
+             "9.5"],
+            ["Horyzont bez danych treningowych oznaczany jest jako nietrenowany i wykluczany z "
+             "oceny.",
+             "Brak takiego pojęcia.",
+             "Przy zbyt wąskim oknie dwa horyzonty zwracały stały rozkład, a warstwa oceny "
+             "punktowała tę stałą jako prognozę.",
+             "11.2"],
+        ],
+        [4.4, 3.4, 6.0, 1.7],
+        font=8,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Wymagania wyprowadzone z pomiaru. Kolumna Opis wskazuje podrozdział zawierający pełne "
+        "omówienie. Wspólną cechą tych ośmiu przypadków jest to, że brzmienie pierwotne nie "
+        "powodowało awarii - powodowało wynik, i to zwykle wynik lepszy od prawdziwego.",
+    )
+    add_body(
+        doc,
+        "Wniosek metodyczny jest następujący. W części inżynierskiej systemu - układ warstw, "
+        "wersjonowanie artefaktów, rozdział wiersza poleceń od warstwy HTTP, format jeziora "
+        "danych - specyfikacja spisana z góry byłaby trafna i oszczędziłaby pracy. W części "
+        "badawczej wymagania są hipotezami o tym, jak zachowa się pomiar, a hipotezy tego "
+        "rodzaju weryfikuje się wyłącznie przez uruchomienie. Stąd sposób pracy przyjęty w "
+        "projekcie: każde wymaganie z drugiej grupy zapisywane jest wraz z obserwacją, która "
+        "je wymusiła, i wraz z testem, który zapobiega powrotowi do brzmienia poprzedniego.",
+    )
+
+    add_heading(doc, "2.5. Granice zakresu", 2)
+    add_body(
+        doc,
+        "Poniższe zadania pozostawiono świadomie poza systemem. Każde z nich jest wykonalne, a "
+        "część była rozważana na wczesnym etapie; podanie powodu rezygnacji jest istotniejsze "
+        "od samej listy, ponieważ w kilku przypadkach powodem jest wynik pomiaru, nie brak "
+        "czasu.",
+    )
+    add_table(
+        doc,
+        ["Poza zakresem", "Powód"],
+        [
+            ["Dane fundamentalne, informacje ze spółek, nastroje z mediów społecznościowych.",
+             "Pytanie badawcze dotyczy tego, ile informacji niesie sam szereg notowań. "
+             "Dołączenie danych spoza szeregu odpowiadałoby na inne pytanie i uniemożliwiłoby "
+             "odniesienie wyniku do słabej formy hipotezy efektywności rynku."],
+            ["Składanie zleceń, połączenie z rachunkiem giełdowym, obsługa kluczy API "
+             "użytkownika.",
+             "System jest narzędziem badawczym. Zmierzona jakość prognozy nie uzasadnia "
+             "podejmowania na jej podstawie decyzji finansowych, a moduł wykonawczy "
+             "sugerowałby, że jest odwrotnie."],
+            ["Obsługa rynków innych niż kryptowaluty: akcje, kontrakty terminowe, waluty.",
+             "Zamierzenie pierwotne obejmowało system uniwersalny. Zrezygnowano z niego, gdy "
+             "okazało się, że różnice w kalendarzu notowań, godzinach sesji, podziałach akcji "
+             "i dostępności danych historycznych wymagają osobnej warstwy pozyskiwania dla "
+             "każdego rynku. Wykonanie jednego rynku rzetelnie ma większą wartość niż czterech "
+             "powierzchownie. Sam potok jest jednak od rynku niezależny - opisano to jako "
+             "kierunek dalszych prac w rozdziale 13.2."],
+            ["Dane z arkusza zleceń i mikrostruktura rynku.",
+             "Binance Public Data udostępnia archiwa arkusza w rozdzielczości, przy której "
+             "kilka lat historii dla jednego symbolu przekracza rozmiar całego obecnego "
+             "jeziora danych. Przy horyzontach od tygodnia wzwyż związek między mikrostrukturą "
+             "a prognozą jest ponadto odległy."],
+            ["Optymalizacja portfela, dobór wag między symbolami, zarządzanie kapitałem.",
+             "Wymagałaby wiarygodnej prognozy jako danych wejściowych. Jest to zadanie "
+             "następujące po rozstrzygnięciu pytania badawczego, nie równoległe do niego."],
+            ["Automatyczny dobór hiperparametrów.",
+             "Przy zmierzonej liczbie obserwacji niezależnych przeszukiwanie przestrzeni "
+             "hiperparametrów wybrałoby konfigurację najlepiej dopasowaną do szumu okresu "
+             "oceny. Zestawy parametrów są zatem ustalone i wspólne dla wszystkich symboli."],
+            ["Prognoza wielkości ruchu jako pojedynczej wartości liczbowej.",
+             "Głębokość ruchu prognozowana jest jako rozkład na kubełkach, nie jako liczba. "
+             "Rozkład niesie informację o niepewności, którą punktowa wartość oczekiwana "
+             "zaciera."],
+            ["Uwierzytelnianie użytkowników, obsługa wielu kont, wdrożenie sieciowe.",
+             "System uruchamiany jest lokalnie przez jedną osobę. Warstwa uwierzytelniania "
+             "zwiększyłaby objętość kodu bez związku z pytaniem badawczym."],
+        ],
+        [5.2, 10.8],
+        font=8.5,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Granice zakresu wraz z uzasadnieniem. Trzy pierwsze pozycje odpowiadają decyzjom "
+        "podjętym w trakcie projektu, pozostałe - przyjętym od początku.",
+    )
+
+    add_heading(doc, "2.6. Kryteria akceptacji", 2)
+    add_body(
+        doc,
+        "Kryteria akceptacji sformułowano tak, aby dało się je rozstrzygnąć pomiarem, a nie "
+        "oceną. Warto zwrócić uwagę, że żadne z nich nie odnosi się do trafności prognozy. "
+        "Byłoby to kryterium nierozstrzygalne w chwili formułowania i zarazem zachęta do "
+        "powtarzania pomiaru aż do uzyskania wartości oczekiwanej - czyli dokładnie ten sposób "
+        "pracy, którego cała metodyka rozdziału 9 ma unikać. System jest zdatny wtedy, gdy "
+        "mierzy poprawnie, niezależnie od tego, co zmierzy.",
+    )
+    _acceptance_criteria(doc)
+    page_break(doc)
+
+
+def _acceptance_criteria(doc: Document) -> None:
+    """The acceptance table, with the counts read from the suite rather than typed."""
+    modules = test_inventory()
+    cases = sum(len(m.cases) for m in modules)
+    commands = len(cli_reference())
+    add_table(
+        doc,
+        ["Kryterium", "Miara", "Stan"],
+        [
+            ["Komplet testów przechodzi bez błędów.",
+             f"pytest; {len(modules)} modułów, {cases} udokumentowanych przypadków",
+             "spełnione"],
+            ["Kontrola statyczna nie zgłasza uwag.",
+             "ruff check .",
+             "spełnione"],
+            ["Kontrola jakości danych nie wykrywa defektów w jeziorze.",
+             "prosper qa check na wszystkich partycjach",
+             "spełnione; szczegóły w rozdziale 5.4"],
+            ["Każdy z czterech horyzontów faktycznie się uczy dla każdej architektury albo "
+             "jest jawnie oznaczony jako nietrenowany.",
+             "pole trained w wynikach przebiegu; licznik untrained_rows w ocenie",
+             "spełnione"],
+            ["Powtórzenie przebiegu pod tym samym ziarnem daje wynik identyczny co do bajtu.",
+             "porównanie plików wynikowych dwóch uruchomień",
+             "spełnione dla modeli gradientowych; dla sieci zależne od deterministycznych "
+             "jąder obliczeniowych"],
+            ["Każdy raportowany wynik da się odtworzyć z artefaktu na dysku bez odwołania do "
+             "notatek.",
+             "run_summary.json zawiera model, interwał, ziarno i tryb",
+             "spełnione"],
+            ["Wynik podawany jest wraz z przedziałem ufności uwzględniającym nakładanie się "
+             "etykiet.",
+             "bootstrap blokowy; minimum 10 bloków",
+             "spełnione"],
+            ["Każda architektura uruchomiona pod co najmniej trzema ziarnami, aby rozrzut "
+             "inicjalizacji był widoczny.",
+             "liczba przebiegów na komórkę w załączniku E",
+             "spełnione"],
+            ["Cały potok obsługiwalny zarówno z wiersza poleceń, jak i z przeglądarki.",
+             f"{commands} poleceń CLI; komplet tras HTTP w załączniku C",
+             "spełnione"],
+            ["Usunięcie przebiegu nie pozostawia artefaktów pochodnych.",
+             "kaskadowe usuwanie katalogów pochodnych przy usunięciu przebiegu",
+             "spełnione"],
+        ],
+        [6.4, 6.2, 3.4],
+        font=8.5,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Kryteria akceptacji wraz ze stanem na dzień wygenerowania dokumentu. Kryterium "
+        "odtwarzalności co do bajtu spełnione jest w pełni dla modeli gradientowych; dla "
+        "sieci neuronowych zależy od dostępności deterministycznych implementacji operacji na "
+        "procesorze graficznym, co omówiono w rozdziale 9.6.",
+    )
+
+
+# ── 3 ────────────────────────────────────────────────────────────────────────
+
+def _chapter_3_theory(doc: Document) -> None:
+    add_heading(doc, "3. Podstawy teoretyczne", 1)
+
+    add_heading(doc, "3.1. Hipoteza efektywności rynku", 2)
     add_body(
         doc,
         "Hipoteza efektywności rynku orzeka, że ceny odzwierciedlają dostępne informacje, przez "
@@ -537,7 +1058,7 @@ def _chapter_2_theory(doc: Document) -> None:
         "wielkość ewentualnej przewagi.",
     )
 
-    add_heading(doc, "2.2. Własności finansowych szeregów czasowych", 2)
+    add_heading(doc, "3.2. Własności finansowych szeregów czasowych", 2)
     add_body(
         doc,
         "Szeregi zwrotów aktywów wykazują zbiór własności powtarzalnych na różnych rynkach i "
@@ -561,7 +1082,7 @@ def _chapter_2_theory(doc: Document) -> None:
         ],
     )
 
-    add_heading(doc, "2.3. Prognoza kierunku jako zadanie klasyfikacji", 2)
+    add_heading(doc, "3.3. Prognoza kierunku jako zadanie klasyfikacji", 2)
     add_body(
         doc,
         "Prognoza jest sformułowana jako klasyfikacja binarna: znak zwrotu w przód na zadanym "
@@ -574,10 +1095,10 @@ def _chapter_2_theory(doc: Document) -> None:
         "Nie wprowadzono klasy „bez zmiany”. Próg oddzielający ruch istotny od nieistotnego "
         "byłby dodatkowym, arbitralnym parametrem badania, a jego wartość wpływałaby na "
         "raportowaną trafność. Wielkość ruchu jest natomiast prognozowana osobno, jako rozkład "
-        "na kubełkach głębokości (rozdział 6).",
+        "na kubełkach głębokości (rozdział 7).",
     )
 
-    add_heading(doc, "2.4. Reguły oceny właściwej", 2)
+    add_heading(doc, "3.4. Reguły oceny właściwej", 2)
     add_body(
         doc,
         "Regułą właściwą (Gneiting i Raftery, 2007) nazywamy funkcję oceny prognozy "
@@ -611,7 +1132,7 @@ def _chapter_2_theory(doc: Document) -> None:
         "prawdopodobieństwa nie nadają się do podejmowania decyzji, mimo że ranking jest trafny.",
     )
 
-    add_heading(doc, "2.5. Kalibracja probabilistyczna", 2)
+    add_heading(doc, "3.5. Kalibracja probabilistyczna", 2)
     add_figure(doc, "niezawodnosc", "Krzywe niezawodności: deklarowana pewność wobec zrealizowanej częstości trafień, zbiorczo po wszystkich przebiegach. Przekątna oznacza kalibrację doskonałą.")
     add_body(
         doc,
@@ -630,7 +1151,7 @@ def _chapter_2_theory(doc: Document) -> None:
         "wyłącznie w reżimie wysokiej zmienności, jeden parametr tego nie rozdzieli.",
     )
 
-    add_heading(doc, "2.6. Bootstrap blokowy", 2)
+    add_heading(doc, "3.6. Bootstrap blokowy", 2)
     add_body(
         doc,
         "Klasyczny bootstrap losuje obserwacje niezależnie, co zakłada ich wzajemną "
@@ -651,19 +1172,19 @@ def _chapter_2_theory(doc: Document) -> None:
     page_break(doc)
 
 
-# ── 3 ────────────────────────────────────────────────────────────────────────
+# ── 4 ────────────────────────────────────────────────────────────────────────
 
-def _chapter_3_architecture(doc: Document) -> None:
-    add_heading(doc, "3. Architektura systemu", 1)
+def _chapter_4_architecture(doc: Document) -> None:
+    add_heading(doc, "4. Architektura systemu", 1)
 
-    add_heading(doc, "3.1. Potok przetwarzania", 2)
+    add_heading(doc, "4.1. Potok przetwarzania", 2)
     add_body(
         doc,
         "System realizuje potok o ośmiu etapach. Każdy etap zapisuje wersjonowany artefakt na "
         "dysku, a każdy kolejny etap wskazuje artefakt źródłowy po nazwie. Nie istnieje "
         "współdzielony katalog „najnowszych” wyników - wcześniejsza wersja systemu taki katalog "
         "miała i skutkowało to przypisywaniem wyników ostatnio uruchomionego modelu wszystkim "
-        "pozostałym (rozdział 10).",
+        "pozostałym (rozdział 11).",
     )
     add_table(
         doc,
@@ -686,7 +1207,7 @@ def _chapter_3_architecture(doc: Document) -> None:
     )
     add_caption(doc, "Tabela", "Etapy potoku, ich wejścia i artefakty.")
 
-    add_heading(doc, "3.2. Warstwy", 2)
+    add_heading(doc, "4.2. Warstwy", 2)
     add_bullets(
         doc,
         [
@@ -710,7 +1231,7 @@ def _chapter_3_architecture(doc: Document) -> None:
         ],
     )
 
-    add_heading(doc, "3.3. Decyzje technologiczne", 2)
+    add_heading(doc, "4.3. Decyzje technologiczne", 2)
     add_table(
         doc,
         ["Decyzja", "Uzasadnienie", "Koszt"],
@@ -745,7 +1266,7 @@ def _chapter_3_architecture(doc: Document) -> None:
     )
     add_caption(doc, "Tabela", "Decyzje architektoniczne wraz z ich kosztem.")
 
-    add_heading(doc, "3.4. Wersjonowanie artefaktów", 2)
+    add_heading(doc, "4.4. Wersjonowanie artefaktów", 2)
     add_body(
         doc,
         "Każdy przebieg prognozy zapisywany jest w katalogu o nazwie złożonej z modelu, "
@@ -776,12 +1297,12 @@ def _chapter_3_architecture(doc: Document) -> None:
     page_break(doc)
 
 
-# ── 4 ────────────────────────────────────────────────────────────────────────
+# ── 5 ────────────────────────────────────────────────────────────────────────
 
-def _chapter_4_data(doc: Document) -> None:
-    add_heading(doc, "4. Dane", 1)
+def _chapter_5_data(doc: Document) -> None:
+    add_heading(doc, "5. Dane", 1)
 
-    add_heading(doc, "4.1. Źródło", 2)
+    add_heading(doc, "5.1. Źródło", 2)
     add_body(
         doc,
         "Dane pochodzą z serwisu Binance Public Data, udostępniającego historyczne świece w "
@@ -790,7 +1311,7 @@ def _chapter_4_data(doc: Document) -> None:
         "świeca godzinowa i dzienna pochodzą z tego samego źródła i są ze sobą spójne.",
     )
 
-    add_heading(doc, "4.2. Schemat świecy", 2)
+    add_heading(doc, "5.2. Schemat świecy", 2)
     add_table(
         doc,
         ["Kolumna", "Typ", "Znaczenie"],
@@ -818,7 +1339,7 @@ def _chapter_4_data(doc: Document) -> None:
         "pozwalają, a ich brak jest raportowany, nie uzupełniany wartością zastępczą.",
     )
 
-    add_heading(doc, "4.3. Agregacja", 2)
+    add_heading(doc, "5.3. Agregacja", 2)
     add_body(
         doc,
         "Agregacja z interwału jednominutowego przebiega według reguł: otwarcie z pierwszej "
@@ -827,7 +1348,7 @@ def _chapter_4_data(doc: Document) -> None:
         "tygodnia zamiast miesiąca, ponieważ tydzień może przekraczać granicę miesiąca.",
     )
 
-    add_heading(doc, "4.4. Kontrola jakości", 2)
+    add_heading(doc, "5.4. Kontrola jakości", 2)
     add_bullets(
         doc,
         [
@@ -844,7 +1365,7 @@ def _chapter_4_data(doc: Document) -> None:
 
     _data_quality_results(doc)
 
-    add_heading(doc, "4.5. Charakterystyka zbioru", 2)
+    add_heading(doc, "5.5. Charakterystyka zbioru", 2)
     stats = dataset_summary("1d")
     if stats:
         add_table(
@@ -857,19 +1378,19 @@ def _chapter_4_data(doc: Document) -> None:
         add_caption(
             doc, "Tabela",
             "Zakres danych dziennych w jeziorze danych, zmierzony w chwili budowania dokumentu. "
-            "Symbole o krótszej historii ograniczają horyzont roczny (rozdział 8.3).",
+            "Symbole o krótszej historii ograniczają horyzont roczny (rozdział 9.3).",
         )
     else:
         add_body(doc, "Jezioro danych jest puste — uruchom etap pobrania.", italic=True)
     page_break(doc)
 
 
-# ── 5 ────────────────────────────────────────────────────────────────────────
+# ── 6 ────────────────────────────────────────────────────────────────────────
 
-def _chapter_5_features(doc: Document) -> None:
-    add_heading(doc, "5. Cechy", 1)
+def _chapter_6_features(doc: Document) -> None:
+    add_heading(doc, "6. Cechy", 1)
 
-    add_heading(doc, "5.1. Zasada: niezmienniczość względem skali", 2)
+    add_heading(doc, "6.1. Zasada: niezmienniczość względem skali", 2)
     add_body(
         doc,
         "Zbiór cech treningowych jest listą włączającą, nie wykluczającą. Wcześniejsza wersja "
@@ -887,7 +1408,7 @@ def _chapter_5_features(doc: Document) -> None:
         "cech, ponieważ korzysta z nich panel przeglądarkowy, ale nie trafiają do modelu.",
     )
 
-    add_heading(doc, "5.2. Katalog cech treningowych", 2)
+    add_heading(doc, "6.2. Katalog cech treningowych", 2)
     catalogue = feature_catalogue()
     by_group: dict[str, list] = defaultdict(list)
     for feature in catalogue:
@@ -913,12 +1434,12 @@ def _chapter_5_features(doc: Document) -> None:
     page_break(doc)
 
 
-# ── 6 ────────────────────────────────────────────────────────────────────────
+# ── 7 ────────────────────────────────────────────────────────────────────────
 
-def _chapter_6_labels(doc: Document) -> None:
-    add_heading(doc, "6. Etykiety", 1)
+def _chapter_7_labels(doc: Document) -> None:
+    add_heading(doc, "7. Etykiety", 1)
 
-    add_heading(doc, "6.1. Kierunek", 2)
+    add_heading(doc, "7.1. Kierunek", 2)
     add_body(
         doc,
         "Etykieta kierunku jest znakiem zwrotu w przód na zadanym horyzoncie i przyjmuje dwie "
@@ -929,7 +1450,7 @@ def _chapter_6_labels(doc: Document) -> None:
         "wykluczany z oceny.",
     )
 
-    add_heading(doc, "6.2. Głębokość", 2)
+    add_heading(doc, "7.2. Głębokość", 2)
     _, labels = parse_depth_bins(DEFAULT_DEPTH_BINS_STR)
     add_body(
         doc,
@@ -954,7 +1475,7 @@ def _chapter_6_labels(doc: Document) -> None:
         "na horyzontach długich.",
     )
 
-    add_heading(doc, "6.3. Horyzonty", 2)
+    add_heading(doc, "7.3. Horyzonty", 2)
     add_body(
         doc,
         "Horyzont zdefiniowany jest jako rozpiętość kalendarzowa, nie liczba świec, i "
@@ -994,10 +1515,10 @@ def _chapter_6_labels(doc: Document) -> None:
     page_break(doc)
 
 
-# ── 7 ────────────────────────────────────────────────────────────────────────
+# ── 8 ────────────────────────────────────────────────────────────────────────
 
-def _chapter_7_models(doc: Document) -> None:
-    add_heading(doc, "7. Architektury modeli", 1)
+def _chapter_8_models(doc: Document) -> None:
+    add_heading(doc, "8. Architektury modeli", 1)
 
     add_body(
         doc,
@@ -1020,7 +1541,7 @@ def _chapter_7_models(doc: Document) -> None:
     )
     add_caption(doc, "Tabela", "Porównywane rodziny modeli. Czasy zmierzone na 16 rdzeniach CPU.")
 
-    add_heading(doc, "7.1. Model odniesienia", 2)
+    add_heading(doc, "8.1. Model odniesienia", 2)
     add_body(
         doc,
         "Model odniesienia zlicza częstości kierunków w oknie i wygładza je regułą Laplace'a. "
@@ -1031,7 +1552,7 @@ def _chapter_7_models(doc: Document) -> None:
         "nie może.",
     )
 
-    add_heading(doc, "7.2. Modele gradientowe", 2)
+    add_heading(doc, "8.2. Modele gradientowe", 2)
     add_figure(doc, "waznosc", "Względna ważność cech w modelu gradientowym. Rozkład jest płaski - żadna cecha nie dominuje, co jest spójne z brakiem wykrywalnej struktury w danych wejściowych.")
     add_body(
         doc,
@@ -1043,7 +1564,7 @@ def _chapter_7_models(doc: Document) -> None:
         "je wielokrotnie i traktować jako punkt odniesienia dla modeli sekwencyjnych.",
     )
 
-    add_heading(doc, "7.3. Sieć rekurencyjna GRU", 2)
+    add_heading(doc, "8.3. Sieć rekurencyjna GRU", 2)
     add_body(
         doc,
         "Sieć rekurencyjna z bramkami (Cho i in., 2014) przetwarza sekwencję kolejnych świec, "
@@ -1054,7 +1575,7 @@ def _chapter_7_models(doc: Document) -> None:
         "kosztem znacznie większej liczby parametrów przy tej samej liczbie obserwacji.",
     )
 
-    add_heading(doc, "7.4. Temporal Fusion Transformer", 2)
+    add_heading(doc, "8.4. Temporal Fusion Transformer", 2)
     add_body(
         doc,
         "Architektura (Lim i in., 2021) łącząca kodowanie rekurencyjne z mechanizmem uwagi po "
@@ -1071,7 +1592,7 @@ def _chapter_7_models(doc: Document) -> None:
         "była pierwotną przyczyną wielogodzinnego czasu wykonania i została zastąpiona.",
     )
 
-    add_heading(doc, "7.5. Trening wielosymbolowy", 2)
+    add_heading(doc, "8.5. Trening wielosymbolowy", 2)
     add_body(
         doc,
         "Modele tabelaryczne przyjmują opcjonalną listę dodatkowych symboli, których wiersze "
@@ -1091,7 +1612,7 @@ def _chapter_7_models(doc: Document) -> None:
         "instrumentów.",
     )
 
-    add_heading(doc, "7.6. Protokół kroczący", 2)
+    add_heading(doc, "8.6. Protokół kroczący", 2)
     add_body(
         doc,
         "Model douczany jest raz na miesiąc kalendarzowy, na oknie kończącym się przed "
@@ -1101,7 +1622,7 @@ def _chapter_7_models(doc: Document) -> None:
         "wtedy, gdy k+F < i.",
     )
 
-    add_heading(doc, "7.7. Okno treningowe wyprowadzane z horyzontu", 2)
+    add_heading(doc, "8.7. Okno treningowe wyprowadzane z horyzontu", 2)
     add_body(
         doc,
         "Szerokość okna nie jest parametrem konfiguracyjnym, lecz wynika z horyzontu i "
@@ -1120,7 +1641,7 @@ def _chapter_7_models(doc: Document) -> None:
         "historii.",
     )
 
-    add_heading(doc, "7.8. Kalibracja i kryterium zatrzymania", 2)
+    add_heading(doc, "8.8. Kalibracja i kryterium zatrzymania", 2)
     add_body(
         doc,
         "Prawdopodobieństwa kalibrowane są skalowaniem temperatury (Guo i in., 2017) na "
@@ -1139,10 +1660,10 @@ def _chapter_7_models(doc: Document) -> None:
     page_break(doc)
 
 
-# ── 8 ────────────────────────────────────────────────────────────────────────
+# ── 9 ────────────────────────────────────────────────────────────────────────
 
-def _chapter_8_methodology(doc: Document) -> None:
-    add_heading(doc, "8. Metodyka pomiaru", 1)
+def _chapter_9_methodology(doc: Document) -> None:
+    add_heading(doc, "9. Metodyka pomiaru", 1)
     add_body(
         doc,
         "Rozdział opisuje warstwę, która czyni porównanie architektur rozstrzygalnym. Bez niej "
@@ -1151,7 +1672,7 @@ def _chapter_8_methodology(doc: Document) -> None:
         italic=True,
     )
 
-    add_heading(doc, "8.1. Miary bez wolnych parametrów", 2)
+    add_heading(doc, "9.1. Miary bez wolnych parametrów", 2)
     add_body(
         doc,
         "Model oceniany jest trafnością, wynikiem Briera, stratą logarytmiczną i oczekiwanym "
@@ -1160,7 +1681,7 @@ def _chapter_8_methodology(doc: Document) -> None:
         "której wynik zależy od kilkunastu decyzji wykonawczych.",
     )
 
-    add_heading(doc, "8.2. Przedziały ufności przy nakładających się etykietach", 2)
+    add_heading(doc, "9.2. Przedziały ufności przy nakładających się etykietach", 2)
     add_body(
         doc,
         "Każda trafność jest średnią po świecach o nakładających się etykietach - problem "
@@ -1179,7 +1700,7 @@ def _chapter_8_methodology(doc: Document) -> None:
         "odtworzyć.",
     )
 
-    add_heading(doc, "8.3. Moc statystyczna jako ograniczenie", 2)
+    add_heading(doc, "9.3. Moc statystyczna jako ograniczenie", 2)
     add_figure(doc, "moc", "Średnia liczba obserwacji niezależnych na horyzont, w skali logarytmicznej. Horyzont roczny leży poniżej progu, przy którym system w ogóle wyznacza przedział ufności - i jest to własność ilości danych, nie modelu.")
     add_body(
         doc,
@@ -1191,7 +1712,7 @@ def _chapter_8_methodology(doc: Document) -> None:
         "zaniku możliwości oceny.",
     )
 
-    add_heading(doc, "8.4. Stabilność w czasie", 2)
+    add_heading(doc, "9.4. Stabilność w czasie", 2)
     add_body(
         doc,
         "Miary jakości wyliczane są ponadto osobno dla każdego miesiąca kalendarzowego. "
@@ -1201,7 +1722,7 @@ def _chapter_8_methodology(doc: Document) -> None:
         "istotne, gdy etykiety wewnątrz miesiąca nakładają się niemal całkowicie.",
     )
 
-    add_heading(doc, "8.5. Symulacja handlowa i cztery hipotezy zerowe", 2)
+    add_heading(doc, "9.5. Symulacja handlowa i cztery hipotezy zerowe", 2)
     add_figure(doc, "kapital", "Przebieg wartości portfela dla pięciu architektur wobec strategii kup i trzymaj, skala logarytmiczna. Żadna strategia oparta na prognozie nie zbliża się do prostego trzymania pozycji w badanym okresie.")
     add_body(
         doc,
@@ -1234,7 +1755,7 @@ def _chapter_8_methodology(doc: Document) -> None:
         "poziomu zaangażowania.",
     )
 
-    add_heading(doc, "8.6. Odtwarzalność i ziarnowanie", 2)
+    add_heading(doc, "9.6. Odtwarzalność i ziarnowanie", 2)
     add_body(
         doc,
         "Każdy przebieg zapisuje ziarno, tryb deterministyczny, wyprowadzone okna treningowe i "
@@ -1247,7 +1768,7 @@ def _chapter_8_methodology(doc: Document) -> None:
         "Wspólny strumień powodowałby, że liczba kroków uczenia wykonanych gdziekolwiek przesuwa "
         "inicjalizację wszystkiego, co następuje po niej, czyniąc eksperyment z jedną zmienną "
         "niewykonalnym. Pominięcie symbolu w tej tożsamości spowodowało z kolei, że wszystkie "
-        "instrumenty startowały z identycznych wag - konsekwencje opisano w rozdziale 10.5.",
+        "instrumenty startowały z identycznych wag - konsekwencje opisano w rozdziale 11.5.",
     )
     add_body(
         doc,
@@ -1257,10 +1778,10 @@ def _chapter_8_methodology(doc: Document) -> None:
     page_break(doc)
 
 
-# ── 9 ────────────────────────────────────────────────────────────────────────
+# ── 10 ────────────────────────────────────────────────────────────────────────
 
-def _chapter_9_results(doc: Document, runs: dict) -> None:
-    add_heading(doc, "9. Wyniki: porównanie architektur", 1)
+def _chapter_10_results(doc: Document, runs: dict) -> None:
+    add_heading(doc, "10. Wyniki: porównanie architektur", 1)
 
     total = sum(len(v) for v in runs.values())
     seeds = sorted({r["seed"] for v in runs.values() for r in v if r["seed"] is not None})
@@ -1283,7 +1804,7 @@ def _chapter_9_results(doc: Document, runs: dict) -> None:
         page_break(doc)
         return
 
-    add_heading(doc, "9.1. Ranking architektur wobec podłogi szumu", 2)
+    add_heading(doc, "10.1. Ranking architektur wobec podłogi szumu", 2)
     add_body(
         doc,
         "Tabele poniżej odpowiadają wprost na pytanie badawcze. Wielkością rozstrzygającą jest "
@@ -1344,7 +1865,7 @@ def _chapter_9_results(doc: Document, runs: dict) -> None:
 
     _results_rank_stability(doc, runs)
 
-    add_heading(doc, "9.3. Wyniki szczegółowe", 2)
+    add_heading(doc, "10.3. Wyniki szczegółowe", 2)
     add_figure(doc, "porownanie", "Trafność średnia każdej architektury na czterech horyzontach. Wąsy to odchylenie standardowe między przebiegami różniącymi się wyłącznie ziarnem; przerywana linia oznacza poziom losowy. Nachodzenie wąsów na siebie i na linię 0,5 jest treścią wyniku.")
     for horizon in HORIZON_NAMES:
         rows = []
@@ -1421,7 +1942,7 @@ def _results_baserate(doc: Document) -> None:
     if not rows_by:
         return
 
-    add_heading(doc, "9.4. Trafność wobec częstości klasy większościowej", 2)
+    add_heading(doc, "10.4. Trafność wobec częstości klasy większościowej", 2)
     add_figure(doc, "rozrzut", "Każdy przebieg jako osobny punkt, horyzont tygodniowy. Rozrzut wewnątrz jednej architektury pochodzi wyłącznie ze zmiany ziarna inicjalizacji i jest porównywalny z odległościami między architekturami - dlatego ranking oparty na pojedynczym przebiegu nie ma podstaw.")
     add_body(
         doc,
@@ -1481,7 +2002,7 @@ def _results_calibration(doc: Document, runs: dict) -> None:
             ])
     if not table_rows:
         return
-    add_heading(doc, "9.5. Kalibracja", 2)
+    add_heading(doc, "10.5. Kalibracja", 2)
     add_body(
         doc,
         "Oczekiwany błąd kalibracji mierzy rozbieżność między deklarowaną pewnością a "
@@ -1530,12 +2051,12 @@ def _results_backtest(doc: Document) -> None:
     if not found:
         return
 
-    add_heading(doc, "9.7. Symulacja handlowa", 2)
+    add_heading(doc, "10.7. Symulacja handlowa", 2)
     add_figure(doc, "stabilnosc", "Trafność miesiąc po miesiącu dla BTCUSDT na horyzoncie tygodniowym. Wahania wokół poziomu losowego są znacznie większe niż jakakolwiek trwała przewaga - to jest obraz, który średnia z całego okresu ukrywa.")
     add_body(
         doc,
         "Wyniki podano wyłącznie jako kontekst ekonomiczny; nie stanowią oceny prognozy "
-        "(rozdział 8.5). Każdemu wynikowi towarzyszą cztery punkty odniesienia, z których "
+        "(rozdział 9.5). Każdemu wynikowi towarzyszą cztery punkty odniesienia, z których "
         "rozstrzygający jest percentyl względem własnych przesunięć cyklicznych: wielkość ta "
         "zachowuje sekwencję ekspozycji i zmienia wyłącznie jej ułożenie w czasie, więc "
         "izoluje wyczucie momentu od poziomu zaangażowania. Wartość 50 oznacza brak wyczucia, "
@@ -1595,7 +2116,7 @@ def _results_max_vs_mean(doc: Document) -> None:
     if not best:
         return
 
-    add_heading(doc, "9.8. Dlaczego najlepsza komórka nie jest wynikiem", 2)
+    add_heading(doc, "10.8. Dlaczego najlepsza komórka nie jest wynikiem", 2)
     add_figure(doc, "backtest", "Percentyl każdej symulacji względem jej własnych przesunięć cyklicznych. Mediana leży poniżej 50, czyli rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie arbitralne. Próg sygnału na poziomie 95 nie został osiągnięty przez żaden przebieg.")
     add_body(
         doc,
@@ -1631,7 +2152,7 @@ def _results_stability(doc: Document) -> None:
     if not reports:
         return
 
-    add_heading(doc, "9.6. Stabilność w czasie", 2)
+    add_heading(doc, "10.6. Stabilność w czasie", 2)
     add_figure(doc, "kalibracja", "Oczekiwany błąd kalibracji według horyzontu i architektury. Wartości rosną z horyzontem, ponieważ wycinek kalibracyjny kurczy się wraz z liczbą obserwacji niezależnych.")
     add_body(
         doc,
@@ -1687,10 +2208,10 @@ def _results_stability(doc: Document) -> None:
     )
 
 
-# ── 10 ───────────────────────────────────────────────────────────────────────
+# ── 11 ───────────────────────────────────────────────────────────────────────
 
-def _chapter_10_verification(doc: Document) -> None:
-    add_heading(doc, "10. Weryfikacja poprawności implementacji", 1)
+def _chapter_11_verification(doc: Document) -> None:
+    add_heading(doc, "11. Weryfikacja poprawności implementacji", 1)
     add_body(
         doc,
         "Rozdział dokumentuje defekty wykryte w trakcie budowy systemu i stanowi materiał "
@@ -1727,7 +2248,7 @@ def _chapter_10_verification(doc: Document) -> None:
     )
     add_caption(doc, "Tabela", "Defekty wykryte w trakcie budowy systemu.")
 
-    add_heading(doc, "10.1. Zamiana klas kierunku w modelu TFT", 2)
+    add_heading(doc, "11.1. Zamiana klas kierunku w modelu TFT", 2)
     add_body(
         doc,
         "Enkoder etykiet biblioteki pytorch-forecasting numeruje klasy w porządku "
@@ -1744,7 +2265,7 @@ def _chapter_10_verification(doc: Document) -> None:
         "zamiast oczekiwanej zgodności 0,987 model osiągnął 0,013.",
     )
 
-    add_heading(doc, "10.2. Horyzonty bez danych treningowych", 2)
+    add_heading(doc, "11.2. Horyzonty bez danych treningowych", 2)
     add_body(
         doc,
         "Przy oknie treningowym węższym od horyzontu zbiór treningowy jest pusty, ponieważ żadna "
@@ -1754,16 +2275,16 @@ def _chapter_10_verification(doc: Document) -> None:
         "nietrenowane i wykluczane z oceny, planowania i symulacji.",
     )
 
-    add_heading(doc, "10.3. Brak przypisania wyników do modelu", 2)
+    add_heading(doc, "11.3. Brak przypisania wyników do modelu", 2)
     add_body(
         doc,
         "Wszystkie modele zapisywały prognozy do wspólnego, nieopatrzonego wersją katalogu, z "
         "którego czytały warstwy pochodne. W praktyce oznaczało to, że model uruchomiony jako "
         "ostatni przejmował wyniki wszystkich pozostałych, a przebieg godzinowy nadpisywał "
-        "dzienny. Rozwiązaniem jest wersjonowanie opisane w rozdziale 3.4.",
+        "dzienny. Rozwiązaniem jest wersjonowanie opisane w rozdziale 4.4.",
     )
 
-    add_heading(doc, "10.4. Jednorodne rozkłady głębokości", 2)
+    add_heading(doc, "11.4. Jednorodne rozkłady głębokości", 2)
     add_body(
         doc,
         "Trzy z pięciu modeli zwracały jednakowe prawdopodobieństwo w każdym kubełku głębokości. "
@@ -1774,7 +2295,7 @@ def _chapter_10_verification(doc: Document) -> None:
         "miarach jakości prognozy kierunku.",
     )
 
-    add_heading(doc, "10.5. Wspólny strumień inicjalizacji", 2)
+    add_heading(doc, "11.5. Wspólny strumień inicjalizacji", 2)
     add_body(
         doc,
         "Najpoważniejszy z wykrytych defektów, ponieważ wyprodukował wynik pozytywny, który "
@@ -1813,11 +2334,11 @@ def _chapter_10_verification(doc: Document) -> None:
         doc,
         "Wniosek metodyczny, przenoszony do wszystkich raportowanych rezultatów: przedział "
         "ufności wyznaczony wewnątrz jednego przebiegu mierzy szum próbkowania i pozostaje "
-        "ślepy na szum inicjalizacji o porównywalnej wielkości. Z tego powodu rozdział 9 "
+        "ślepy na szum inicjalizacji o porównywalnej wielkości. Z tego powodu rozdział 10 "
         "raportuje wielokrotne przebiegi, a nie pojedyncze.",
     )
 
-    add_heading(doc, "10.6. Puste okno normalizacji", 2)
+    add_heading(doc, "11.6. Puste okno normalizacji", 2)
     add_body(
         doc,
         "Zażądanie zakresu rozpoczynającego się przed pierwszym notowaniem instrumentu umieszcza "
@@ -1828,7 +2349,7 @@ def _chapter_10_verification(doc: Document) -> None:
         "nietrenowanej; przerwanie całego przebiegu było defektem.",
     )
 
-    add_heading(doc, "10.7. Zakres pakietu testów", 2)
+    add_heading(doc, "11.7. Zakres pakietu testów", 2)
     modules = test_inventory()
     cases = sum(len(m.cases) for m in modules)
     add_body(
@@ -1851,15 +2372,15 @@ def _chapter_10_verification(doc: Document) -> None:
     page_break(doc)
 
 
-# ── 11 ───────────────────────────────────────────────────────────────────────
+# ── 12 ───────────────────────────────────────────────────────────────────────
 
-def _chapter_11_interfaces(doc: Document) -> None:
-    add_heading(doc, "11. Interfejsy", 1)
+def _chapter_12_interfaces(doc: Document) -> None:
+    add_heading(doc, "12. Interfejsy", 1)
 
     commands = cli_reference()
     routes = api_reference()
 
-    add_heading(doc, "11.1. Wiersz poleceń", 2)
+    add_heading(doc, "12.1. Wiersz poleceń", 2)
     add_body(
         doc,
         f"Wiersz poleceń wystawia {len(commands)} poleceń zgrupowanych tematycznie i stanowi "
@@ -1875,7 +2396,7 @@ def _chapter_11_interfaces(doc: Document) -> None:
     )
     add_caption(doc, "Tabela", "Polecenia wiersza poleceń.")
 
-    add_heading(doc, "11.2. Interfejs HTTP", 2)
+    add_heading(doc, "12.2. Interfejs HTTP", 2)
     add_body(
         doc,
         f"Serwer wystawia {len(routes)} tras. Żadna z nich nie wykonuje długotrwałych obliczeń "
@@ -1891,7 +2412,7 @@ def _chapter_11_interfaces(doc: Document) -> None:
     )
     add_caption(doc, "Tabela", "Trasy interfejsu HTTP.")
 
-    add_heading(doc, "11.3. Panel przeglądarkowy", 2)
+    add_heading(doc, "12.3. Panel przeglądarkowy", 2)
     add_body(
         doc,
         "Panel jest aplikacją jednostronicową zbudowaną na natywnych modułach ES, bez kroku "
@@ -1916,7 +2437,7 @@ def _chapter_11_interfaces(doc: Document) -> None:
         "poleceń - wartość domyślna obowiązuje bowiem wyłącznie przy nieobecności flagi.",
     )
 
-    add_heading(doc, "11.4. Konfiguracja", 2)
+    add_heading(doc, "12.4. Konfiguracja", 2)
     fields = settings_reference()
     add_body(
         doc,
@@ -1929,10 +2450,10 @@ def _chapter_11_interfaces(doc: Document) -> None:
 
 # ── 12–13 ────────────────────────────────────────────────────────────────────
 
-def _chapter_12_limits(doc: Document) -> None:
-    add_heading(doc, "12. Ograniczenia i kierunki dalszych prac", 1)
+def _chapter_13_limits(doc: Document) -> None:
+    add_heading(doc, "13. Ograniczenia i kierunki dalszych prac", 1)
 
-    add_heading(doc, "12.1. Zakres wniosków", 2)
+    add_heading(doc, "13.1. Zakres wniosków", 2)
     add_bullets(
         doc,
         [
@@ -1955,7 +2476,7 @@ def _chapter_12_limits(doc: Document) -> None:
         ],
     )
 
-    add_heading(doc, "12.2. Kierunki dalszych prac", 2)
+    add_heading(doc, "13.2. Kierunki dalszych prac", 2)
     add_table(
         doc,
         ["Kierunek", "Uzasadnienie", "Oczekiwana wartość"],
@@ -1978,7 +2499,7 @@ def _chapter_12_limits(doc: Document) -> None:
     )
     add_caption(doc, "Tabela", "Kierunki dalszych prac w kolejności oczekiwanej wartości.")
 
-    add_heading(doc, "13. Podsumowanie", 1)
+    add_heading(doc, "14. Podsumowanie", 1)
     add_body(
         doc,
         "Porównano pięć rodzin architektur uczenia maszynowego w zadaniu prognozy kierunku "
@@ -2007,8 +2528,8 @@ def _chapter_12_limits(doc: Document) -> None:
     page_break(doc)
 
 
-def _chapter_13_bibliography(doc: Document) -> None:
-    add_heading(doc, "14. Bibliografia", 1)
+def _chapter_14_bibliography(doc: Document) -> None:
+    add_heading(doc, "15. Bibliografia", 1)
     add_bullets(
         doc,
         [
@@ -2124,10 +2645,10 @@ def _appendix_settings(doc: Document) -> None:
 
 # ── 11a: worked example ──────────────────────────────────────────────────────
 
-def _chapter_11a_worked_example(doc: Document) -> None:
+def _chapter_12a_worked_example(doc: Document) -> None:
     """One bar traced end to end. Nothing explains a pipeline like following a
     single row through it."""
-    add_heading(doc, "11.5. Przykład przejścia jednej świecy przez potok", 2)
+    add_heading(doc, "12.5. Przykład przejścia jednej świecy przez potok", 2)
     add_body(
         doc,
         "Poniżej prześledzono pojedynczą świecę dzienną od pobrania po rekomendację. Przykład "
@@ -2279,7 +2800,7 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
     add_body(
         doc,
         f"Zestawienie {len(rows)} par (przebieg, horyzont) odczytane wprost z plików oceny. "
-        "Tabele rozdziału 9 podają wielkości zagregowane; ta pozwala prześledzić każdą z nich "
+        "Tabele rozdziału 10 podają wielkości zagregowane; ta pozwala prześledzić każdą z nich "
         "do pojedynczego artefaktu. Kolumna „Przedział” zawiera wpis „odmówiony” tam, gdzie "
         "liczba obserwacji niezależnych była zbyt mała, aby przedział nie był artefaktem "
         "losowania.",
@@ -2348,9 +2869,9 @@ def _data_quality_results(doc: Document) -> None:
         "późniejsze wyniki przypisywać modelowi, a nie uszkodzeniu wejścia.",
     )
 
-def _chapter_2_equations(doc: Document) -> None:
+def _chapter_3_equations(doc: Document) -> None:
     """The formulas the components rest on, written out."""
-    add_heading(doc, "2.7. Zapis formalny stosowanych wielkości", 2)
+    add_heading(doc, "3.7. Zapis formalny stosowanych wielkości", 2)
     add_body(
         doc,
         "Poniżej zebrano definicje wielkości, do których odwołują się kolejne rozdziały. "
@@ -2407,7 +2928,7 @@ def _chapter_2_equations(doc: Document) -> None:
         "w jednym miejscu i pokryte testami, których wykaz zawiera załącznik A.",
     )
 
-    add_heading(doc, "2.8. Architektury: mechanizmy", 2)
+    add_heading(doc, "3.8. Architektury: mechanizmy", 2)
     add_body(
         doc,
         "Trzy mechanizmy odróżniają badane architektury, przy czym różnica dotyczy sposobu "
@@ -2453,11 +2974,11 @@ SCREENSHOTS: list[tuple[str, str, str, str]] = [
      "formularz pobierania z wypełnionym symbolem i zakresem dat"),
     ("03-agregacja.png", "Menedżer danych - agregacja i kontrola jakości",
      "Panel agregacji świec jednominutowych do interwałów wyższych oraz uruchamiania "
-     "kontroli jakości opisanych w rozdziale 4.4.",
+     "kontroli jakości opisanych w rozdziale 5.4.",
      "panel agregacji z wybranymi interwałami docelowymi"),
     ("04-trening-formularz.png", "Modele — konfiguracja treningu",
      "Formularz treningu. Wartości domyślne pobierane są z interfejsu HTTP, nie ze "
-     "znaczników strony - powód opisano w rozdziale 11.3.",
+     "znaczników strony - powód opisano w rozdziale 12.3.",
      "zakładka „AI Models” z widocznym wyborem modelu, zakresem dat i horyzontami"),
     ("05-trening-pula.png", "Modele — pula symboli treningowych",
      "Rozwinięta sekcja wyboru dodatkowych symboli do puli treningowej. Symbol prognozowany "
@@ -2475,7 +2996,7 @@ SCREENSHOTS: list[tuple[str, str, str, str]] = [
      "zakładka „Evaluation” z tabelą metryk dla wybranego przebiegu"),
     ("08-ocena-stabilnosc.png", "Ocena - stabilność w czasie",
      "Wykres jakości prognozy miesiąc po miesiącu, ten sam, który w formie zbiorczej "
-     "przedstawia rysunek stabilności w rozdziale 9.",
+     "przedstawia rysunek stabilności w rozdziale 10.",
      "wykres stabilności miesięcznej z widocznymi czterema horyzontami"),
     ("09-backtest-parametry.png", "Symulacja - założenia wykonawcze",
      "Siedem założeń wykonawczych symulacji wystawionych jako parametry: prowizja, "
@@ -2508,8 +3029,8 @@ def _screenshot_placeholder(doc: Document, expected: str) -> None:
     doc.add_paragraph()
 
 
-def _chapter_11b_screenshots(doc: Document) -> None:
-    add_heading(doc, "11.6. Panel przeglądarkowy - widoki", 2)
+def _chapter_12b_screenshots(doc: Document) -> None:
+    add_heading(doc, "12.6. Panel przeglądarkowy - widoki", 2)
     present = sum(
         1 for name, *_ in SCREENSHOTS if os.path.exists(os.path.join(SCREENSHOT_DIR, name))
     )
@@ -2563,7 +3084,7 @@ def _results_rank_stability(doc: Document, runs: dict) -> None:
         for horizon, per_model in means_by_horizon.items()
     }
 
-    add_heading(doc, "9.2. Czy ranking architektur jest trwały?", 2)
+    add_heading(doc, "10.2. Czy ranking architektur jest trwały?", 2)
     add_body(
         doc,
         "Rozstęp między architekturami przekracza rozrzut ziarna, różnice są więc mierzalne. "

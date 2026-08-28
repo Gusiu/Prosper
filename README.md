@@ -2,6 +2,8 @@
 
 Prosper is a research-grade crypto market analysis platform for Binance SPOT data. It provides an end-to-end pipeline covering data acquisition, aggregation, technical indicator generation, labeling, and machine learning predictions. The system features a lightweight Web UI for data management together with a CLI for automated processing and experiments.
 
+For what the system guarantees and why - no look-ahead, derived training windows, run attribution, and the rest of the rules a result depends on - see [SPECIFICATION.md](SPECIFICATION.md).
+
 ---
 
 ## 🚀 Features
