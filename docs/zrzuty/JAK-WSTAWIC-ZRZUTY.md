@@ -2,7 +2,7 @@
 
 Dokument techniczny ma w rozdziale 11.6 jedenaście gniazd na zrzuty panelu.
 Dopóki pliku nie ma, generator wstawia widoczną ramkę z opisem tego, co powinno
-się w niej znaleźć. Gdy plik się pojawi — osadza go automatycznie.
+się w niej znaleźć. Gdy plik się pojawi - osadza go automatycznie.
 
 ## Procedura
 
@@ -47,10 +47,10 @@ rozdziału aktualizuje się samo.
 - **Szerokość co najmniej 1400 px.** Obraz jest skalowany do 15,5 cm, więc przy
   mniejszej szerokości tekst na zrzucie będzie nieczytelny w druku.
 - **Okno przeglądarki 1600×1000** daje proporcje pasujące do szerokości strony.
-- **Wytnij tylko obszar treści**, bez paska adresu i zakładek przeglądarki —
+- **Wytnij tylko obszar treści**, bez paska adresu i zakładek przeglądarki -
   dokument opisuje aplikację, nie przeglądarkę.
 - Jeśli któryś widok wymaga danych, których nie ma (np. pusta kolejka), zrób
-  zrzut po uruchomieniu dowolnego zadania — pusty panel niczego nie ilustruje.
+  zrzut po uruchomieniu dowolnego zadania - pusty panel niczego nie ilustruje.
 
 ## Katalog jest ignorowany przez git
 

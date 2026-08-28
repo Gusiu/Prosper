@@ -1420,7 +1420,7 @@ def _chapter_6_features(doc: Document) -> None:
         "rozminąć się z tym, co modele faktycznie czytają.",
     )
     for group in sorted(by_group):
-        add_heading(doc, f"5.2.{sorted(by_group).index(group) + 1}. {group}", 3)
+        add_heading(doc, f"6.2.{sorted(by_group).index(group) + 1}. {group}", 3)
         add_table(
             doc,
             ["Kolumna", "Opis"],

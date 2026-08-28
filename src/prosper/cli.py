@@ -448,7 +448,7 @@ def predict_baseline_cmd(
         False, "--save-metadata", help="Save meta.json alongside artifacts"
     ),
 ) -> None:
-    """Generate baseline probabilistic predictions for short/medium/long horizons."""
+    """Generate baseline probabilistic predictions for every horizon."""
     settings = get_settings(
         data_root=root,
         strict=strict,
@@ -517,7 +517,7 @@ def predict_ml_cmd(
         False, "--save-metadata", help="Save meta.json alongside artifacts"
     ),
 ) -> None:
-    """Generate ML probabilistic predictions for short/medium/long horizons."""
+    """Generate ML probabilistic predictions for every horizon."""
     settings = get_settings(
         data_root=root,
         strict=strict,
@@ -590,7 +590,7 @@ def predict_xgboost_cmd(
         False, "--save-metadata", help="Save meta.json alongside artifacts"
     ),
 ) -> None:
-    """Generate XGBoost probabilistic predictions for short/medium/long horizons."""
+    """Generate XGBoost probabilistic predictions for every horizon."""
     settings = get_settings(
         data_root=root,
         strict=strict,
@@ -670,7 +670,7 @@ def predict_gru_cmd(
         False, "--save-metadata", help="Save meta.json alongside artifacts"
     ),
 ) -> None:
-    """Generate GRU (Deep Learning) probabilistic predictions for short/medium/long horizons."""
+    """Generate GRU (Deep Learning) probabilistic predictions for every horizon."""
     settings = get_settings(
         data_root=root,
         strict=strict,

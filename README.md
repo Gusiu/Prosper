@@ -86,7 +86,7 @@ poetry run uvicorn prosper.api.server:app --host 127.0.0.1 --port 8000
 
 Then open <http://127.0.0.1:8000>.
 
-> The SPA must be served by the API — opening `frontend/index.html` from disk
+> The SPA must be served by the API - opening `frontend/index.html` from disk
 > leaves every `/api/...` call pointing at the wrong origin, so the dashboard
 > loads but stays empty.
 
@@ -109,7 +109,7 @@ prosper backfill --symbol BTCUSDT --start 2020-01 --end 2020-01 --workers 2
 ### Predict, evaluate, compare
 
 A prediction run is identified by `{model}_{interval}_{timestamp}`, and every
-artifact derived from it — action windows, stability reports, backtests —
+artifact derived from it - action windows, stability reports, backtests -
 is stored under that identity. Nothing shares a "latest" directory, so a result
 can always be traced back to the model that produced it.
 
@@ -123,11 +123,15 @@ prosper eval compare
 column first: a nonzero value means that horizon had no trainable data, so its
 metrics cover fewer samples and the scores are not directly comparable.
 
-Horizons (`short` 28d, `medium` 182d, `long` 365d) are **calendar spans**. They
-are converted to bar counts per interval, so `long` means one year whether the
-run is 1d or 1h. The training window must be wider than the longest horizon;
-`--train-window-days` defaults to 730 and the run fails loudly rather than
-emitting a placeholder if you set it too low.
+Horizons (`week` 7d, `month` 28d, `quarter` 91d, `year` 364d) are **calendar
+spans**. They are converted to bar counts per interval, so `year` means the same
+span whether the run is 1d or 1h. The spans are whole weeks, which keeps them
+commensurate at every interval: a year is exactly four quarters.
+
+The training window is derived per horizon from its span and the history
+available, so `--train-window-days` is not needed and defaults to unset. Pass it
+to force one width on every horizon, and the run fails loudly rather than
+emitting a placeholder if that width cannot train the longest horizon.
 
 ### Research Mode Flags
 
