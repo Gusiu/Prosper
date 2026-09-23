@@ -32,7 +32,16 @@ class Settings(BaseSettings):
     meta_dir: Path = _UNSET
 
     @model_validator(mode="after")
-    def _derive_and_create_directories(self) -> "Settings":
+    def _derive_directories(self) -> "Settings":
+        """Fill in the four sub-directories. Creating them is the writers' job.
+
+        This used to `mkdir` all five paths whenever a Settings object was built,
+        so reading the configuration changed the disk. Any command run with the
+        wrong `--root` or working directory left `raw/`, `processed/`, `reports/`
+        and `meta/` wherever it pointed - four such empty folders sat in the
+        repository root. Every writer already creates the directory it writes
+        into, so nothing needs them to exist in advance.
+        """
         defaults = {
             "raw_data_dir": self.data_root / "raw",
             "processed_data_dir": self.data_root / "processed",
@@ -42,9 +51,6 @@ class Settings(BaseSettings):
         for name, default in defaults.items():
             if getattr(self, name) == _UNSET:
                 object.__setattr__(self, name, default)
-
-        for directory in (self.data_root, *(getattr(self, name) for name in defaults)):
-            directory.mkdir(parents=True, exist_ok=True)
         return self
 
     # Binance API

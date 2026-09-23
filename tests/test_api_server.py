@@ -202,6 +202,7 @@ def test_get_symbol_metadata_returns_base_and_quote_assets(tmp_path, monkeypatch
     settings = Settings(data_root=tmp_path)
     monkeypatch.setattr("prosper.api.routes.meta.get_settings", lambda: settings)
     symbols_path = settings.meta_dir / "binance_spot_symbols.json"
+    symbols_path.parent.mkdir(parents=True)
     symbols_path.write_text(
         json.dumps(
             {
