@@ -1637,6 +1637,26 @@ def _chapter_8_models(doc: Document) -> None:
         "zamknięcia świecy k+F, więc nadaje się do uczenia przy prognozowaniu świecy i dopiero "
         "wtedy, gdy k+F < i.",
     )
+    add_body(
+        doc,
+        "Protokół ten jest zapisany w systemie raz (predict/walk_forward.py), a każda z pięciu "
+        "architektur dostarcza jedynie dwóch operacji: dopasowania na początku miesiąca i "
+        "prognozy dla pojedynczej świecy. Wcześniej pętla była powielona w każdym modelu i "
+        "reguły protokołu docierały do kopii nierówno - model odniesienia zapisywał pusty "
+        "przebieg tam, gdzie pozostałe go odrzucały, a TFT pomijał pierwszą świecę miesiąca "
+        "pozbawionego historii zamiast oznaczyć ją jako nietrenowaną. Scalenie zweryfikowano "
+        "porównaniem bajtowym prognoz w piętnastu konfiguracjach obejmujących wszystkie "
+        "architektury; jedyną różnicą jest odzyskany wiersz TFT.",
+    )
+    add_body(
+        doc,
+        "Jedna rozbieżność została świadomie zachowana. GRU i TFT normalizują cechy medianą i "
+        "rozstępem międzykwartylowym, lecz brakującą wartość traktują inaczej: GRU zastępuje ją "
+        "zerem po przeskalowaniu, czyli medianą okna, a TFT zerem przed przeskalowaniem. "
+        "Pierwsze 89 świec każdego symbolu ma braki wynikające z rozruchu wskaźników, a "
+        "najwcześniejsze okna sięgają tak daleko, więc ujednolicenie zmieniłoby opublikowane "
+        "wyniki jednej z sieci i wymagałoby ponownego przeliczenia.",
+    )
 
     add_heading(doc, "8.7. Okno treningowe wyprowadzane z horyzontu", 2)
     add_body(

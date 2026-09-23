@@ -104,8 +104,11 @@ must stay that way - a `datetime64` conversion once silently dropped `+00:00` fr
 `{report_root}/{symbol}/{run_slug}/`, where `run_slug` is `{model}_{interval}_{timestamp}`. There
 is no shared "latest" directory, and nothing may create one.
 
-A run records what produced it - model, interval, seed, deterministic flag, generation time - in
-`run_summary.json`, so a result can be traced from the artifact alone without reference to notes.
+A run records what produced it - model, interval, seed, deterministic flag, generation time, the
+versions of the libraries that can change a prediction (torch with its build tag, since a CPU and a
+CUDA build do not produce the same bytes), the git commit and whether the package had uncommitted
+changes, and how many retraining windows raised - in `run_summary.json`, so a result can be traced
+from the artifact alone without reference to notes.
 
 Deleting a run removes its backtest, evaluation, recommendation and stability directories too.
 Otherwise a reader globbing those trees reports a dead run's numbers beside current ones.
@@ -137,8 +140,10 @@ trains a 2021 forecast on bars that had not happened yet - and the only symptom 
 The slice is sorted by instant as well, because `calibration_split` takes its newest rows and
 "newest" has to mean newest *overall*.
 
-**Single-symbol runs take the pooled path too**, so there is one implementation of which rows a
-model may see.
+**Single-symbol runs of those two models take the pooled path too**, so each of them has one
+implementation of which rows it may see. The sequence models and the baseline slice one symbol by
+index through the same `training_bounds`, which is correct for a single series and the reason they
+cannot pool yet.
 
 Pooling does not add observations one for one. `domain.py::effective_symbols` is
 `n / (1 + (n-1)rho)`. Mean pairwise correlation of forward returns here is 0.60 weekly and **0.76
@@ -247,6 +252,29 @@ like noise. Always go through `_class_columns`.
 
 *Guarded by* `tests/test_tft_class_order.py`.
 
+### 2.15 There is one walk-forward protocol
+
+`predict/walk_forward.py` owns the loop every model runs in: resolve each horizon's window from the
+history (`plan_run`, which also issues the power warning), refit at the first bar of each calendar
+month in range, write one row per bar with an explicit untrained payload wherever a horizon could
+not be fitted, refuse an empty range, and write the predictions with their run summary
+(`finish_run`). A model supplies only `fit_month` and `predict`; `predict/tabular.py` and
+`predict/sequence.py` hold what the pooled and the sequence models share.
+
+The loop used to be written out in each of the five predictors, and a rule reached them one at a
+time: the baseline wrote an empty run where the others refused to, and TFT skipped the first bar of
+a month with no history instead of writing it untrained. The refactor was verified byte for byte:
+fifteen configurations covering every model, pooled and single, 1d and 1w, fixed and derived windows,
+a horizon subset, seeded and deterministic modes, and a symbol whose history starts inside the range
+produce identical predictions before and after - except that one recovered TFT row.
+
+GRU and TFT still normalise missing features differently (GRU after scaling, TFT before). Every
+symbol's first 89 bars have missing features and early windows reach them, so aligning the two
+would change published numbers; it is recorded in `predict/sequence.py` rather than changed.
+
+*Guarded by* `tests/test_walk_forward.py`, and the structural checks in `tests/test_train_window.py`,
+`tests/test_run_provenance.py` and `tests/test_window_seed.py` that every model goes through it.
+
 ---
 
 ## 3. Operational rules
@@ -290,7 +318,7 @@ an invitation to repeat the measurement until it returns the expected value.
 | The data lake has no quality defects | `prosper qa check` over all partitions |
 | Every horizon trains, or is explicitly `trained: false` | `trained` field per run; `untrained_rows` in evaluation |
 | A run under the same seed reproduces | comparison of two runs' output files (exact for the gradient models; for the networks, subject to deterministic kernels) |
-| Any reported number is reconstructible from disk | `run_summary.json` carries model, interval, seed and mode |
+| Any reported number is reconstructible from disk | `run_summary.json` carries model, interval, seed, mode, library versions and commit |
 | Every result carries an overlap-aware interval | block bootstrap, minimum 10 blocks |
 | Every architecture ran under at least three seeds | run count per cell |
 | The whole pipeline is reachable from CLI and browser | `prosper --help`; the HTTP route list |

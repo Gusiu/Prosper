@@ -90,6 +90,13 @@ Then open <http://127.0.0.1:8000>.
 > leaves every `/api/...` call pointing at the wrong origin, so the dashboard
 > loads but stays empty.
 
+The dashboard has no authentication and can delete data, so it listens on
+`127.0.0.1` only. It accepts requests from its own origin alone - no CORS - and
+refuses any `Host` header that does not name the machine, which closes DNS
+rebinding. `prosper ui --host` widens that, with a warning, when you bind to
+another interface. Everything the page loads, chart libraries and fonts
+included, is served from `frontend/vendor`, so it works offline.
+
 ---
 
 ## ⚙️ CLI Usage (Headless Mode)
