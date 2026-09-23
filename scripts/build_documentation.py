@@ -723,9 +723,10 @@ def _chapter_2_requirements(doc: Document) -> None:
              _verified_by("test_predict_leakage.py", "test_backtest_execution.py")],
             ["WN-02",
              "Odtwarzalność: ten sam zestaw parametrów wraz z ziarnem daje ten sam wynik przy "
-             "powtórnym uruchomieniu.",
-             "flagi --deterministic --seed; ziarnowanie na okno przez window_seed()",
-             _verified_by("test_window_seed.py")],
+             "powtórnym uruchomieniu - zarówno prognoza, jak i jej ocena.",
+             "flagi --deterministic --seed; ziarnowanie na okno przez window_seed(); sumy w "
+             "ocenie liczone w ustalonej kolejności, niezależnej od losowego haszowania",
+             _verified_by("test_window_seed.py", "test_prediction_evaluation.py")],
             ["WN-03",
              "Izolacja konfiguracji: zmiana parametru jednego horyzontu nie może wpłynąć na "
              "wynik pozostałych.",
@@ -753,8 +754,9 @@ def _chapter_2_requirements(doc: Document) -> None:
             ["WN-08",
              "Jedno miejsce definicji dla pojęć wspólnych: horyzontów, klas kierunku, kubełków "
              "głębokości, arytmetyki interwałów.",
-             "moduł domain.py na poziomie pakietu",
-             _verified_by("test_horizon_set.py", "test_depth_scheme.py")],
+             "moduł domain.py na poziomie pakietu; definicja etykiety w labels/forward.py",
+             _verified_by("test_horizon_set.py", "test_depth_scheme.py",
+                          "test_forward_labels.py")],
             ["WN-09",
              "Jedno miejsce podejmowania decyzji o werdykcie, wspólne dla planera, symulacji i "
              "oceny.",
@@ -799,6 +801,18 @@ def _chapter_2_requirements(doc: Document) -> None:
              "zapis wyników dopiero po zakończeniu pętli kroczącej; świeca bez okna "
              "normalizacji oznaczana jako nietrenowana",
              _verified_by("test_history_shorter_than_range.py")],
+            ["WN-17",
+             "Panel nie daje innym stronom otwartym w przeglądarce ani wartościom z żądań "
+             "dostępu do plików poza jeziorem danych.",
+             "brak zezwoleń CORS; odrzucanie obcego nagłówka Host; walidacja każdej wartości "
+             "tworzącej ścieżkę w jednym module; usuwanie tylko wewnątrz katalogu raportów",
+             _verified_by("test_api_path_safety.py")],
+            ["WN-18",
+             "Jeden protokół kroczący dla wszystkich modeli: model dostarcza wyłącznie "
+             "dopasowania i prognozy, a pętla, wiersze nietrenowane i zapis przebiegu są "
+             "wspólne.",
+             "predict/walk_forward.py; części wspólne w tabular.py i sequence.py",
+             _verified_by("test_walk_forward.py", "test_train_window.py")],
         ],
         [1.5, 5.2, 4.6, 4.2],
         font=8,
@@ -1224,15 +1238,22 @@ def _chapter_4_architecture(doc: Document) -> None:
             "Warstwa dostępu do danych (binance/, pipeline/, storage/) - pobieranie z Binance "
             "Public Data, konwersja do partycjonowanego formatu parquet, adresowanie i "
             "wersjonowanie artefaktów.",
-            "Warstwa modelowa (predict/) - pięć rodzin modeli o jednakowym interfejsie, wspólna "
-            "arytmetyka okna kroczącego (window.py) oraz mechanizm treningu wielosymbolowego "
-            "(pool.py).",
+            "Warstwa etykiet (labels/) - jedna definicja etykiety kierunku i głębokości, z "
+            "której korzystają wszystkie modele, oraz zapis etykiet czterech horyzontów do "
+            "pliku, który rysuje panel.",
+            "Warstwa modelowa (predict/) - jeden protokół kroczący (walk_forward.py), w którym "
+            "pięć modeli dostarcza jedynie dopasowania i prognozy; części wspólne modeli "
+            "tabelarycznych (tabular.py) i sekwencyjnych (sequence.py), arytmetyka okna "
+            "(window.py) oraz trening wielosymbolowy (pool.py).",
             "Warstwa weryfikacji (eval/) - reguły oceny właściwej, przedziały ufności, analiza "
             "stabilności w czasie, symulacja handlowa wraz z hipotezami zerowymi.",
             "Warstwa decyzyjna (planner/) - przekształcenie prognozy w rekomendację "
             "siedmiostopniową, z bramkami ryzyka i progiem kosztowym.",
             "Warstwa prezentacji (api/, frontend/) - FastAPI jako cienka warstwa uruchamiająca "
-            "polecenia wiersza poleceń oraz jednostronicowa aplikacja w natywnych modułach ES.",
+            "polecenia wiersza poleceń oraz jednostronicowa aplikacja w natywnych modułach ES. "
+            "Każda wartość z żądania, która może stać się ścieżką na dysku, przechodzi przez "
+            "jeden moduł walidacji (api/validation.py); aplikacja nie zezwala na zapytania z "
+            "innych domen i odrzuca nagłówek Host wskazujący inną maszynę.",
         ],
     )
 
