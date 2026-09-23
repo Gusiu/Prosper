@@ -1,4 +1,9 @@
-/** Research mode: strict / deterministic / seed / metadata flags. */
+/**
+ * Research mode: deterministic training and a fixed seed.
+ *
+ * Every run records its seed, mode, library versions and commit in its
+ * run_summary.json regardless, so there is nothing to switch on for that.
+ */
 
 let researchMode = false;
 
@@ -11,15 +16,11 @@ export function initResearchMode() {
   const flags = JSON.parse(
     localStorage.getItem("prosper_research_flags") || "{}",
   );
-  if (flags.strict !== undefined)
-    document.getElementById("research-strict").checked = flags.strict;
   if (flags.deterministic !== undefined)
     document.getElementById("research-deterministic").checked =
       flags.deterministic;
   if (flags.seed !== undefined)
     document.getElementById("research-seed").value = flags.seed;
-  if (flags.metadata !== undefined)
-    document.getElementById("research-metadata").checked = flags.metadata;
 }
 
 
@@ -68,22 +69,15 @@ export function applyResearchModeUI() {
 
 export function saveResearchFlags() {
   const flags = {
-    strict: document.getElementById("research-strict").checked,
     deterministic: document.getElementById("research-deterministic").checked,
     seed: document.getElementById("research-seed").value,
-    metadata: document.getElementById("research-metadata").checked,
   };
   localStorage.setItem("prosper_research_flags", JSON.stringify(flags));
 }
 
 /** Persist a flag whenever the user toggles it. Called once from main. */
 export function bindResearchFlagInputs() {
-  [
-    "research-strict",
-    "research-deterministic",
-    "research-seed",
-    "research-metadata",
-  ].forEach((id) => {
+  ["research-deterministic", "research-seed"].forEach((id) => {
     document.getElementById(id)?.addEventListener("change", saveResearchFlags);
   });
 }
@@ -96,16 +90,14 @@ export function bindResearchFlagInputs() {
 
 export function getResearchFlags() {
   if (!researchMode) {
-    return { strict: false, deterministic: false, seed: null, save_metadata: false };
+    return { deterministic: false, seed: null };
   }
   saveResearchFlags();
 
   const seed = document.getElementById("research-seed").value;
   return {
-    strict: document.getElementById("research-strict").checked,
     deterministic: document.getElementById("research-deterministic").checked,
     seed: seed === "" ? null : Number(seed),
-    save_metadata: document.getElementById("research-metadata").checked,
   };
 }
 

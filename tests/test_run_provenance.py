@@ -81,3 +81,33 @@ def test_every_predictor_stamps_its_run(tmp_path: Path) -> None:
             f"{module.__name__} writes a summary without its settings, so the run "
             "would not record the seed that produced it"
         )
+
+
+def test_the_environment_that_produced_a_run_is_recorded(tmp_path: Path) -> None:
+    """`--save-metadata` promised this and wrote nothing; every run records it now.
+
+    A retrained model is only comparable with an old one when the libraries
+    that compute it match, and after the fact that is unanswerable unless it
+    was written down.
+    """
+    environment = _summary(tmp_path, "xgboost_1d_20260811041918")["environment"]
+
+    assert environment["python"]
+    assert environment["packages"]["xgboost"] == "1.7.6"
+    assert set(environment["packages"]) >= {"numpy", "polars", "torch", "scikit-learn"}
+    assert "git_commit" in environment and "git_dirty" in environment
+
+
+def test_no_command_offers_a_flag_that_does_nothing() -> None:
+    """--strict and --save-metadata were accepted by fifteen commands and read by
+    none. The dashboard offered both as switches."""
+    import subprocess
+    import sys
+
+    for command in (["predict", "xgboost"], ["eval", "predictions"], ["backfill"]):
+        help_text = subprocess.run(
+            [sys.executable, "-m", "prosper.cli", *command, "--help"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "--strict" not in help_text and "--save-metadata" not in help_text
+

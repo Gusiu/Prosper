@@ -13,10 +13,8 @@ from prosper.predict.defaults import HORIZON_NAMES
 
 class ResearchFlags(BaseModel):
     """Research mode flags for reproducibility."""
-    strict: bool = False
     deterministic: bool = False
     seed: int | None = 42
-    save_metadata: bool = False
 
 
 class PipelineRequest(BaseModel):

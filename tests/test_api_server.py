@@ -53,7 +53,7 @@ def test_build_train_command_passes_interval_and_research_flags() -> None:
             start="2024-01-01",
             end="2024-06-01",
             epochs=7,
-            flags={"strict": True, "deterministic": True, "seed": 7},
+            flags={"deterministic": True, "seed": 7},
         )
     )[0]
 
@@ -61,7 +61,7 @@ def test_build_train_command_passes_interval_and_research_flags() -> None:
     assert _argv_value(argv, "--interval") == "1h"
     assert _argv_value(argv, "--epochs") == "7"
     assert _argv_value(argv, "--seed") == "7"
-    assert "--deterministic" in argv and "--strict" in argv
+    assert "--deterministic" in argv
 
 
 def test_command_builders_reject_a_bad_symbol() -> None:

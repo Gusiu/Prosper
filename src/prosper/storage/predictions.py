@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import platform
+import subprocess
+import sys
 from datetime import UTC, datetime
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +68,62 @@ def write_versioned_predictions(
     return out_dir
 
 
+# The libraries whose version can change a prediction. A retrained model is
+# only comparable with an old one if these match, and "which torch was this"
+# is unanswerable after the fact unless it was written down at the time.
+RESULT_AFFECTING_PACKAGES = (
+    "numpy", "polars", "scikit-learn", "xgboost", "torch", "lightning",
+    "pytorch-forecasting", "pandas",
+)
+
+
+def run_environment() -> dict[str, Any]:
+    """What produced a run, beyond its own settings.
+
+    This is what `--save-metadata` promised and never did: the flag was accepted
+    by fifteen commands and read by none. Written for every run instead, because
+    provenance that has to be asked for is provenance that is missing from the
+    run nobody expected to need it for.
+    """
+    packages: dict[str, str | None] = {}
+    for name in RESULT_AFFECTING_PACKAGES:
+        try:
+            packages[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            packages[name] = None
+    # The distribution metadata drops torch's build tag, and a CPU and a CUDA
+    # build of the same version do not produce the same bytes. The imported
+    # module keeps it; torch is only imported if the run used it.
+    if "torch" in sys.modules:
+        packages["torch"] = str(sys.modules["torch"].__version__)
+
+    source = Path(__file__).resolve().parent.parent
+    commit: str | None = None
+    dirty: bool | None = None
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=source, capture_output=True,
+            text=True, timeout=10, check=True,
+        ).stdout.strip() or None
+        # Tracked changes to the package only: a run from uncommitted code
+        # cannot be rebuilt from its commit, and that is the thing worth knowing.
+        # Data, docs and scripts do not change a prediction, so they do not count.
+        dirty = subprocess.run(
+            ["git", "diff", "--quiet", "HEAD", "--", "."], cwd=source,
+            capture_output=True, timeout=10,
+        ).returncode != 0
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    return {
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "packages": packages,
+        "git_commit": commit,
+        "git_dirty": dirty,
+    }
+
+
 def write_run_summary(
     run_dir: Path, summary: dict[str, Any], settings: Settings | None = None
 ) -> Path:
@@ -99,6 +159,7 @@ def write_run_summary(
         "seed": settings.seed,
         "deterministic": bool(settings.deterministic),
         "generated_at": datetime.now(UTC).isoformat(),
+        "environment": run_environment(),
         **summary,
     }
 

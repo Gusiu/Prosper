@@ -19,7 +19,7 @@ For what the system guarantees and why - no look-ahead, derived training windows
 
 ### Research & Machine Learning
 
-- **Research Mode**: Toggle strict data validation, deterministic CUDA execution, and global seeds for 100% reproducible experiments. Meta-data tracking saves environment variables alongside models.
+- **Reproducible runs**: deterministic training and a fixed seed reproduce a run byte for byte on the CPU. Every run records its seed, mode, library versions and git commit in `run_summary.json`.
 - **Deep Learning Ready**: Built-in support for time-series forecasting using GRU and TFT (Temporal Fusion Transformer) models via PyTorch.
 - **Feature Engineering**: Automated generation of technical indicators (Moving Averages, Bollinger Bands, RSI, MACD, ATR, OBV) mapped natively to Parquet files via Polars.
 - **Action Windows**: Convert raw model predictions into actionable time-windows with clearly defined recommendations (Strong Buy/Sell, Accumulate, etc.) based on predicted edge and risk.
@@ -133,14 +133,18 @@ available, so `--train-window-days` is not needed and defaults to unset. Pass it
 to force one width on every horizon, and the run fails loudly rather than
 emitting a placeholder if that width cannot train the longest horizon.
 
-### Research Mode Flags
+### Reproducibility flags
 
-When executing CLI commands or background tasks, you can enforce reproducibility:
+Every `predict` command accepts:
 
-- `--strict`: Fail fast on data gaps instead of interpolating.
-- `--deterministic`: Enforce deterministic algorithms in PyTorch.
-- `--seed <int>`: Set a global random seed for reproducibility.
-- `--save-metadata`: Generate a `meta.json` audit trail alongside results.
+- `--deterministic`: enforce deterministic algorithms in PyTorch.
+- `--seed <int>`: seed every source of randomness. Each retraining window derives its own
+  stream from the seed, model, horizon, month and symbol, so changing one horizon's settings
+  does not move the others.
+
+Whatever the flags, each run writes `run_summary.json` beside its predictions with the seed,
+the mode, the versions of the libraries that compute a prediction, and the git commit it was
+produced from.
 
 See `--help` for individual commands: `prosper --help` or `poetry run prosper --help`.
 

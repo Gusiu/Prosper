@@ -94,15 +94,10 @@ class Settings(BaseSettings):
         default=0.001, ge=0.0, le=1.0, description="Slippage proxy rate per position"
     )
 
-    # Research / reproducibility settings
-    strict: bool = Field(
-        default=False, description="Fail fast on data quality issues (research mode)"
-    )
+    # Research / reproducibility settings. What a run was produced with - seed,
+    # mode, library versions, commit - is written into its run_summary.json.
     deterministic: bool = Field(
         default=False, description="Enable deterministic training (research mode)"
-    )
-    save_metadata: bool = Field(
-        default=False, description="Save meta.json alongside artifacts (research mode)"
     )
     seed: int | None = Field(
         default=None, description="Random seed for reproducibility (research mode)"

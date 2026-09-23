@@ -56,7 +56,7 @@ def test_every_predictor_accepts_what_the_api_sends() -> None:
 
 
 def test_research_flags_reach_every_predictor() -> None:
-    """--strict/--deterministic/--seed/--save-metadata are advertised on all of them."""
+    """--deterministic/--seed are advertised on all of them."""
     offenders: list[str] = []
     for model_type in MODEL_TYPES:
         argv = build_train_command(
@@ -65,7 +65,7 @@ def test_research_flags_reach_every_predictor() -> None:
                 model_type=model_type,
                 start="2024-01-01",
                 end="2024-06-30",
-                flags=ResearchFlags(strict=True, deterministic=True, seed=7, save_metadata=True),
+                flags=ResearchFlags(deterministic=True, seed=7),
             )
         )[0]
         accepted = _cli_options("predict", model_type)

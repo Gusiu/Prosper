@@ -71,15 +71,11 @@ def _number(params: dict[str, Any], key: str, kind: type) -> str:
 def _build_research_flags(flags: ResearchFlags, command_type: str = "generic") -> list[str]:
     """Build CLI research flags from structured ResearchFlags object."""
     result: list[str] = []
-    if flags.strict:
-        result.append("--strict")
     if command_type == "predict":
         if flags.deterministic:
             result.append("--deterministic")
         if flags.seed is not None:
             result.extend(["--seed", str(flags.seed)])
-    if flags.save_metadata:
-        result.append("--save-metadata")
     return result
 
 
