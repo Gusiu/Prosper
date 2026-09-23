@@ -166,17 +166,18 @@ def download_monthly_zip(
 
     checksum_path.write_text(checksum_content, encoding="utf-8")
 
-    # Verify checksum
+    # Verify checksum. An unreadable checksum is a failed verification, not a
+    # skipped one: this used to print a warning and keep the archive, so a
+    # truncated download paired with an error page in place of the CHECKSUM file
+    # went into the lake as if it had been checked.
     if verify:
         expected_checksum = read_checksum_file(checksum_path)
-        if expected_checksum:
-            if not verify_checksum(zip_path, expected_checksum):
-                zip_path.unlink()
-                checksum_path.unlink()
-                raise ValueError(f"Checksum verification failed for {zip_path.name}")
-            console.print(f"[green][OK][/green] Verified: {zip_path.name}")
-        else:
-            console.print(f"[yellow]⚠[/yellow] Could not read checksum from {checksum_path.name}")
+        if not expected_checksum or not verify_checksum(zip_path, expected_checksum):
+            zip_path.unlink(missing_ok=True)
+            checksum_path.unlink(missing_ok=True)
+            reason = "mismatch" if expected_checksum else "unreadable checksum file"
+            raise ValueError(f"Checksum verification failed for {zip_path.name}: {reason}")
+        console.print(f"[green][OK][/green] Verified: {zip_path.name}")
 
     return (zip_path, checksum_path)
 

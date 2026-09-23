@@ -11,7 +11,7 @@ from prosper.config import Settings
 console = Console()
 
 # Minimal schema (required fields only)
-KLINES_MINIMAL_SCHEMA = {
+KLINES_MINIMAL_SCHEMA: dict[str, pl.PolarsDataType] = {
     "open_time": pl.Datetime(time_unit="ms", time_zone="UTC"),
     "open": pl.Float64,
     "high": pl.Float64,
@@ -23,7 +23,7 @@ KLINES_MINIMAL_SCHEMA = {
 # Everything Binance ships in a kline row. `extract_csv_from_zip` already parses
 # these; the minimal schema above silently dropped them, so the order-flow
 # columns were paid for on every download and then thrown away.
-KLINES_FULL_SCHEMA = {
+KLINES_FULL_SCHEMA: dict[str, pl.PolarsDataType] = {
     **KLINES_MINIMAL_SCHEMA,
     "close_time": pl.Datetime(time_unit="ms", time_zone="UTC"),
     "quote_asset_volume": pl.Float64,
@@ -34,7 +34,8 @@ KLINES_FULL_SCHEMA = {
 
 
 def candles_to_dataframe(
-    candles: list[dict[str, float | int]], schema: dict[str, pl.DataType] | None = None
+    candles: list[dict[str, float | int]],
+    schema: dict[str, pl.PolarsDataType] | None = None,
 ) -> pl.DataFrame:
     """
     Convert list of candle dictionaries to Polars DataFrame.
@@ -75,40 +76,23 @@ def candles_to_dataframe(
     if "open_time" in df.columns:
         df = df.sort("open_time")
 
-    # Remove duplicates on open_time
-    df = df.unique(subset=["open_time"], keep="first")
+    # Remove duplicates on open_time. `maintain_order` keeps the sort above:
+    # polars does not otherwise promise to, and these frames become the stored
+    # partitions every other stage reads.
+    df = df.unique(subset=["open_time"], keep="first", maintain_order=True)
 
     return df
 
 
-def save_parquet(
-    df: pl.DataFrame,
-    output_path: Path,
-    partition_by: list[str] | None = None,
-) -> None:
-    """
-    Save DataFrame to Parquet file.
+def save_parquet(df: pl.DataFrame, output_path: Path) -> None:
+    """Write *df* to one parquet file, creating its directory.
 
-    Args:
-        df: Polars DataFrame
-        output_path: Path to output Parquet file
-        partition_by: Optional list of columns to partition by
+    There used to be a `partition_by` branch here. Nothing called it, and it
+    passed a keyword this version of polars does not accept, so the first
+    caller would have met a TypeError. Partitioning is done by the path.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if partition_by:
-        # Partitioned write
-        df.write_parquet(
-            output_path.parent,
-            partition_by=partition_by,
-            compression="snappy",
-        )
-    else:
-        # Single file write
-        df.write_parquet(
-            output_path,
-            compression="snappy",
-        )
+    df.write_parquet(output_path, compression="snappy")
 
 
 def load_parquet(

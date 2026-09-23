@@ -43,8 +43,8 @@ def process_month(
         if dry_run:
             return (year, month, True, "Dry run - skipped")
 
-        # Download ZIP
-        zip_path, checksum_path = download_monthly_zip(
+        # Download ZIP. `None` only comes back from a dry run, handled above.
+        downloaded = download_monthly_zip(
             symbol,
             year,
             month,
@@ -52,6 +52,9 @@ def process_month(
             verify=True,
             dry_run=False,
         )
+        if downloaded is None:
+            return (year, month, True, "Dry run - skipped")
+        zip_path, _checksum_path = downloaded
 
         # Extract CSV
         candles = extract_csv_from_zip(zip_path, symbol)
