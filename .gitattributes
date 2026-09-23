@@ -1,0 +1,3 @@
+# Third-party files are stored byte for byte: frontend/vendor/README.md
+# records their hashes, and a line-ending conversion would break them.
+frontend/vendor/** -text
