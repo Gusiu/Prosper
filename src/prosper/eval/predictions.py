@@ -154,11 +154,23 @@ def probability_entropy(probs: dict[str, float]) -> float:
     return -sum(prob * math.log(max(prob, EPS)) for prob in probs.values())
 
 
+def _union_in_order(p: dict[str, float], q: dict[str, float]) -> list[str]:
+    """Labels of both distributions, P's order first.
+
+    These sums used to run over `set(p) | set(q)`, whose order follows Python's
+    per-process string hashing. Floating-point addition is not associative, so
+    the same inputs gave results differing in the last bit from one process to
+    the next: re-evaluating all 39 runs changed depth_js in every one of them,
+    by at most 2.2e-16. Small, but an evaluation that is not reproducible bit
+    for bit cannot be used to show that anything else is.
+    """
+    return list(dict.fromkeys([*p, *q]))
+
+
 def kl_divergence(p: dict[str, float], q: dict[str, float]) -> float:
     """KL(P || Q) for matching labeled distributions."""
-    labels = set(p) | set(q)
     total = 0.0
-    for label in labels:
+    for label in _union_in_order(p, q):
         p_value = p.get(label, 0.0)
         if p_value <= EPS:
             continue
@@ -168,8 +180,9 @@ def kl_divergence(p: dict[str, float], q: dict[str, float]) -> float:
 
 def js_divergence(p: dict[str, float], q: dict[str, float]) -> float:
     """Jensen-Shannon divergence for matching labeled distributions."""
-    labels = set(p) | set(q)
-    midpoint = {label: 0.5 * (p.get(label, 0.0) + q.get(label, 0.0)) for label in labels}
+    midpoint = {
+        label: 0.5 * (p.get(label, 0.0) + q.get(label, 0.0)) for label in _union_in_order(p, q)
+    }
     return 0.5 * kl_divergence(p, midpoint) + 0.5 * kl_divergence(q, midpoint)
 
 

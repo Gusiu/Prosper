@@ -281,3 +281,33 @@ def test_sub_daily_predictions_score_against_their_own_bar(tmp_path) -> None:
     # the moment the shortest horizon became a week.
     shortest = next(h for h in DEFAULT_HORIZONS if h.name == SHORTEST)
     assert {row["forward_steps"] for row in quality_rows} == {shortest.forward_days * 24}
+
+
+def test_divergences_do_not_depend_on_the_process_hash_seed() -> None:
+    """KL and JS used to sum over `set(p) | set(q)`, whose order follows the
+    per-process string hash. Re-evaluating the stored runs changed depth_js in
+    all 39 of them, in the last bit - so the evaluation was not reproducible."""
+    import os
+    import subprocess
+    import sys
+
+    program = (
+        "import random, hashlib\n"
+        "from prosper.domain import DEPTH_BIN_LABELS\n"
+        "from prosper.eval.predictions import js_divergence, kl_divergence\n"
+        "rng = random.Random(0); h = hashlib.sha256()\n"
+        "for _ in range(300):\n"
+        "    w = [rng.random() for _ in DEPTH_BIN_LABELS]; t = sum(w)\n"
+        "    p = {l: x / t for l, x in zip(DEPTH_BIN_LABELS, w)}\n"
+        "    q = {l: 1.0 / len(DEPTH_BIN_LABELS) for l in DEPTH_BIN_LABELS}\n"
+        "    h.update(repr((js_divergence(p, q), kl_divergence(p, q))).encode())\n"
+        "print(h.hexdigest())\n"
+    )
+    digests = {
+        subprocess.run(
+            [sys.executable, "-c", program], capture_output=True, text=True, check=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        ).stdout
+        for seed in ("1", "2", "3")
+    }
+    assert len(digests) == 1
