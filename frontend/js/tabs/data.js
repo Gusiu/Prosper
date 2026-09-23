@@ -130,7 +130,7 @@ export async function loadInventory(refresh = false) {
                 if (a.status === "complete") color = "var(--accent-glow)";
                 if (a.status === "warning") color = "#ffbd2e";
                 if (a.status === "incomplete") color = "var(--red-main)";
-                return `<span style="color:${color}" title="${a.message}">${a.interval}</span>`;
+                return `<span style="color:${color}" title="${escapeHtml(a.message)}">${escapeHtml(a.interval)}</span>`;
               })
               .join(", ")
           : '<span class="text-muted">None</span>';
@@ -141,7 +141,7 @@ export async function loadInventory(refresh = false) {
         label: "N/A",
         message: "No data",
       };
-      const dotClass = `status-dot quality-${quality.status}`;
+      const dotClass = `status-dot quality-${escapeHtml(quality.status)}`;
       const showFix = quality.status !== "complete";
       const fixBtn = showFix
         ? `<button class="action-btn" style="font-size:0.6rem; padding:2px 6px; margin-left:6px; background:rgba(255,189,46,0.15); color:#ffbd2e; border-color:rgba(255,189,46,0.3);" data-action="symbol-fix" data-symbol="${escapeHtml(item.symbol)}">Fix</button>`
@@ -151,13 +151,13 @@ export async function loadInventory(refresh = false) {
       const existingIntervals = item.aggregations.map((a) => a.interval);
 
       tr.innerHTML = `
-                <td><strong>${item.symbol}</strong></td>
-                <td><span class="text-muted">${item.start_date}</span> → <span class="text-muted">${item.end_date}</span></td>
-                <td>${item.size_mb} MB</td>
+                <td><strong>${escapeHtml(item.symbol)}</strong></td>
+                <td><span class="text-muted">${escapeHtml(item.start_date)}</span> → <span class="text-muted">${escapeHtml(item.end_date)}</span></td>
+                <td>${escapeHtml(item.size_mb)} MB</td>
                 <td style="font-size:0.75rem;">${aggs}</td>
                 <td>
                     <div style="display:flex; align-items:center;">
-                        <div class="${dotClass}" title="${quality.label}: ${quality.message}"></div>
+                        <div class="${dotClass}" title="${escapeHtml(quality.label)}: ${escapeHtml(quality.message)}"></div>
                         ${fixBtn}
                     </div>
                 </td>
@@ -166,7 +166,7 @@ export async function loadInventory(refresh = false) {
                     <button class="action-btn" style="background: rgba(0, 229, 255, 0.1); color: var(--accent-glow); border-color: rgba(0, 229, 255, 0.2);" data-action="aggregate-panel" data-symbol="${escapeHtml(item.symbol)}">Aggregate</button>
                     <button class="action-btn" data-action="symbol-delete" data-symbol="${escapeHtml(item.symbol)}">Delete</button>
                     <!-- Hidden aggregation panel -->
-                    <div id="agg-panel-${item.symbol}" style="display:none; position: absolute; top: 100%; right: 0; background: #161b22; padding: 12px; border: 1px solid rgba(0, 229, 255, 0.4); border-radius: 8px; z-index: 100; box-shadow: 0 8px 30px rgba(0,0,0,0.8); min-width: 200px;">
+                    <div id="agg-panel-${escapeHtml(item.symbol)}" style="display:none; position: absolute; top: 100%; right: 0; background: #161b22; padding: 12px; border: 1px solid rgba(0, 229, 255, 0.4); border-radius: 8px; z-index: 100; box-shadow: 0 8px 30px rgba(0,0,0,0.8); min-width: 200px;">
                         <div class="checkbox-group mb-2" style="flex-wrap: wrap; font-size: 0.7rem;">
                             ${[
                               "3m",
@@ -184,7 +184,7 @@ export async function loadInventory(refresh = false) {
                               "1w",
                             ]
                               .map((a) => {
-                                const idSuffix = `agg-inline-${a}-${item.symbol}`;
+                                const idSuffix = `agg-inline-${a}-${escapeHtml(item.symbol)}`;
                                 const exists = existingIntervals.includes(a);
                                 const disabled = exists ? "disabled" : "";
                                 const style = exists
@@ -204,7 +204,7 @@ export async function loadInventory(refresh = false) {
       tbody.appendChild(tr);
 
       // Populate dropdowns
-      trainSelect.innerHTML += `<option value="${item.symbol}">${item.symbol}</option>`;
+      trainSelect.innerHTML += `<option value="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</option>`;
     });
 
     // Restore selection if still valid

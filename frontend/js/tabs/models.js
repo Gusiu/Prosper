@@ -5,6 +5,7 @@ import { EVENTS, emit } from "../events.js";
 import { disposeAnalysisCharts } from "../analysis.js";
 import { getResearchFlags } from "../research.js";
 import { submitTask } from "../queue.js";
+import { escapeHtml } from "../format.js";
 import { ANALYSIS_INTERVALS, state } from "../state.js";
 
 let aiModelRuns = [];
@@ -55,7 +56,9 @@ function renderHorizonControls() {
   overrides.innerHTML = "";
 
   for (const spec of horizonSpecs()) {
-    const name = spec.name;
+    // Horizon names come from the API and symbols from folder names on disk;
+    // neither is markup, so both are escaped like everywhere else.
+    const name = escapeHtml(spec.name);
     const label = document.createElement("label");
     label.style.cssText = "display:flex; align-items:center; gap:5px; cursor:pointer;";
     label.innerHTML =
@@ -106,9 +109,10 @@ function renderPoolControls() {
     const label = document.createElement("label");
     label.style.cssText = "display:flex; align-items:center; gap:5px; cursor:pointer;";
     const checked = chosen.has(symbol) ? " checked" : "";
+    const safe = escapeHtml(symbol);
     label.innerHTML =
-      `<input type="checkbox" class="train-pool-symbol" value="${symbol}"${checked} />` +
-      `<span>${symbol}</span>`;
+      `<input type="checkbox" class="train-pool-symbol" value="${safe}"${checked} />` +
+      `<span>${safe}</span>`;
     box.appendChild(label);
   }
 }
@@ -244,11 +248,11 @@ export function renderAIInventory(models) {
   models.forEach((m) => {
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${m.symbol}</td>
-      <td>${m.model_type}</td>
-      <td>${m.interval || "1d"}</td>
-      <td>${m.timestamp}</td>
-      <td>${m.predictions_files || 0}</td>
+      <td>${escapeHtml(m.symbol)}</td>
+      <td>${escapeHtml(m.model_type)}</td>
+      <td>${escapeHtml(m.interval || "1d")}</td>
+      <td>${escapeHtml(m.timestamp)}</td>
+      <td>${escapeHtml(m.predictions_files || 0)}</td>
       <td></td>
     `;
     const btnCell = tr.querySelector("td:last-child");
