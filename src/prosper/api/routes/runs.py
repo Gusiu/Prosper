@@ -119,7 +119,7 @@ def get_ai_predictions(
 
     capped = max(1, min(int(limit), MAX_PREDICTION_ROWS))
     try:
-        rows = []
+        rows: list[dict[str, Any]] = []
         matched = 0
         with open(path, encoding="utf-8") as f:
             for line in f:

@@ -42,7 +42,7 @@ def predict_xgboost(
     end: str,
     settings: Settings | None = None,
     interval: str = "1d",
-    train_window_days: int = DEFAULT_TRAIN_WINDOW_DAYS,
+    train_window_days: int | None = DEFAULT_TRAIN_WINDOW_DAYS,
     train_window_by_horizon: str | None = None,
     horizons_selected: str | None = None,
     symbols: str | None = None,

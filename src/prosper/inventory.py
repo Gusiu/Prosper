@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 
@@ -166,8 +166,8 @@ class DataManager:
                 "columns": {"features": [], "labels": []},
             }
 
-        range_start = klines["open_time"].min()
-        range_end = klines["open_time"].max()
+        range_start = cast(datetime, klines["open_time"].min())
+        range_end = cast(datetime, klines["open_time"].max())
         features = self._collect_features(symbol, interval, range_start, range_end)
         labels = self._collect_labels(symbol, interval, range_start, range_end)
 

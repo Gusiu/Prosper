@@ -58,6 +58,7 @@ def run_backtest_api(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+    optional: dict[str, Any] = {} if horizon is None else {"horizon": horizon}
     try:
         results = run_backtest(
             symbol,
@@ -70,7 +71,7 @@ def run_backtest_api(
             interval=interval,
             # None lets `run_backtest` apply its own default rather than the
             # route carrying a second copy of it.
-            **({} if horizon is None else {"horizon": horizon}),
+            **optional,
             fee_rate=fee_rate,
             slippage_rate=slippage_rate,
             round_trip_cost=round_trip_cost,

@@ -161,7 +161,7 @@ class BacktestConfig:
 
     @classmethod
     def from_settings(cls, settings: Settings, **overrides: Any) -> BacktestConfig:
-        base = {
+        base: dict[str, Any] = {
             "fee_rate": settings.trading_fee_rate,
             "slippage_rate": settings.trading_slippage_proxy_rate,
         }

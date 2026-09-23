@@ -107,7 +107,7 @@ def predict_baseline(
     scored_bars = count_scored_bars(dates, start_dt.date(), end_dt.date(), windows)
     warn_low_power(windows, scored_bars)
 
-    labels = forward_labels(
+    realised = forward_labels(
         closes, {h.name: steps_by_horizon[h.name] for h in horizons}, depth_bins
     )
     # The frequency counts below read labels by name and bin, so the index
@@ -116,10 +116,10 @@ def predict_baseline(
         h.name: {
             "direction": [
                 IDX_TO_DIR[int(side)] if side != UNKNOWN else None
-                for side in labels.direction[h.name]
+                for side in realised.direction[h.name]
             ],
             "depth_bin_idx": [
-                int(bin_idx) if bin_idx != UNKNOWN else None for bin_idx in labels.depth[h.name]
+                int(bin_idx) if bin_idx != UNKNOWN else None for bin_idx in realised.depth[h.name]
             ],
         }
         for h in horizons

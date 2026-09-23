@@ -266,7 +266,7 @@ def test_a_coin_flip_evaluation_never_claims_to_beat_chance() -> None:
 
     metrics, _ = _aggregate_quality(rows, EvaluationSettings())
     by_horizon = metrics["by_horizon"]
-    assert by_horizon[SHORTEST]["accuracy_beats_chance"] is False
+    assert by_horizon[SHORTEST]["accuracy_vs_chance"] == "indistinguishable"
 
 
 def test_the_cli_prints_the_interval_and_the_verdict() -> None:
@@ -278,7 +278,7 @@ def test_the_cli_prints_the_interval_and_the_verdict() -> None:
 
     source = inspect.getsource(_run_predictions_evaluation)
     assert "accuracy_ci" in source
-    assert "accuracy_beats_chance" in source
+    assert "low > 0.5" in source and "high < 0.5" in source
     assert "effective_samples" in source
     for verdict in ("> chance", "< chance", "= chance", "unknown"):
         assert verdict in source, verdict
@@ -315,3 +315,22 @@ def test_a_well_sampled_interval_always_brackets_its_estimate() -> None:
         assert interval.estimable, interval.reason
         assert interval.low <= interval.point <= interval.high
     assert rng is not None
+
+
+def test_the_verdict_says_which_side_of_chance() -> None:
+    """`excludes` is two-sided; the flag once written from it read "beats chance"
+    for a run whose whole interval sat below 0.5."""
+    from prosper.eval.significance import Interval
+
+    def interval(low, high):
+        return Interval(point=(low + high) / 2, low=low, high=high, block_size=7,
+                        blocks=40.0, samples=280, resamples=2000)
+
+    assert interval(0.253, 0.415).versus(0.5) == "below"
+    assert interval(0.253, 0.415).excludes(0.5) is True  # which is why a name matters
+    assert interval(0.512, 0.590).versus(0.5) == "above"
+    assert interval(0.460, 0.553).versus(0.5) == "indistinguishable"
+    refused = Interval(point=0.5, low=None, high=None, block_size=364, blocks=4.7,
+                       samples=1700, resamples=2000, reason="too few blocks")
+    assert refused.versus(0.5) is None
+

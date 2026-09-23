@@ -591,7 +591,9 @@ def _aggregate_quality(
             # the second is how every ranking in this project came to compare
             # differences that sit inside their own intervals.
             "accuracy_ci": accuracy_ci.to_dict() if accuracy_ci else None,
-            "accuracy_beats_chance": accuracy_ci.excludes(0.5) if accuracy_ci else None,
+            # Which side of a coin flip, if either. Replaces `accuracy_beats_chance`,
+            # which was two-sided and so `true` for runs reliably worse than chance.
+            "accuracy_vs_chance": accuracy_ci.versus(0.5) if accuracy_ci else None,
             "ece_ci": ece_ci.to_dict() if ece_ci else None,
             # Published because entropy is only interpretable against the
             # uniform forecast over the classes this horizon actually carries.
@@ -923,7 +925,7 @@ def evaluate_predictions(
                 continue
 
             probs = normalize_probabilities(horizon_pred)
-            predicted_direction = max(probs, key=probs.get)
+            predicted_direction = max(probs, key=probs.__getitem__)
             confidence = probs[predicted_direction]
             entropy = probability_entropy(probs)
             recommendation = _recommendation_payload(

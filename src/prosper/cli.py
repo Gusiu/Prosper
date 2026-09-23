@@ -1050,22 +1050,24 @@ def _run_predictions_evaluation(
         for name, stats in (metrics.get("by_horizon") or {}).items():
             if not stats.get("samples"):
                 continue
-            interval = stats.get("accuracy_ci") or {}
-            beats = stats.get("accuracy_beats_chance")
-            if interval.get("low") is None:
+            # Read from the bounds, so metrics written before `accuracy_vs_chance`
+            # existed are judged the same way as new ones.
+            ci = stats.get("accuracy_ci") or {}
+            low, high = ci.get("low"), ci.get("high")
+            if low is None or high is None:
                 span, verdict, colour = "not estimable", "unknown", "yellow"
-            elif beats:
-                span = f"[{interval['low']:.3f}, {interval['high']:.3f}]"
-                above = interval["low"] > 0.5
-                verdict = "> chance" if above else "< chance"
-                colour = "green" if above else "red"
             else:
-                span = f"[{interval['low']:.3f}, {interval['high']:.3f}]"
-                verdict, colour = "= chance", "white"
+                span = f"[{low:.3f}, {high:.3f}]"
+                if low > 0.5:
+                    verdict, colour = "> chance", "green"
+                elif high < 0.5:
+                    verdict, colour = "< chance", "red"
+                else:
+                    verdict, colour = "= chance", "white"
             table.add_row(
                 name,
                 str(stats["samples"]),
-                f"{interval.get('effective_samples', 0):.1f}",
+                f"{ci.get('effective_samples', 0):.1f}",
                 f"{stats['accuracy']:.3f}",
                 span,
                 f"[{colour}]{verdict}[/{colour}]",

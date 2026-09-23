@@ -330,9 +330,8 @@ def parse_symbols(raw: str | None, target: str) -> list[str]:
         return [target]
 
     requested = [part.strip().upper() for part in raw.split(",") if part.strip()]
-    pooled = [target] + [name for name in requested if name != target]
-    seen: set[str] = set()
-    return [name for name in pooled if not (name in seen or seen.add(name))]
+    # First occurrence wins and the target stays first; dicts keep insertion order.
+    return list(dict.fromkeys([target, *requested]))
 
 
 def describe_pool(

@@ -73,9 +73,25 @@ class Interval:
         `None` when the interval could not be estimated — which must not be read
         as "no difference", only as "this data cannot say".
         """
-        if not self.estimable:
+        if self.low is None or self.high is None:
             return None
         return reference < self.low or reference > self.high
+
+    def versus(self, reference: float) -> str | None:
+        """``"above"``, ``"below"`` or ``"indistinguishable"`` from *reference*.
+
+        `excludes` is two-sided, and the flag written from it was called
+        `accuracy_beats_chance` - `true` for a run reliably *worse* than a coin
+        flip too. Counting that flag once reported eight quarter-horizon runs
+        above chance where the true count was none. This says which side.
+        """
+        if self.low is None or self.high is None:
+            return None
+        if self.low > reference:
+            return "above"
+        if self.high < reference:
+            return "below"
+        return "indistinguishable"
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -90,7 +90,7 @@ class TemperatureCalibrator:
     def is_identity(self) -> bool:
         return abs(self.temperature - 1.0) < 1e-9
 
-    def apply(self, probs: Sequence[float]) -> list[float]:
+    def apply(self, probs: Sequence[float] | np.ndarray) -> list[float]:
         """Rescale one probability vector. Order and support are preserved."""
         vector = np.asarray(list(probs), dtype=float)
         total = vector.sum()
@@ -156,7 +156,7 @@ def fit_temperature(
     return TemperatureCalibrator(best_t)
 
 
-def calibrated_nll(probs: np.ndarray, y_true: Sequence[int]) -> float:
+def calibrated_nll(probs: np.ndarray, y_true: Sequence[int] | np.ndarray) -> float:
     """Held-out loss the forecast carries *once its temperature is fitted*.
 
     This is the quantity DL training stops on, and raw cross-entropy is the
