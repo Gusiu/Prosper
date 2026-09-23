@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import traceback
 import warnings
 from typing import Any
 
@@ -39,6 +38,7 @@ from prosper.predict.defaults import (
     summarise_epochs,
     window_seed,
 )
+from prosper.predict.failures import WindowFailures
 from prosper.predict.window import (
     count_scored_bars,
     resolve_train_windows,
@@ -458,6 +458,7 @@ def predict_tft(
 
     predictions: list[dict[str, Any]] = []
     untrained_counts: dict[str, int] = {h.name: 0 for h in horizon_specs}
+    failures = WindowFailures()
     # Epochs each horizon actually trained for, per retraining window; see
     # `summarise_epochs`. `--max-epochs` is a ceiling, so this is a result.
     epochs_used: dict[str, list[int]] = {h.name: [] for h in horizon_specs}
@@ -674,7 +675,7 @@ def predict_tft(
                         depth_labels,
                     )
                 except Exception as e:
-                    print(f"Training exception for month {current_train_month}: {e}")
+                    failures.record("training", h_name, str(current_train_month), e)
                     tft_model[h_name] = None
 
             # One batched pass per horizon for the whole month, instead of
@@ -705,10 +706,7 @@ def predict_tft(
                     # This path turns the whole month into untrained rows, so a
                     # bare message is not enough to tell a data problem from a
                     # library one.
-                    print(
-                        f"Batched inference failed for {h.name} {month_key}: "
-                        f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
-                    )
+                    failures.record("inference", h.name, str(month_key), e, with_traceback=True)
                     month_predictions[h.name] = {}
 
         # ── Inference: read the month's batched result ────────────────────
@@ -753,9 +751,11 @@ def predict_tft(
         "untrained_horizons": untrained_counts,
         "training_windows": windows.describe(scored_bars),
         "epochs_used": summarise_epochs(epochs_used, epoch_budget),
+        "failed_windows": failures.summary(),
         "run_dir": str(run_dir),
     }
     write_run_summary(run_dir, result, settings)
+    failures.warn_if_any()
     return result
 
 

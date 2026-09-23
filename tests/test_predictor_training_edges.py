@@ -134,3 +134,37 @@ def test_baseline_history_does_not_depend_on_the_requested_range(lake) -> None:
         assert first[horizon]["P_long"] != pytest.approx(1 / 3, abs=1e-9)
     assert first["date"] == "2023-01-01"
     assert last["date"] == "2023-03-31"
+
+
+def test_a_window_that_raises_is_counted_not_only_printed(lake, monkeypatch) -> None:
+    """A failed fit becomes untrained rows, which is right, and used to leave no
+    trace but a console line. A run with failing months then looked like a run
+    with a short history. The count now reaches run_summary.json."""
+    import xgboost as xgb
+
+    def refuse(self, *args, **kwargs):
+        raise RuntimeError("simulated fit failure")
+
+    monkeypatch.setattr(xgb.XGBClassifier, "fit", refuse)
+    result = predict_xgboost(
+        symbol=SYMBOL, start="2022-06-01", end="2022-07-31", settings=lake,
+        interval="1d", train_window_days=730, n_estimators=5,
+    )
+
+    failed = result["failed_windows"]
+    assert failed["count"] == 2 * len(HORIZON_NAMES)  # two months, every horizon
+    assert set(failed["by_horizon"]) == set(HORIZON_NAMES)
+    assert "simulated fit failure" in failed["first"][0]["error"]
+
+    run_dir = next((lake.reports_predictions_dir / SYMBOL).glob("xgboost_1d_*"))
+    summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["failed_windows"]["count"] == failed["count"]
+    assert all(not row[h]["trained"] for row in _run_rows(lake, "xgboost") for h in HORIZON_NAMES)
+
+
+def test_a_clean_run_reports_no_failures(lake) -> None:
+    result = predict_xgboost(
+        symbol=SYMBOL, start="2022-06-01", end="2022-06-30", settings=lake,
+        interval="1d", train_window_days=730, n_estimators=5,
+    )
+    assert result["failed_windows"]["count"] == 0

@@ -24,6 +24,7 @@ from prosper.predict.defaults import (
     parse_horizons,
     parse_window_overrides,
 )
+from prosper.predict.failures import WindowFailures
 from prosper.predict.pool import describe_pool, load_pool, parse_symbols
 from prosper.predict.window import (
     count_scored_bars,
@@ -122,6 +123,7 @@ def predict_xgboost(
 
     predictions: list[dict[str, Any]] = []
     untrained_counts: dict[str, int] = {h.name: 0 for h in horizons}
+    failures = WindowFailures()
 
     inv_dir_map = IDX_TO_DIR
 
@@ -195,7 +197,7 @@ def predict_xgboost(
                         )
                         clf.fit(X_train_valid[fit_rows], [dense[y] for y in y_fit])
                     except Exception as e:
-                        print(f"[xgboost] {h.name} training failed at {row_date}: {e}")
+                        failures.record("training", h.name, str(row_date), e)
                         clf = None
                     if clf is not None and cal_rows:
                         calibrator = fit_calibrator_from_model(
@@ -294,9 +296,11 @@ def predict_xgboost(
         "predictions": len(predictions),
         "untrained_horizons": untrained_counts,
         "training_windows": windows.describe(scored_bars, pool_power),
+        "failed_windows": failures.summary(),
         "run_dir": str(out_dir),
     }
     write_run_summary(out_dir, result, settings)
+    failures.warn_if_any()
     return result
 
 
