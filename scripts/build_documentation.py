@@ -603,8 +603,10 @@ def _chapter_2_requirements(doc: Document) -> None:
             ["WF-06",
              "Wyznaczenie etykiet kierunku oraz głębokości ruchu dla każdego horyzontu, z "
              "jawnym oznaczeniem świec, dla których etykieta nie jest jeszcze znana.",
-             "prosper labels build; dwie klasy kierunku, kubełki głębokości",
-             _verified_by("test_labels.py", "test_depth_scheme.py", "test_horizon_set.py")],
+             "labels/forward.py - jedna definicja, z której korzysta każdy model; prosper "
+             "labels build zapisuje ją dla czterech horyzontów",
+             _verified_by("test_forward_labels.py", "test_depth_scheme.py",
+                          "test_horizon_set.py")],
             ["WF-07",
              "Wytrenowanie modelu prognozującego rozkład prawdopodobieństwa kierunku i "
              "głębokości dla każdego z czterech horyzontów.",
@@ -1195,7 +1197,8 @@ def _chapter_4_architecture(doc: Document) -> None:
              "świece 1m w formacie parquet"],
             ["Agregacja", "pipeline/aggregate", "świece 1m", "świece 1h, 1d, 1w"],
             ["Cechy", "features/build", "świece wybranego interwału", "features.parquet"],
-            ["Etykiety", "labels/build", "świece wybranego interwału", "labels.parquet"],
+            ["Etykiety", "labels/forward, labels/build", "świece wybranego interwału",
+             "labels.parquet - podgląd; modele wyznaczają etykiety tą samą funkcją"],
             ["Prognoza", "predict/*", "features.parquet",
              "predictions.jsonl, run_summary.json"],
             ["Ocena", "eval/predictions", "predictions.jsonl + świece",
@@ -1439,6 +1442,17 @@ def _chapter_6_features(doc: Document) -> None:
 
 def _chapter_7_labels(doc: Document) -> None:
     add_heading(doc, "7. Etykiety", 1)
+    add_body(
+        doc,
+        "Etykieta opisuje, co rynek zrobił w horyzoncie: stronę zwrotu w przód i przedział jego "
+        "wielkości. Jej definicja istnieje w systemie w jednym miejscu (labels/forward.py) i "
+        "korzysta z niej każdy z pięciu modeli oraz plik etykiet, który rysuje panel. Nie zawsze "
+        "tak było: ta sama pętla znajdowała się w czterech modelach, a osobny etap potoku "
+        "zapisywał piątą wersję - jeden horyzont, przesunięty o wiersze zamiast o okres "
+        "kalendarzowy - której nie czytał żaden model. Kopie dawały zgodne wyniki, ale nic nie "
+        "gwarantowało, że zgodność przetrwa następną zmianę. Scalenie zweryfikowano porównaniem "
+        "bajtowym prognoz wszystkich modeli przed zmianą i po niej.",
+    )
 
     add_heading(doc, "7.1. Kierunek", 2)
     add_body(
@@ -1759,8 +1773,11 @@ def _chapter_9_methodology(doc: Document) -> None:
     add_heading(doc, "9.6. Odtwarzalność i ziarnowanie", 2)
     add_body(
         doc,
-        "Każdy przebieg zapisuje ziarno, tryb deterministyczny, wyprowadzone okna treningowe i "
-        "liczbę faktycznie wykonanych epok. Losowość każdego okna douczania wyprowadzana jest z "
+        "Każdy przebieg zapisuje ziarno, tryb deterministyczny, wyprowadzone okna treningowe, "
+        "liczbę faktycznie wykonanych epok, wersje bibliotek mogących zmienić prognozę (wraz z "
+        "wariantem kompilacji torch, ponieważ wersje CPU i CUDA nie dają tych samych bajtów), "
+        "commit kodu i informację, czy pakiet miał niezatwierdzone zmiany, a także liczbę okien "
+        "douczania, w których wystąpił wyjątek. Losowość każdego okna douczania wyprowadzana jest z "
         "jego własnej tożsamości - ziarna bazowego, modelu, horyzontu, miesiąca i symbolu - a nie "
         "z jednego wspólnego strumienia.",
     )
