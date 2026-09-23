@@ -9,10 +9,10 @@ from prosper.domain import (
     DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
     DIRECTION_CLASSES,
-    assign_depth_bin,
-    direction_from_return,
+    IDX_TO_DIR,
     parse_depth_bins,
 )
+from prosper.labels.forward import UNKNOWN, forward_labels
 from prosper.predict.defaults import parse_horizons, parse_window_overrides
 from prosper.predict.window import (
     MIN_TRAIN_SAMPLES,
@@ -107,21 +107,23 @@ def predict_baseline(
     scored_bars = count_scored_bars(dates, start_dt.date(), end_dt.date(), windows)
     warn_low_power(windows, scored_bars)
 
-    def horizon_labels(forward_steps: int) -> dict[str, list[Any]]:
-        directions: list[str | None] = [None] * n
-        depth_bins_idx: list[int | None] = [None] * n
-
-        for i in range(n):
-            j = i + forward_steps
-            if j >= n:
-                continue
-            r = closes[j] / closes[i] - 1.0
-            directions[i] = direction_from_return(r)
-            if directions[i] is not None:
-                depth_bins_idx[i] = assign_depth_bin(abs(r) * 100.0, depth_bins)
-        return {"direction": directions, "depth_bin_idx": depth_bins_idx}
-
-    horizon_data = {h.name: horizon_labels(steps_by_horizon[h.name]) for h in horizons}
+    labels = forward_labels(
+        closes, {h.name: steps_by_horizon[h.name] for h in horizons}, depth_bins
+    )
+    # The frequency counts below read labels by name and bin, so the index
+    # arrays are turned back into the values they stand for.
+    horizon_data = {
+        h.name: {
+            "direction": [
+                IDX_TO_DIR[int(side)] if side != UNKNOWN else None
+                for side in labels.direction[h.name]
+            ],
+            "depth_bin_idx": [
+                int(bin_idx) if bin_idx != UNKNOWN else None for bin_idx in labels.depth[h.name]
+            ],
+        }
+        for h in horizons
+    }
 
     predictions: list[dict[str, Any]] = []
     untrained_counts: dict[str, int] = {h.name: 0 for h in horizons}

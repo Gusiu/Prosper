@@ -219,8 +219,6 @@ def main() -> None:
             symbol,
             "--base_interval",
             "1d",
-            "--forward_days",
-            "1",
             "--root",
             str(root),
         ]

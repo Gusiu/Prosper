@@ -4,7 +4,9 @@ from datetime import UTC, datetime, timedelta
 
 import polars as pl
 from prosper.config import Settings
+from prosper.domain import HORIZON_NAMES
 from prosper.inventory import DataManager
+from prosper.labels.build import label_columns
 from prosper.storage.layout import (
     get_features_parquet_path,
     get_labels_parquet_path,
@@ -54,15 +56,23 @@ def _sample_features_frame() -> pl.DataFrame:
     )
 
 
-def _sample_labels_frame() -> pl.DataFrame:
-    df = _sample_chart_frame()
-    return df.select("open_time", "close").with_columns(
-        [
-            pl.Series("return_fwd", [0.02, -0.02, None]),
-            pl.Series("direction", ["long", "short", "flat"]),
-            pl.Series("depth_bin", [0, 1, None]),
+def _labels_for(df: pl.DataFrame) -> pl.DataFrame:
+    """The schema `labels build` writes: every horizon's return, side and depth."""
+    n = len(df)
+    sides = (["long", "short"] * n)[: n - 1] + [None]
+    columns = []
+    for horizon in HORIZON_NAMES:
+        return_col, direction_col, depth_col = label_columns(horizon)
+        columns += [
+            pl.Series(return_col, [0.02 if s == "long" else -0.02 if s else None for s in sides]),
+            pl.Series(direction_col, sides),
+            pl.Series(depth_col, ["2-3" if s else None for s in sides]),
         ]
-    )
+    return df.select("open_time", "close").with_columns(columns)
+
+
+def _sample_labels_frame() -> pl.DataFrame:
+    return _labels_for(_sample_chart_frame())
 
 
 def test_inventory_reports_intervals_quality_and_cache_refresh(tmp_path) -> None:
@@ -83,7 +93,7 @@ def test_inventory_reports_intervals_quality_and_cache_refresh(tmp_path) -> None
             get_features_parquet_path(symbol, interval, settings=settings),
         )
         save_parquet(
-            _sample_daily_frame(),
+            _labels_for(_sample_daily_frame()),
             get_labels_parquet_path(symbol, interval, settings=settings),
         )
     refreshed_inventory = data_manager.get_inventory(refresh=True)
@@ -111,4 +121,34 @@ def test_chart_data_joins_features_labels_and_detects_gaps(tmp_path) -> None:
     assert payload["candles"][0]["time"] == 1704067200
     assert payload["candles"][0]["ma_10"] == 100.5
     assert payload["candles"][0]["direction"] == "long"
-    assert payload["candles"][1]["depth_bin"] == 1
+    # The file names its bins, so the chart gets the range rather than an index.
+    assert payload["candles"][1]["depth_bin"] == "2-3"
+    assert payload["label_horizon"] == "week"
+
+
+def test_missing_labels_are_reported_for_every_interval(tmp_path) -> None:
+    """The lag check for non-1m intervals used to end the status chain, so a 1d
+    interval with no labels at all was reported complete."""
+    settings = Settings(data_root=tmp_path)
+    symbol = "TESTUSDT"
+    for interval in ["1m", "1d"]:
+        save_parquet(
+            _sample_daily_frame(),
+            get_parquet_file_path(symbol, interval, 2024, month=1, settings=settings),
+        )
+        save_parquet(
+            _sample_daily_frame(), get_features_parquet_path(symbol, interval, settings=settings)
+        )
+    save_parquet(
+        _labels_for(_sample_daily_frame()),
+        get_labels_parquet_path(symbol, "1m", settings=settings),
+    )
+
+    aggregations = {
+        agg["interval"]: agg
+        for agg in DataManager(settings).get_inventory(refresh=True)[0]["aggregations"]
+    }
+
+    assert aggregations["1m"]["status"] == "complete"
+    assert aggregations["1d"]["status"] == "warning"
+    assert "Labels" in aggregations["1d"]["message"]

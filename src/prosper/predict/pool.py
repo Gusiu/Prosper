@@ -45,13 +45,11 @@ import polars as pl
 
 from prosper.config import Settings
 from prosper.domain import (
-    DIR_TO_IDX,
-    assign_depth_bin,
-    direction_from_return,
     effective_symbols,
     interval_minutes,
     training_features,
 )
+from prosper.labels.forward import forward_labels
 from prosper.predict.window import TrainingWindows
 from prosper.storage.layout import get_features_parquet_path
 
@@ -228,7 +226,7 @@ def build_frame(
     df: pl.DataFrame,
     feature_cols: Sequence[str],
     horizon_steps: dict[str, int],
-    depth_bins: Sequence[float],
+    depth_bins: Sequence[tuple[float, float | None]],
 ) -> SymbolFrame:
     """Turn one symbol's feature frame into labelled arrays.
 
@@ -237,27 +235,8 @@ def build_frame(
     another's outcome.
     """
     close = df["close"].to_numpy().astype(float)
-    n = len(close)
-    direction: dict[str, np.ndarray] = {}
-    depth: dict[str, np.ndarray] = {}
-
-    for name, forward in horizon_steps.items():
-        dir_arr = np.full(n, -1, dtype=np.int64)
-        depth_arr = np.full(n, -1, dtype=np.int64)
-        for i in range(n - forward):
-            base, ahead = close[i], close[i + forward]
-            if not base or not ahead:
-                continue
-            change = ahead / base - 1.0
-            side = direction_from_return(change)
-            if side is None:
-                continue
-            dir_arr[i] = DIR_TO_IDX[side]
-            bin_idx = assign_depth_bin(abs(change) * 100.0, depth_bins)
-            if bin_idx is not None:
-                depth_arr[i] = bin_idx
-        direction[name] = dir_arr
-        depth[name] = depth_arr
+    labels = forward_labels(close, horizon_steps, depth_bins)
+    direction, depth = labels.direction, labels.depth
 
     # Via `to_list`, not `to_numpy`: the zero-copy path segfaults the
     # interpreter on this build's Datetime columns. Every other module here
@@ -297,7 +276,7 @@ def load_pool(
     symbols: Iterable[str],
     interval: str,
     horizon_steps: dict[str, int],
-    depth_bins: Sequence[float],
+    depth_bins: Sequence[tuple[float, float | None]],
     settings: Settings,
     feature_cols: Sequence[str] | None = None,
 ) -> tuple[TrainingPool, list[str]]:

@@ -239,9 +239,11 @@ def direction_from_return(r: float | None) -> str | None:
     label. An exactly zero return is not classifiable, so it returns ``None``
     and the row is excluded rather than being silently assigned a side.
 
-    Returns ``None`` when *r* is ``None`` too, for callers passing nullables.
+    Returns ``None`` when *r* is ``None`` or NaN too, for callers passing
+    nullables. NaN used to come out as ``short``: it fails ``== 0`` and ``> 0``
+    alike, so it fell through to the other side.
     """
-    if r is None or r == 0.0:
+    if r is None or r != r or r == 0.0:
         return None
     return "long" if r > 0.0 else "short"
 

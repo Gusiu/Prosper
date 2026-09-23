@@ -316,12 +316,6 @@ def labels_build(
         "--base_interval",
         help="Base interval for labels",
     ),
-    forward_days: int = typer.Option(
-        1,
-        "--forward-days",
-        "--forward_days",
-        help="Forward horizon in days (N) for r_fwd",
-    ),
     depth_bins: str = typer.Option(
         DEFAULT_DEPTH_BINS_STR,
         "--depth-bins",
@@ -330,7 +324,7 @@ def labels_build(
     root: Path = typer.Option(Path("./data"), "--root", help="Local data lake root directory"),
 ) -> None:
     """
-    Build direction (long/short) and depth labels from daily klines.
+    Write every horizon's direction and depth labels for one interval.
     """
     settings = get_settings(data_root=root)
 
@@ -338,7 +332,6 @@ def labels_build(
         stats = build_labels(
             symbol=symbol,
             base_interval=base_interval,
-            forward_days=forward_days,
             depth_bins_str=depth_bins,
             settings=settings,
         )
@@ -347,14 +340,20 @@ def labels_build(
             console.print(f"[red]Error: {stats['error']}[/red]")
             raise typer.Exit(1)
 
-        console.print(f"\n[bold]Label Statistics for {symbol}[/bold]")
-        console.print(f"Total labels: {stats['total_labels']}")
-        console.print("\nDirection distribution:")
-        for direction, count in stats["direction_distribution"].items():
-            pct = stats["direction_percentages"][direction]
-            console.print(f"  {direction}: {count} ({pct:.2f}%)")
-
-        console.print(f"\nImbalance ratio: {stats['imbalance_ratio']:.2f}")
+        table = Table(title=f"Labels for {symbol} at {base_interval} ({stats['bars']} bars)")
+        table.add_column("horizon")
+        table.add_column("bars ahead", justify="right")
+        table.add_column("labelled", justify="right")
+        table.add_column("long share", justify="right")
+        for name, row in stats["horizons"].items():
+            share = row["long_share"]
+            table.add_row(
+                name,
+                str(row["forward_bars"]),
+                str(row["labelled"]),
+                "-" if share is None else f"{share:.1%}",
+            )
+        console.print(table)
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")

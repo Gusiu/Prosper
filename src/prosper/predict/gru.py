@@ -15,14 +15,12 @@ from prosper.config import Settings, get_settings
 from prosper.domain import (
     DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,
-    DIR_TO_IDX,
     DIRECTION_CLASSES,
     IDX_TO_DIR,
-    assign_depth_bin,
-    direction_from_return,
     parse_depth_bins,
     training_features,
 )
+from prosper.labels.forward import forward_labels
 from prosper.predict.calibration import (
     TemperatureCalibrator,
     calibrated_nll,
@@ -346,24 +344,10 @@ def predict_gru(
 
     # ── 2. Pre-compute forward labels ─────────────────────────────────────────
     depth_bins, depth_labels = parse_depth_bins(DEFAULT_DEPTH_BINS_STR)
-    y_dir_all: dict[str, np.ndarray] = {}
-    y_depth_all: dict[str, np.ndarray] = {}
-    for h in horizon_specs:
-        forward_steps = steps_by_horizon[h.name]
-        dir_arr = np.full(n, -1, dtype=np.int64)
-        depth_arr = np.full(n, -1, dtype=np.int64)
-        for i in range(n - forward_steps):
-            j = i + forward_steps
-            if closes[i] and closes[j]:
-                r = closes[j] / closes[i] - 1.0
-                direction = direction_from_return(r)
-                if direction is not None:
-                    dir_arr[i] = DIR_TO_IDX[direction]
-                    bin_idx = assign_depth_bin(abs(r) * 100.0, depth_bins)
-                    if bin_idx is not None:
-                        depth_arr[i] = bin_idx
-        y_dir_all[h.name] = dir_arr
-        y_depth_all[h.name] = depth_arr
+    labels = forward_labels(
+        closes, {h.name: steps_by_horizon[h.name] for h in horizon_specs}, depth_bins
+    )
+    y_dir_all, y_depth_all = labels.direction, labels.depth
 
     # ── 3. Rolling-month training + inference ─────────────────────────────────
     predictions: list[dict[str, Any]] = []
@@ -408,7 +392,6 @@ def predict_gru(
                 if h.name not in selected:
                     models_cache[h.name] = None
                     continue
-                forward_steps = steps_by_horizon[h.name]
                 train_start, train_end = windows.bounds(i, h.name)
                 if train_end - train_start < seq_len + 10:
                     models_cache[h.name] = None

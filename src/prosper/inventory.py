@@ -16,6 +16,8 @@ from typing import Any
 import polars as pl
 
 from prosper.config import Settings, get_settings
+from prosper.domain import DEFAULT_TRADED_HORIZON, HORIZON_NAMES
+from prosper.labels.build import label_columns as horizon_label_columns
 from prosper.storage.layout import get_features_parquet_path, get_labels_parquet_path
 
 INTERVAL_ORDER = [
@@ -67,7 +69,16 @@ KLINE_SIDE_COLUMNS = {
     "month",
     "week",
 }
-LABEL_COLUMNS = ["return_fwd", "direction", "depth_bin"]
+# The chart shows one horizon's labels - the one the planner trades - under the
+# column names the frontend has always read. The label file holds all four.
+CHART_LABEL_HORIZON = DEFAULT_TRADED_HORIZON
+CHART_LABEL_COLUMNS = dict(
+    zip(
+        horizon_label_columns(CHART_LABEL_HORIZON),
+        ("return_fwd", "direction", "depth_bin"),
+        strict=True,
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -185,6 +196,7 @@ class DataManager:
                 "features": feature_columns,
                 "labels": label_columns,
             },
+            "label_horizon": CHART_LABEL_HORIZON,
         }
 
     def _scan_inventory(self) -> list[dict[str, Any]]:
@@ -220,18 +232,23 @@ class DataManager:
                 elif interval_gaps > 0:
                     status = "incomplete"
                     msg = f"{interval_gaps} gap(s) in data continuity"
-                elif interval != "1m":
-                    # Check if this interval is lagging behind 1m data
-                    missing_partitions = self._get_missing_partitions(symbol, interval, base_partitions)
-                    if missing_partitions:
-                        status = "incomplete"
-                        msg = f"Outdated data (missing {len(missing_partitions)} month(s) compared to 1m)"
+                elif interval != "1m" and (
+                    missing_partitions := self._get_missing_partitions(
+                        symbol, interval, base_partitions
+                    )
+                ):
+                    # Lagging behind the 1m base. This used to be a bare
+                    # `elif interval != "1m"`, which ended the chain for every
+                    # other interval: missing features or labels were only ever
+                    # reported for 1m.
+                    status = "incomplete"
+                    msg = f"Outdated data (missing {len(missing_partitions)} month(s) compared to 1m)"
                 elif not self._has_valid_features(f_path):
                     status = "warning"
                     msg = "Missing or Outdated Features"
-                elif not self._has_parquet_data(l_path):
+                elif not self._has_current_labels(l_path):
                     status = "warning"
-                    msg = "Missing Prediction Labels"
+                    msg = "Missing or Outdated Labels"
 
                 detailed_aggs.append(
                     {"interval": interval, "status": status, "message": msg, "gaps": interval_gaps}
@@ -641,9 +658,12 @@ class DataManager:
         if "open_time" not in lazy.schema:
             return pl.DataFrame()
 
-        label_cols = ["open_time", *[col for col in LABEL_COLUMNS if col in lazy.schema]]
-        if len(label_cols) <= 1:
+        if not all(column in lazy.schema for column in CHART_LABEL_COLUMNS):
             return pl.DataFrame()
+        label_cols = [
+            pl.col("open_time"),
+            *(pl.col(stored).alias(shown) for stored, shown in CHART_LABEL_COLUMNS.items()),
+        ]
 
         lazy = self._normalize_open_time_lazy(lazy)
         lazy = self._filter_time_range(lazy, start_dt, end_dt)
@@ -653,6 +673,21 @@ class DataManager:
             .sort("open_time")
             .collect()
         )
+
+    def _has_current_labels(self, l_path: Path) -> bool:
+        """Labels exist and hold every horizon this build trains.
+
+        A file written before the horizons were labelled together holds one
+        column set for a one-bar horizon; it is outdated, not valid, and the
+        repair chain rebuilds it.
+        """
+        if not self._has_parquet_data(l_path):
+            return False
+        try:
+            schema = pl.read_parquet_schema(next(l_path.glob("*.parquet")))
+        except (StopIteration, OSError, pl.exceptions.ComputeError):
+            return False
+        return all(horizon_label_columns(name)[1] in schema for name in HORIZON_NAMES)
 
     def _has_valid_features(self, f_path: Path) -> bool:
         # For inventory purposes, treat features as valid if at least one parquet
@@ -824,7 +859,7 @@ class DataManager:
                 if key in KLINE_COLUMNS:
                     continue
                 cleaned = self._json_scalar(value)
-                if cleaned is not None or key in LABEL_COLUMNS:
+                if cleaned is not None or key in CHART_LABEL_COLUMNS.values():
                     candle[key] = cleaned
             rows.append(candle)
         return rows

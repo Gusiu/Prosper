@@ -406,7 +406,7 @@ export function drawLabels(candles) {
           position: "belowBar",
           color: "#00e676",
           shape: "arrowUp",
-          text: row.depth_bin === null ? "Long" : `Long ${row.depth_bin}`,
+          text: row.depth_bin === null ? "Long" : `Long ${row.depth_bin}%`,
         };
       }
       if (row.direction === "short") {
@@ -415,7 +415,7 @@ export function drawLabels(candles) {
           position: "aboveBar",
           color: "#ff1744",
           shape: "arrowDown",
-          text: row.depth_bin === null ? "Short" : `Short ${row.depth_bin}`,
+          text: row.depth_bin === null ? "Short" : `Short ${row.depth_bin}%`,
         };
       }
       return {
@@ -708,7 +708,11 @@ export function updateAnalysisLegend(param) {
   if (Number.isFinite(row.atr_14))
     parts.push(`ATR ${formatNumber(row.atr_14)}`);
   if (Number.isFinite(row.obv)) parts.push(`OBV ${formatNumber(row.obv)}`);
-  if (row.direction) parts.push(`Label ${row.direction}`);
+  if (row.direction) {
+    // Which horizon the label describes: the chart shows the traded one.
+    const horizon = analysisState.data?.label_horizon;
+    parts.push(horizon ? `Label (${horizon}) ${row.direction}` : `Label ${row.direction}`);
+  }
   legend.innerText = parts.join(" | ");
 }
 
