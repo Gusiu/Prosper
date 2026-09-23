@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # The CPU build first: the default wheel on Linux pulls several GB of CUDA
+      # libraries, and every result in this project was computed on the CPU.
+      - name: Install torch (CPU)
+        run: pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e . --no-deps
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Type check
+        run: mypy
+
+      # `slow` tests train real models for tens of seconds each; the rest cover
+      # every module and run in about two minutes.
+      - name: Test
+        run: pytest -q -m "not slow"
