@@ -1,33 +1,103 @@
+"""The benchmark: smoothed frequencies of past outcomes, no model at all."""
+
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 import polars as pl
 
 from prosper.config import Settings, get_settings
-from prosper.domain import (
-    DEFAULT_DEPTH_BINS_STR,
-    DEFAULT_HORIZONS,
-    DIRECTION_CLASSES,
-    IDX_TO_DIR,
-    parse_depth_bins,
-)
-from prosper.labels.forward import UNKNOWN, forward_labels
-from prosper.predict.defaults import parse_horizons, parse_window_overrides
-from prosper.predict.window import (
-    MIN_TRAIN_SAMPLES,
-    count_scored_bars,
-    resolve_train_windows,
-    untrained_horizon_payload,
-    warn_low_power,
-)
+from prosper.domain import DEFAULT_DEPTH_BINS_STR, DIR_TO_IDX, DIRECTION_CLASSES, parse_depth_bins
+from prosper.labels.forward import UNKNOWN, ForwardLabels, forward_labels
+from prosper.predict.walk_forward import Month, RunPlan, plan_run, run
+from prosper.predict.window import MIN_TRAIN_SAMPLES
 from prosper.storage.parquet import load_parquet
-from prosper.storage.predictions import write_run_summary, write_versioned_predictions
-from prosper.utils.time import parse_date
 
 
 def _laplace_prob(count: int, total: int, k: int, alpha: float) -> float:
     return (count + alpha) / (total + alpha * k) if total >= 0 else 0.0
+
+
+class BaselineForecaster:
+    """Laplace-smoothed frequencies over the same window a model would train on.
+
+    Nothing is fitted, so there is nothing to do at the start of a month: each
+    bar counts the outcomes that were already realised before it. Counting the
+    most recent ``forward_days`` bars would mean reading returns that had not
+    happened yet, which is exactly the advantage a benchmark must not have.
+    """
+
+    name = "baseline"
+
+    def __init__(self, labels: ForwardLabels, depth_labels: list[str], alpha: float) -> None:
+        self.labels = labels
+        self.depth_labels = depth_labels
+        self.alpha = alpha
+        self.plan: RunPlan | None = None
+
+    def fit_month(self, plan: RunPlan, month: Month, bars: list[int]) -> None:
+        self.plan = plan
+
+    def predict(self, bar: int, horizon: str) -> dict[str, Any] | None:
+        assert self.plan is not None
+        # Only outcomes realised strictly before this bar are observable.
+        start, end = self.plan.windows.bounds(bar, horizon)
+        sides = self.labels.direction[horizon][start:end]
+        depths = self.labels.depth[horizon][start:end]
+        known = sides != UNKNOWN
+        total = int(np.count_nonzero(known))
+        if total < MIN_TRAIN_SAMPLES:
+            return None
+
+        k_dir, k_depth = len(DIRECTION_CLASSES), len(self.depth_labels)
+        payload: dict[str, Any] = {
+            f"P_{side}": _laplace_prob(
+                int(np.count_nonzero(sides == DIR_TO_IDX[side])), total, k_dir, self.alpha
+            )
+            for side in DIRECTION_CLASSES
+        }
+        for side in ("long", "short"):
+            in_side = depths[(sides == DIR_TO_IDX[side]) & (depths != UNKNOWN)]
+            counts = np.bincount(in_side, minlength=k_depth)
+            payload[f"depth_{side}_bins"] = {
+                label: _laplace_prob(int(counts[b]), len(in_side), k_depth, self.alpha)
+                for b, label in enumerate(self.depth_labels)
+            }
+        payload["trained"] = True
+        return payload
+
+    def summary(self) -> dict[str, Any]:
+        return {}
+
+    def after_write(self, run_dir: Path) -> None:
+        return None
+
+
+def _load_klines(symbol: str, interval: str, settings: Settings) -> pl.DataFrame | None:
+    """Every stored month, not just the requested range.
+
+    The frequency window looks back from the first predicted bar. Loading only
+    [start, end] left the early rows with almost no history, so the benchmark
+    got weaker the narrower the range - while the models, which read all their
+    features and filter on output, did not.
+    """
+    base = settings.processed_binance_spot_klines_dir / interval / f"symbol={symbol}"
+    parts = [
+        load_parquet(path)
+        for path in sorted(base.glob("**/*.parquet"))
+        if path.is_file() and path.stat().st_size > 0
+    ]
+    if not parts:
+        return None
+    # `maintain_order` keeps the sort: polars does not otherwise promise it.
+    return (
+        pl.concat(parts)
+        .sort("open_time")
+        .unique(subset=["open_time"], keep="first", maintain_order=True)
+        .with_columns(pl.col("open_time").dt.date().alias("_date"))
+    )
 
 
 def predict_baseline(
@@ -42,169 +112,35 @@ def predict_baseline(
     depth_bins_str: str = DEFAULT_DEPTH_BINS_STR,
     alpha: float = 1.0,
 ) -> dict[str, Any]:
-    """Baseline probabilistic predictions using rolling empirical frequencies + Laplace smoothing.
+    """Baseline probabilistic predictions: rolling empirical frequencies with Laplace smoothing.
 
-    Output JSONL format (per day):
-      {open_time, date, symbol, short:{...}, medium:{...}, long:{...}}
-
-    The rolling window only counts outcomes that had already been realised at
-    the prediction bar. Counting the most recent ``forward_days`` bars would
-    mean reading returns that had not happened yet, which is exactly the
-    advantage a benchmark must not have.
+    Available at every interval the models are, since everything below is in
+    bars of *interval*: pinning it to 1d only meant a 1h comparison had no
+    benchmark to be measured against.
     """
     if settings is None:
         settings = get_settings()
     if rolling_window_days is None:
         rolling_window_days = settings.baseline_rolling_window_days
 
-    # The benchmark has to be available wherever the models are. Everything
-    # below is already expressed in bars of *interval*, so pinning it to 1d
-    # only meant a 1h comparison had no buy-and-hold to be measured against.
-    horizons = list(DEFAULT_HORIZONS)
-    selected = set(parse_horizons(horizons_selected))
-    window_overrides = parse_window_overrides(train_window_by_horizon)
-
-    depth_bins, depth_labels = parse_depth_bins(depth_bins_str)
-    depth_k = len(depth_bins)
-
-    start_dt = parse_date(start)
-    end_dt = parse_date(end)
-
-    # Load every available month, not just the requested range: the rolling
-    # window looks *back* from the first predicted bar. Loading only [start,
-    # end] left the early rows with almost no history, so the benchmark got
-    # weaker the narrower the range you asked for — while the ML models, which
-    # read all features and filter on output, did not.
-    base_path = settings.processed_binance_spot_klines_dir / interval / f"symbol={symbol}"
-    kline_parts = [
-        load_parquet(path)
-        for path in sorted(base_path.glob("**/*.parquet"))
-        if path.is_file() and path.stat().st_size > 0
-    ]
-
-    if not kline_parts:
+    bars = _load_klines(symbol, interval, settings)
+    if bars is None or bars.is_empty():
         return {"error": f"No {interval} parquet found for {symbol}", "symbol": symbol}
 
-    df_bars = pl.concat(kline_parts).sort("open_time").unique(subset=["open_time"], keep="first")
-    df_bars = df_bars.with_columns(pl.col("open_time").dt.date().alias("_date"))
-
-    if df_bars.is_empty():
-        return {"error": f"No {interval} rows found for {symbol}", "symbol": symbol}
-
-    open_times = df_bars["open_time"].to_list()
-    dates = df_bars["_date"].to_list()
-    closes = df_bars["close"].to_list()
-    n = len(df_bars)
-
-    # After the load, not before: the window a horizon should get depends on how
-    # much history there is to divide between training it and scoring it. The
-    # benchmark counts frequencies over the same window the models train on, or
-    # it would not be answering the same question.
-    windows = resolve_train_windows(
-        rolling_window_days, interval, horizons, window_overrides, history_bars=n
+    depth_bins, depth_labels = parse_depth_bins(depth_bins_str)
+    # The benchmark counts frequencies over the same window the models train
+    # on, or it would not be answering the same question.
+    plan = plan_run(
+        symbol,
+        interval,
+        start,
+        end,
+        open_times=bars["open_time"].to_list(),
+        dates=bars["_date"].to_list(),
+        depth_labels=depth_labels,
+        train_window_days=rolling_window_days,
+        train_window_by_horizon=train_window_by_horizon,
+        horizons_selected=horizons_selected,
     )
-    steps_by_horizon = windows.forward_steps
-    scored_bars = count_scored_bars(dates, start_dt.date(), end_dt.date(), windows)
-    warn_low_power(windows, scored_bars)
-
-    realised = forward_labels(
-        closes, {h.name: steps_by_horizon[h.name] for h in horizons}, depth_bins
-    )
-    # The frequency counts below read labels by name and bin, so the index
-    # arrays are turned back into the values they stand for.
-    horizon_data = {
-        h.name: {
-            "direction": [
-                IDX_TO_DIR[int(side)] if side != UNKNOWN else None
-                for side in realised.direction[h.name]
-            ],
-            "depth_bin_idx": [
-                int(bin_idx) if bin_idx != UNKNOWN else None for bin_idx in realised.depth[h.name]
-            ],
-        }
-        for h in horizons
-    }
-
-    predictions: list[dict[str, Any]] = []
-    untrained_counts: dict[str, int] = {h.name: 0 for h in horizons}
-
-    for i in range(n):
-        if dates[i] < start_dt.date() or dates[i] > end_dt.date():
-            continue
-
-        out: dict[str, Any] = {
-            "open_time": open_times[i].isoformat(),
-            "date": dates[i].isoformat(),
-            "symbol": symbol,
-        }
-
-        for h in horizons:
-            if h.name not in selected:
-                out[h.name] = untrained_horizon_payload(depth_labels)
-                untrained_counts[h.name] += 1
-                continue
-            labels = horizon_data[h.name]
-            dirs = labels["direction"]
-            d_idx = labels["depth_bin_idx"]
-
-            # Only outcomes realised strictly before bar i are observable.
-            train_start, train_end = windows.bounds(i, h.name)
-            window_idx = [j for j in range(train_start, train_end) if dirs[j] is not None]
-
-            if len(window_idx) < MIN_TRAIN_SAMPLES:
-                out[h.name] = untrained_horizon_payload(depth_labels)
-                untrained_counts[h.name] += 1
-                continue
-
-            total_dir = len(window_idx)
-            k_dir = len(DIRECTION_CLASSES)
-            direction_probs = {
-                direction: _laplace_prob(
-                    sum(1 for j in window_idx if dirs[j] == direction),
-                    total_dir,
-                    k_dir,
-                    alpha,
-                )
-                for direction in DIRECTION_CLASSES
-            }
-
-            def depth_probs_for(direction: str, window_idx: list[int] = window_idx) -> dict[str, float]:
-                idxs = [
-                    d_idx[j] for j in window_idx if dirs[j] == direction and d_idx[j] is not None
-                ]
-                total = len(idxs)
-                counts = [0] * depth_k
-                for bi in idxs:
-                    counts[int(bi)] += 1
-
-                return {
-                    label: _laplace_prob(counts[bi], total, depth_k, alpha)
-                    for bi, label in enumerate(depth_labels)
-                }
-
-            out[h.name] = {
-                **{f"P_{d}": prob for d, prob in direction_probs.items()},
-                "depth_long_bins": depth_probs_for("long"),
-                "depth_short_bins": depth_probs_for("short"),
-                "trained": True,
-            }
-
-        predictions.append(out)
-
-
-    run_dir = write_versioned_predictions(
-        predictions, symbol, "baseline", settings, interval=interval
-    )
-
-    result = {
-        "symbol": symbol,
-        "start": start,
-        "end": end,
-        "interval": interval,
-        "predictions": len(predictions),
-        "untrained_horizons": untrained_counts,
-        "training_windows": windows.describe(scored_bars),
-        "run_dir": str(run_dir),
-    }
-    write_run_summary(run_dir, result, settings)
-    return result
+    labels = forward_labels(bars["close"].to_list(), plan.steps, depth_bins)
+    return run(BaselineForecaster(labels, depth_labels, alpha), plan, settings)

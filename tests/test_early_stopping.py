@@ -267,12 +267,16 @@ def test_both_deep_predictors_persist_their_summary() -> None:
     """A field only the console ever sees is a field nobody reads."""
     import inspect
 
-    from prosper.predict.gru import predict_gru
-    from prosper.predict.tft import predict_tft
+    from prosper.predict.gru import GRUForecaster
+    from prosper.predict.sequence import SequenceForecaster
+    from prosper.predict.tft import TFTForecaster
+    from prosper.predict.walk_forward import finish_run
 
-    for predictor in (predict_gru, predict_tft):
-        source = inspect.getsource(predictor)
-        # The settings go with it, or the run would not record its own seed;
-        # see `test_run_provenance`.
-        assert "write_run_summary(run_dir, result, settings)" in source, predictor.__name__
-        assert '"epochs_used"' in source, predictor.__name__
+    # Both networks report through the sequence base, whose summary the shared
+    # writer merges into run_summary.json with the settings; see
+    # `test_run_provenance`.
+    assert '"epochs_used"' in inspect.getsource(SequenceForecaster.summary)
+    assert "**model.summary()" in inspect.getsource(finish_run)
+    for model in (GRUForecaster, TFTForecaster):
+        assert issubclass(model, SequenceForecaster), model.__name__
+        assert "self.epochs_used[horizon].append(" in inspect.getsource(model.fit_horizon)

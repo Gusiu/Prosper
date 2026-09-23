@@ -126,16 +126,21 @@ def test_every_predictor_uses_the_include_list() -> None:
     """
     import inspect
 
-    from prosper.predict import gru, ml, pool, tft, xgboost_model
+    from prosper.predict import gru, ml, pool, sequence, tabular, tft, xgboost_model
 
     assert "training_features(" in inspect.getsource(pool), (
         "load_pool is where the pooled predictors get their columns; it must "
         "still filter through the include list"
     )
+    assert "training_features(" in inspect.getsource(sequence.load_sequence)
+    assert "load_pool(" in inspect.getsource(tabular.load_tabular)
 
-    for module in (ml, xgboost_model, gru, tft):
+    for module in (ml, xgboost_model):
+        assert "load_tabular(" in inspect.getsource(module), module.__name__
+    for module in (gru, tft):
+        assert "load_sequence(" in inspect.getsource(module), module.__name__
+    for module in (ml, xgboost_model, gru, tft, tabular, sequence):
         source = inspect.getsource(module)
-        assert "training_features(" in source or "load_pool(" in source, module.__name__
         assert "exclude_cols" not in source, f"{module.__name__} still excludes rather than includes"
 
 

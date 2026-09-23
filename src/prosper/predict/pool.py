@@ -34,7 +34,7 @@ learning which symbol it was looking at.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import combinations
@@ -337,7 +337,7 @@ def parse_symbols(raw: str | None, target: str) -> list[str]:
 def describe_pool(
     slices: dict[str, PooledSlice],
     pool: TrainingPool | None = None,
-    forward_steps: dict[str, int] | None = None,
+    forward_steps: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """What each symbol actually contributed, for the run summary.
 

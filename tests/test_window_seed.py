@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import inspect
 
-import pytest
-
 from prosper.domain import HORIZON_NAMES
 from prosper.predict.defaults import window_seed
 
@@ -77,17 +75,24 @@ def test_the_seed_is_stable_across_processes() -> None:
     assert window_seed(42, "tft", "week", 2024, 1) == 2076467837
 
 
-@pytest.mark.parametrize("module_name", ["prosper.predict.tft", "prosper.predict.gru"])
-def test_both_predictors_reseed_per_window(module_name: str) -> None:
-    """A helper nobody calls fixes nothing."""
-    import importlib
+def test_both_deep_predictors_reseed_per_window() -> None:
+    """A helper nobody calls fixes nothing.
 
-    module = importlib.import_module(module_name)
-    predictor = module.predict_tft if module_name.endswith("tft") else module.predict_gru
-    source = inspect.getsource(predictor)
+    The reseed lives once, in `SequenceForecaster.reseed`; both networks are
+    sequence forecasters and call it right before building each window's model.
+    """
+    from prosper.predict.gru import GRUForecaster
+    from prosper.predict.sequence import SequenceForecaster
+    from prosper.predict.tft import TFTForecaster
 
-    assert "window_seed(" in source, "the per-window seed is never applied"
-    assert "manual_seed(window_seed(" in source, "the derived seed must reach torch"
+    assert "manual_seed(window_seed(" in inspect.getsource(SequenceForecaster.reseed), (
+        "the derived seed must reach torch"
+    )
+    for model in (GRUForecaster, TFTForecaster):
+        assert issubclass(model, SequenceForecaster), model.__name__
+        assert "self.reseed(horizon, month)" in inspect.getsource(model.fit_horizon), (
+            f"{model.__name__} never applies the per-window seed"
+        )
 
 
 def test_selecting_fewer_horizons_leaves_the_selected_ones_untouched() -> None:
@@ -103,32 +108,25 @@ def test_selecting_fewer_horizons_leaves_the_selected_ones_untouched() -> None:
     """
     import ast
 
-    from prosper.predict import gru, ml, tft, xgboost_model
+    from prosper.predict import walk_forward
 
-    for module in (ml, xgboost_model, gru, tft):
-        source = inspect.getsource(module)
-        tree = ast.parse(source)
+    # 1. The windows are resolved from every horizon, not the selected ones, so
+    #    the derived widths and the normalisation span do not move.
+    plan_source = inspect.getsource(walk_forward.plan_run)
+    calls = [
+        node
+        for node in ast.walk(ast.parse(plan_source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "resolve_train_windows"
+    ]
+    assert len(calls) == 1
+    assert "horizons" in {ast.unparse(arg) for arg in calls[0].args}
+    assert "horizons = list(DEFAULT_HORIZONS)" in plan_source
 
-        # 1. The windows are resolved from every horizon, not the selected ones,
-        #    so the derived widths and the normalisation span do not move.
-        resolves = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "resolve_train_windows"
-        ]
-        assert resolves, f"{module.__name__} does not resolve its windows"
-        for call in resolves:
-            passed = {ast.unparse(arg) for arg in call.args}
-            assert passed & {"horizons", "horizon_specs"}, (
-                f"{module.__name__} resolves windows from a filtered horizon list; "
-                "the widths and the normalisation span would then depend on --horizons"
-            )
-
-        # 2. The selection is applied inside the retraining loop, where it can
-        #    only skip a horizon — never reshape another one's inputs.
-        assert "not in selected" in source, module.__name__
+    # 2. The selection only decides which horizons are fitted and asked, never
+    #    what the others see.
+    assert "in plan.selected" in inspect.getsource(walk_forward.walk_forward)
 
 
 def test_the_seed_ignores_which_other_horizons_ran() -> None:
@@ -181,13 +179,12 @@ def test_the_symbol_is_the_only_thing_that_changed() -> None:
 
 def test_the_symbol_reaches_the_seed_from_both_deep_predictors() -> None:
     """A decorrelated seed nobody passes is no decorrelation at all."""
-    from prosper.predict import gru, tft
+    from prosper.predict.sequence import SequenceForecaster
 
-    for module in (gru, tft):
-        source = inspect.getsource(module)
-        call = source[source.index("window_seed(") :]
-        call = call[: call.index(")") + 1]
-        assert "symbol=symbol" in call, (
-            f"{module.__name__} seeds its windows without naming the symbol, so "
-            "every symbol would share one initialisation stream again"
-        )
+    source = inspect.getsource(SequenceForecaster.reseed)
+    call = source[source.index("window_seed(") :]
+    call = call[: call.index(")") + 1]
+    assert "symbol=self.symbol" in call, (
+        "windows are seeded without naming the symbol, so every symbol would "
+        "share one initialisation stream again"
+    )

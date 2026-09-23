@@ -212,30 +212,41 @@ def test_the_widest_window_covers_every_horizon() -> None:
 # ── Wired into every predictor ───────────────────────────────────────────────
 
 PREDICTORS = ("baseline", "ml", "xgboost_model", "gru", "tft")
+# Where the training slices are actually cut since the walk-forward loop was
+# written once; checked alongside the predictors themselves.
+SHARED = ("walk_forward", "tabular", "sequence")
 
 
 @pytest.mark.parametrize("module", PREDICTORS)
 def test_every_predictor_reports_its_power(module: str) -> None:
     """`resolve_train_windows` deliberately does not warn, because the useful
-    warning needs the scored range and that is only known after the load. So
-    each predictor has to ask — and the reason this is a test is that the
-    warning shipped absent for months while the annual horizon was reported to
-    three decimals on one observation.
+    warning needs the scored range and that is only known after the load. The
+    reason this is a test is that the warning shipped absent for months while
+    the annual horizon was reported to three decimals on one observation.
+
+    All three calls now live in `walk_forward.plan_run`, and a predictor can
+    only reach the walk-forward loop with a plan - directly, or through the
+    tabular loader for the pooled models.
     """
-    source = Path(f"src/prosper/predict/{module}.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    called = {
-        node.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    }
 
-    assert "resolve_train_windows" in called, f"{module} does not resolve its windows"
-    assert "warn_low_power" in called, f"{module} never reports its statistical power"
-    assert "count_scored_bars" in called, f"{module} warns without the scored side"
+    def called_in(name: str) -> set[str]:
+        tree = ast.parse(Path(f"src/prosper/predict/{name}.py").read_text(encoding="utf-8"))
+        return {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+    shared = called_in("walk_forward")
+    assert {"resolve_train_windows", "warn_low_power", "count_scored_bars"} <= shared
+    assert "plan_run" in called_in("tabular")
+
+    called = called_in(module)
+    assert "plan_run" in called or "load_tabular" in called, f"{module} plans no run"
+    assert "run" in called, f"{module} does not go through the walk-forward loop"
 
 
-@pytest.mark.parametrize("module", PREDICTORS)
+@pytest.mark.parametrize("module", PREDICTORS + SHARED)
 def test_no_predictor_slices_a_training_set_by_hand(module: str) -> None:
     """`windows.bounds` is the only way to get a training slice. A direct
     `training_bounds(...)` call takes the window as a loose argument again, which

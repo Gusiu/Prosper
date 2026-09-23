@@ -1,4 +1,4 @@
-"""GRU-based Deep Learning model for probabilistic directional predictions."""
+"""GRU: a recurrent network over the last *seq_len* bars, one per horizon."""
 
 from __future__ import annotations
 
@@ -6,20 +6,12 @@ import copy
 from typing import Any
 
 import numpy as np
-import polars as pl
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from prosper.config import Settings, get_settings
-from prosper.domain import (
-    DEFAULT_DEPTH_BINS_STR,
-    DEFAULT_HORIZONS,
-    DIRECTION_CLASSES,
-    IDX_TO_DIR,
-    parse_depth_bins,
-    training_features,
-)
+from prosper.domain import DEFAULT_DEPTH_BINS_STR, DIRECTION_CLASSES, parse_depth_bins
 from prosper.labels.forward import forward_labels
 from prosper.predict.calibration import (
     TemperatureCalibrator,
@@ -34,21 +26,17 @@ from prosper.predict.defaults import (
     EARLY_STOPPING_PATIENCE,
     MIN_EARLY_STOPPING_SAMPLES,
     parse_epoch_overrides,
-    parse_horizons,
-    parse_window_overrides,
     resolve_epochs,
-    summarise_epochs,
-    window_seed,
 )
-from prosper.predict.window import (
-    count_scored_bars,
-    resolve_train_windows,
-    untrained_horizon_payload,
-    warn_low_power,
+from prosper.predict.sequence import SequenceForecaster, load_sequence
+from prosper.predict.walk_forward import (
+    Month,
+    RunPlan,
+    empirical_depth,
+    plan_run,
+    run,
+    seed_run,
 )
-from prosper.storage.layout import get_features_parquet_path
-from prosper.storage.predictions import write_run_summary, write_versioned_predictions
-from prosper.utils.time import parse_date
 
 
 # ── dataset ──────────────────────────────────────────────────────────────────
@@ -250,6 +238,116 @@ def _robust_normalise(X_train: np.ndarray, X_all: np.ndarray):
     return X_norm
 
 
+# ── the model in the walk-forward loop ────────────────────────────────────────
+class GRUForecaster(SequenceForecaster):
+    """A GRU classifier per horizon, scored bar by bar on the last *seq_len* bars."""
+
+    name = "gru"
+
+    def __init__(
+        self,
+        *,
+        device: torch.device,
+        hidden_size: int,
+        num_layers: int,
+        dropout: float,
+        batch_size: int,
+        lr: float,
+        **common: Any,
+    ) -> None:
+        super().__init__(**common)
+        self.device = device
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.batch_size = batch_size
+        self.lr = lr
+
+    def normalise(self, window: np.ndarray) -> np.ndarray | None:
+        return _robust_normalise(window, self.features)
+
+    def fit_horizon(self, plan: RunPlan, horizon: str, first: int, month: Month) -> Any:
+        assert self.normalised is not None
+        train_start, train_end = plan.windows.bounds(first, horizon)
+        if train_end - train_start < self.seq_len + 10:
+            return None
+
+        directions = self.labels.direction[horizon]
+        y_slice = directions[train_start:train_end]
+        X_slice = self.normalised[train_start:train_end]
+        valid = [k for k in range(len(y_slice)) if y_slice[k] >= 0]
+        if len(valid) < self.seq_len + 5 or len(set(y_slice[valid])) <= 1:
+            return None
+
+        ds = SequenceDataset(X_slice, y_slice, self.seq_len)
+        if len(ds) < 8:
+            return None
+
+        # Hold out the newest sequences of the training region for the
+        # calibrator and the stopping rule. They still end before `train_end`,
+        # so their labels are realised - invariant 6 is untouched.
+        split, _ = calibration_split(0, len(ds))
+        fit_ds: Any = ds
+        cal_range: list[int] = []
+        if split < len(ds):
+            seq_labels = [int(ds[k][1]) for k in range(len(ds))]
+            if len(set(seq_labels[:split])) <= 1:
+                # Nothing to learn from a single-class fit half. Look for a
+                # nearby split that works before giving up: doing neither cost 5
+                # of the 13 affected windows their holdout, and with it early
+                # stopping and calibration.
+                alternative = usable_split(seq_labels, split)
+                split = len(ds) if alternative is None else alternative
+            if split < len(ds):
+                fit_ds = Subset(ds, list(range(split)))
+                cal_range = list(range(split, len(ds)))
+
+        self.reseed(horizon, month)
+        loader = DataLoader(fit_ds, batch_size=self.batch_size, shuffle=True, drop_last=False)
+        model = GRUClassifier(
+            self.features.shape[1], self.hidden_size, self.num_layers, self.dropout
+        ).to(self.device)
+        optimiser = torch.optim.Adam(model.parameters(), lr=self.lr)
+        self.epochs_used[horizon].append(
+            _train_gru(
+                model,
+                loader,
+                optimiser,
+                nn.CrossEntropyLoss(),
+                dataset=ds,
+                holdout=cal_range,
+                max_epochs=self.epoch_budget[horizon],
+                device=self.device,
+            )
+        )
+        self.calibrators[horizon] = _fit_gru_calibrator(model, ds, cal_range, self.device)
+        # The GRU head only models direction; depth comes from the realised
+        # conditional distribution over the same window.
+        self.depths[horizon] = empirical_depth(
+            directions[train_start:train_end],
+            self.labels.depth[horizon][train_start:train_end],
+            self.depth_labels,
+        )
+        return model
+
+    def probabilities(self, bar: int, horizon: str) -> np.ndarray | None:
+        if bar < self.seq_len or self.normalised is None:
+            return None
+        model = self.models[horizon]
+        sequence = (
+            torch.tensor(self.normalised[bar - self.seq_len : bar], dtype=torch.float32)
+            .unsqueeze(0)
+            .to(self.device)
+        )
+        model.eval()
+        with torch.no_grad():
+            logits = model(sequence)  # (1, len(DIRECTION_CLASSES))
+            return torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
+
+    def summary(self) -> dict[str, Any]:
+        return {**super().summary(), "device": str(self.device)}
+
+
 # ── main entry-point ──────────────────────────────────────────────────────────
 def predict_gru(
     symbol: str,
@@ -269,290 +367,48 @@ def predict_gru(
     batch_size: int = 32,
     lr: float = 1e-3,
 ) -> dict[str, Any]:
-    """
-    Train a GRU classifier on rolling windows and produce per-bar JSONL predictions.
+    """Train a GRU classifier on rolling windows and produce per-bar JSONL predictions.
+
     Output format is identical to predict_baseline / predict_ml.
     """
     if settings is None:
         settings = get_settings()
 
-    horizon_specs = list(DEFAULT_HORIZONS)
-    selected = set(parse_horizons(horizons_selected))
     epoch_budget = resolve_epochs(epochs, parse_epoch_overrides(epochs_by_horizon))
-    window_overrides = parse_window_overrides(train_window_by_horizon)
-
-    # ── Seed & deterministic mode (research) ─────────────────────────────────
-    if settings.deterministic:
-        seed = settings.seed if settings.seed is not None else 42
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(seed)
-            torch.cuda.manual_seed_all(seed)
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
-        import random
-
-        random.seed(seed)
-        torch.use_deterministic_algorithms(True)
-        print(f"[research] Deterministic mode ON (seed={seed})")
-    elif settings.seed is not None:
-        np.random.seed(settings.seed)
-        torch.manual_seed(settings.seed)
-        import random
-
-        random.seed(settings.seed)
-        print(f"[research] Seed set to {settings.seed} (non-deterministic CUDA)")
-
+    seed_run(settings, torch_seed=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # ── 1. Load features ──────────────────────────────────────────────────────
-    feat_path = get_features_parquet_path(symbol, interval, settings=settings)
-    if not feat_path.exists():
-        return {"error": f"No features parquet for {symbol}. Run: features build", "symbol": symbol}
+    loaded = load_sequence(symbol, interval, settings)
+    if isinstance(loaded, dict):
+        return loaded
+    frame, feature_cols = loaded
 
-    df = pl.read_parquet(feat_path, hive_partitioning=False).sort("open_time")
-    if df.is_empty():
-        return {"error": "Empty features DataFrame", "symbol": symbol}
-
-    df = df.with_columns(pl.col("open_time").dt.date().alias("_date"))
-
-    # An include list, not an exclude list. The old form took every column in the
-    # parquet bar a handful of names, which fed the model raw price levels — and
-    # would have adopted each new relative column *alongside* its absolute twin.
-    feature_cols = training_features(df.columns)
-    if not feature_cols:
-        return {"error": "No feature columns found", "symbol": symbol}
-
-    open_times = df["open_time"].to_list()
-    dates = df["_date"].to_list()
-    closes = df["close"].to_list()
-    X_all_raw = df.select(feature_cols).to_numpy().astype(np.float32)
-    n = len(df)
-
-    start_dt = parse_date(start).date()
-    end_dt = parse_date(end).date()
-
-    # After the load, not before: the window a horizon should get depends on how
-    # much history there is to divide between training it and scoring it.
-    windows = resolve_train_windows(
-        train_window_days, interval, horizon_specs, window_overrides, history_bars=n
-    )
-    steps_by_horizon = windows.forward_steps
-    scored_bars = count_scored_bars(dates, start_dt, end_dt, windows)
-    warn_low_power(windows, scored_bars)
-
-    # ── 2. Pre-compute forward labels ─────────────────────────────────────────
     depth_bins, depth_labels = parse_depth_bins(DEFAULT_DEPTH_BINS_STR)
-    labels = forward_labels(
-        closes, {h.name: steps_by_horizon[h.name] for h in horizon_specs}, depth_bins
+    plan = plan_run(
+        symbol,
+        interval,
+        start,
+        end,
+        open_times=frame["open_time"].to_list(),
+        dates=frame["_date"].to_list(),
+        depth_labels=depth_labels,
+        train_window_days=train_window_days,
+        train_window_by_horizon=train_window_by_horizon,
+        horizons_selected=horizons_selected,
     )
-    y_dir_all, y_depth_all = labels.direction, labels.depth
-
-    # ── 3. Rolling-month training + inference ─────────────────────────────────
-    predictions: list[dict[str, Any]] = []
-    untrained_counts: dict[str, int] = {h.name: 0 for h in horizon_specs}
-    # How many epochs each horizon actually used, per retraining window. Without
-    # this the stopping decision is invisible in the output and checking whether
-    # early stopping fired at all needs a bespoke probe every time.
-    epochs_used: dict[str, list[int]] = {h.name: [] for h in horizon_specs}
-    # We retrain once per calendar month to balance speed vs. freshness
-    current_train_month = None
-    models_cache: dict[str, Any] = {}
-    calibrator_cache: dict[str, TemperatureCalibrator] = {}
-    depth_cache: dict[str, dict[str, dict[str, float]]] = {}
-    X_norm_current: np.ndarray | None = None
-
-    for i in range(n):
-        row_date = dates[i]
-        if row_date < start_dt or row_date > end_dt:
-            continue
-
-        # Retrain once per month
-        month_key = (row_date.year, row_date.month)
-        if month_key != current_train_month:
-            current_train_month = month_key
-            models_cache = {}
-            depth_cache = {}
-
-            # Normalise using only past rows, then apply to the full array so
-            # inference indices stay valid. Stats never see future bars.
-            # The widest window in use, because normalisation is fitted once
-            # per bar and shared by every horizon. Still causal: it reads only
-            # bars strictly before the one being predicted.
-            norm_span = windows.widest_window_steps
-            X_norm_current = _robust_normalise(X_all_raw[max(0, i - norm_span) : i], X_all_raw)
-            if X_norm_current is None:
-                # No history behind this bar: nothing to normalise on and nothing
-                # to train on. Every horizon falls through to the untrained payload.
-                models_cache = dict.fromkeys(h.name for h in horizon_specs)
-                depth_cache = {}
-
-            for h in horizon_specs:
-                if h.name not in selected:
-                    models_cache[h.name] = None
-                    continue
-                train_start, train_end = windows.bounds(i, h.name)
-                if train_end - train_start < seq_len + 10:
-                    models_cache[h.name] = None
-                    continue
-
-                y_slice = y_dir_all[h.name][train_start:train_end]
-                X_slice = X_norm_current[train_start:train_end]
-                valid = [k for k in range(len(y_slice)) if y_slice[k] >= 0]
-                if len(valid) < seq_len + 5 or len(set(y_slice[valid])) <= 1:
-                    models_cache[h.name] = None
-                    continue
-
-                ds = SequenceDataset(X_slice, y_slice, seq_len)
-                if len(ds) < 8:
-                    models_cache[h.name] = None
-                    continue
-
-                # Hold out the newest sequences of the training region for the
-                # calibrator and the stopping rule. They still end before
-                # `train_end`, so their labels are realised — invariant 6 is
-                # untouched.
-                split, _ = calibration_split(0, len(ds))
-                fit_ds: Any = ds
-                cal_range: list[int] = []
-                if split < len(ds):
-                    seq_labels = [int(ds[k][1]) for k in range(len(ds))]
-                    if len(set(seq_labels[:split])) <= 1:
-                        # Nothing to learn from a single-class fit half. Look
-                        # for a nearby split that works before giving up: doing
-                        # neither cost 5 of the 13 affected windows their
-                        # holdout, and with it early stopping and calibration.
-                        alternative = usable_split(seq_labels, split)
-                        split = len(ds) if alternative is None else alternative
-                    if split < len(ds):
-                        fit_ds = Subset(ds, list(range(split)))
-                        cal_range = list(range(split, len(ds)))
-
-                # Reseed from this window's own identity, so weight init, dropout
-                # and shuffling depend on which model this is and not on how many
-                # steps every earlier horizon and month happened to take. Without
-                # it, changing one horizon's epoch ceiling silently retrains the
-                # others — see `window_seed`.
-                if settings.deterministic or settings.seed is not None:
-                    base = settings.seed if settings.seed is not None else 42
-                    torch.manual_seed(window_seed(base, "gru", h.name, *month_key, symbol=symbol))
-
-                loader = DataLoader(fit_ds, batch_size=batch_size, shuffle=True, drop_last=False)
-                m = GRUClassifier(len(feature_cols), hidden_size, num_layers, dropout).to(device)
-                opt = torch.optim.Adam(m.parameters(), lr=lr)
-                loss_fn = nn.CrossEntropyLoss()
-
-                epochs_used[h.name].append(
-                    _train_gru(
-                        m,
-                        loader,
-                        opt,
-                        loss_fn,
-                        dataset=ds,
-                        holdout=cal_range,
-                        max_epochs=epoch_budget[h.name],
-                        device=device,
-                    )
-                )
-
-                models_cache[h.name] = m
-                calibrator_cache[h.name] = _fit_gru_calibrator(m, ds, cal_range, device)
-                # The GRU head only models direction; depth comes from the
-                # realised conditional distribution over the same window.
-                depth_cache[h.name] = _empirical_depth(
-                    y_dir_all[h.name][train_start:train_end],
-                    y_depth_all[h.name][train_start:train_end],
-                    depth_labels,
-                )
-
-        # ── Inference ─────────────────────────────────────────────────────────
-        out: dict[str, Any] = {
-            "open_time": open_times[i].isoformat(),
-            "date": row_date.isoformat(),
-            "symbol": symbol,
-        }
-
-        for h in horizon_specs:
-            m = models_cache.get(h.name)
-            if m is None or X_norm_current is None or i < seq_len:
-                out[h.name] = untrained_horizon_payload(depth_labels)
-                untrained_counts[h.name] += 1
-                continue
-
-            x_seq = (
-                torch.tensor(X_norm_current[i - seq_len : i], dtype=torch.float32)
-                .unsqueeze(0)
-                .to(device)
-            )
-            m.eval()
-            with torch.no_grad():
-                logits = m(x_seq)  # (1, len(DIRECTION_CLASSES))
-                probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
-            probs = calibrator_cache.get(h.name, TemperatureCalibrator(1.0)).apply(probs)
-
-            depths = depth_cache.get(h.name, {})
-            out[h.name] = {
-                **{
-                    f"P_{IDX_TO_DIR[k]}": float(probs[k])
-                    for k in range(len(DIRECTION_CLASSES))
-                },
-                "depth_long_bins": depths.get("long", _uniform_depth(depth_labels)),
-                "depth_short_bins": depths.get("short", _uniform_depth(depth_labels)),
-                "trained": True,
-            }
-
-        predictions.append(out)
-
-    if not predictions:
-        return {"error": "No predictions generated for the requested date range", "symbol": symbol}
-
-
-    run_dir = write_versioned_predictions(
-        predictions, symbol, "gru", settings, interval=interval
+    model = GRUForecaster(
+        device=device,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        dropout=dropout,
+        batch_size=batch_size,
+        lr=lr,
+        settings=settings,
+        symbol=symbol,
+        features=frame.select(feature_cols).to_numpy().astype(np.float32),
+        labels=forward_labels(frame["close"].to_list(), plan.steps, depth_bins),
+        depth_labels=depth_labels,
+        seq_len=seq_len,
+        epoch_budget=epoch_budget,
     )
-
-    result = {
-        "symbol": symbol,
-        "start": start,
-        "end": end,
-        "interval": interval,
-        "predictions": len(predictions),
-        "untrained_horizons": untrained_counts,
-        "epochs_used": summarise_epochs(epochs_used, epoch_budget),
-        "training_windows": windows.describe(scored_bars),
-        "run_dir": str(run_dir),
-        "device": str(device),
-    }
-    write_run_summary(run_dir, result, settings)
-    return result
-
-
-def _uniform_depth(labels: list[str]) -> dict[str, float]:
-    return {label: 1.0 / len(labels) for label in labels}
-
-
-def _empirical_depth(
-    directions: np.ndarray,
-    depths: np.ndarray,
-    labels: list[str],
-) -> dict[str, dict[str, float]]:
-    """Realised depth-bin distribution per direction over a training window."""
-    counts = {"long": [0] * len(labels), "short": [0] * len(labels)}
-    for direction_idx, depth_idx in zip(directions, depths, strict=True):
-        if depth_idx < 0:
-            continue
-        direction = IDX_TO_DIR.get(int(direction_idx))
-        if direction in counts:
-            counts[direction][int(depth_idx)] += 1
-
-    out: dict[str, dict[str, float]] = {}
-    for direction, bucket in counts.items():
-        total = sum(bucket)
-        if total == 0:
-            out[direction] = _uniform_depth(labels)
-        else:
-            out[direction] = {
-                label: count / total for label, count in zip(labels, bucket, strict=True)
-            }
-    return out
+    return run(model, plan, settings)

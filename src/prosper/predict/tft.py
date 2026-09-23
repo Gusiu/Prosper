@@ -7,16 +7,13 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import polars as pl
 
 from prosper.config import Settings, get_settings
 from prosper.domain import (
     DEFAULT_DEPTH_BINS_STR,
-    DEFAULT_HORIZONS,
     DIRECTION_CLASSES,
     IDX_TO_DIR,
     parse_depth_bins,
-    training_features,
 )
 from prosper.labels.forward import forward_labels
 from prosper.predict.calibration import (
@@ -32,22 +29,17 @@ from prosper.predict.defaults import (
     EARLY_STOPPING_PATIENCE,
     MIN_EARLY_STOPPING_SAMPLES,
     parse_epoch_overrides,
-    parse_horizons,
-    parse_window_overrides,
     resolve_epochs,
-    summarise_epochs,
-    window_seed,
 )
-from prosper.predict.failures import WindowFailures
-from prosper.predict.window import (
-    count_scored_bars,
-    resolve_train_windows,
-    untrained_horizon_payload,
-    warn_low_power,
+from prosper.predict.sequence import SequenceForecaster, load_sequence
+from prosper.predict.walk_forward import (
+    Month,
+    RunPlan,
+    empirical_depth,
+    plan_run,
+    run,
+    seed_run,
 )
-from prosper.storage.layout import get_features_parquet_path
-from prosper.storage.predictions import write_run_summary, write_versioned_predictions
-from prosper.utils.time import parse_date
 
 
 def _robust_normalize(X: np.ndarray, med: np.ndarray, iqr: np.ndarray) -> np.ndarray:
@@ -333,6 +325,234 @@ def _fit_tft_calibrator(
     return fit_temperature(probs, labels)
 
 
+class TFTForecaster(SequenceForecaster):
+    """A Temporal Fusion Transformer per horizon, predicting a month in one pass."""
+
+    name = "tft"
+
+    def __init__(
+        self,
+        *,
+        feature_cols: list[str],
+        forecasting: dict[str, Any],
+        hidden_size: int,
+        attention_head_size: int,
+        learning_rate: float,
+        inference_kwargs: dict[str, Any],
+        **common: Any,
+    ) -> None:
+        super().__init__(**common)
+        self.feature_cols = feature_cols
+        # Lightning and pytorch-forecasting, imported by the caller so a
+        # missing install is an error message rather than an import failure.
+        self.lib = forecasting
+        self.hidden_size = hidden_size
+        self.attention_head_size = attention_head_size
+        self.learning_rate = learning_rate
+        self.inference_kwargs = inference_kwargs
+        self.datasets: dict[str, Any] = {}
+        # bar index -> one probability per direction class, filled once per month
+        self.month_predictions: dict[str, dict[int, tuple[float, ...]]] = {}
+
+    def fit_month(self, plan: RunPlan, month: Month, bars: list[int]) -> None:
+        self.datasets, self.month_predictions = {}, {}
+        super().fit_month(plan, month, bars)
+
+    def normalise(self, window: np.ndarray) -> np.ndarray | None:
+        # Missing values become a raw 0 *before* scaling here, unlike the GRU;
+        # see the module docstring of `prosper.predict.sequence`.
+        if window.shape[0] == 0:
+            return None
+        safe = np.where(np.isfinite(window), window, 0.0)
+        median = np.median(safe, axis=0)
+        iqr = np.percentile(safe, 75, axis=0) - np.percentile(safe, 25, axis=0)
+        iqr[iqr == 0] = 1.0
+        return _robust_normalize(self.features, median, iqr)
+
+    def fit_horizon(self, plan: RunPlan, horizon: str, first: int, month: Month) -> Any:
+        assert self.normalised is not None
+        normalised = self.normalised
+        TimeSeriesDataSet = self.lib["TimeSeriesDataSet"]
+        forward_steps = plan.steps[horizon]
+        y_dir = self.labels.direction[horizon]
+        train_start, train_end = plan.windows.bounds(first, horizon)
+        valid_idx = [k for k in range(train_start, train_end) if y_dir[k] >= 0]
+        if len(valid_idx) < self.seq_len + 10 or len(set(y_dir[valid_idx])) < 2:
+            return None
+
+        # Hold out the newest trainable bars to calibrate on. They sit inside
+        # `training_bounds`, so their labels are realised and invariant 6 is
+        # untouched; the model simply never fits them.
+        split, _ = calibration_split(0, len(valid_idx))
+        window_labels = [int(y_dir[k]) for k in valid_idx]
+        if len(set(window_labels[:split])) < 2:
+            # Same rescue as the GRU: a single-class fit half is unlearnable,
+            # but a nearby split usually is not.
+            alternative = usable_split(window_labels, split)
+            split = len(valid_idx) if alternative is None else alternative
+        fit_idx = valid_idx[:split]
+        cal_idx = valid_idx[split:]
+        if len(fit_idx) < self.seq_len + 10 or len(set(y_dir[fit_idx])) < 2:
+            fit_idx, cal_idx = valid_idx, []
+
+        def frame(bars: list[int]) -> pd.DataFrame:
+            built = []
+            for k in bars:
+                row = {"time_idx": k, "group": self.symbol, "target": IDX_TO_DIR[int(y_dir[k])]}
+                for fi, fc in enumerate(self.feature_cols):
+                    row[fc] = float(normalised[k, fi])
+                built.append(row)
+            return pd.DataFrame(built)
+
+        df_pd = frame(fit_idx)
+        max_enc = min(self.seq_len, len(df_pd) - self.seq_len)
+        if max_enc < 5:
+            return None
+
+        try:
+            ds = TimeSeriesDataSet(
+                df_pd,
+                time_idx="time_idx",
+                target="target",
+                group_ids=["group"],
+                min_encoder_length=max_enc // 2,
+                max_encoder_length=max_enc,
+                min_prediction_length=1,
+                max_prediction_length=1,
+                time_varying_unknown_reals=self.feature_cols,
+                target_normalizer=self.lib["NaNLabelEncoder"](add_nan=True),
+                add_relative_time_idx=True,
+                add_target_scales=False,
+                add_encoder_length=True,
+            )
+            loader = ds.to_dataloader(train=True, batch_size=32, num_workers=0)
+
+            # A validation set built from the held-out slice. Without one,
+            # `reduce_on_plateau_patience` could never fire - Lightning warns
+            # that val_loss is unavailable and skips the schedule - and there
+            # was nothing to stop training on. The encoder needs history before
+            # the first scored bar, so the validation frame reaches back seq_len
+            # bars, all of them still inside the training window.
+            val_loader = None
+            val_ds = None
+            if len(cal_idx) >= MIN_EARLY_STOPPING_SAMPLES:
+                lo = max(0, min(cal_idx) - self.seq_len)
+                val_bars = [k for k in range(lo, max(cal_idx) + 1) if y_dir[k] >= 0]
+                if len(val_bars) >= MIN_EARLY_STOPPING_SAMPLES + self.seq_len:
+                    val_ds = TimeSeriesDataSet.from_dataset(
+                        ds, frame(val_bars), predict=False, stop_randomization=True
+                    )
+                    val_loader = val_ds.to_dataloader(train=False, batch_size=64, num_workers=0)
+
+            self.reseed(horizon, month)
+            tft = self.lib["TemporalFusionTransformer"].from_dataset(
+                ds,
+                learning_rate=self.learning_rate,
+                hidden_size=self.hidden_size,
+                attention_head_size=self.attention_head_size,
+                dropout=0.1,
+                hidden_continuous_size=16,
+                loss=self.lib["CrossEntropy"](),
+                log_interval=-1,
+                reduce_on_plateau_patience=2,
+            )
+
+            # The model is used immediately and discarded, so neither a logger
+            # nor a checkpoint is wanted. Left on, Lightning writes one
+            # lightning_logs/version_N/ and one .ckpt per Trainer - a full run
+            # once left ~18k directories and 260 MB of dead artifacts.
+            trainer_kwargs: dict[str, Any] = dict(
+                max_epochs=self.epoch_budget[horizon],
+                enable_progress_bar=False,
+                enable_model_summary=False,
+                enable_checkpointing=False,
+                logger=False,
+                accelerator="cpu",
+                default_root_dir=str(self.settings.meta_dir / "lightning"),
+            )
+            if self.settings.deterministic:
+                trainer_kwargs["deterministic"] = True
+            if val_loader is not None:
+                trainer_kwargs["callbacks"] = [
+                    _calibrated_val_loss_callback(val_ds),
+                    self.lib["EarlyStopping"](
+                        monitor=CALIBRATED_VAL_METRIC,
+                        patience=EARLY_STOPPING_PATIENCE,
+                        mode="min",
+                        # The metric is absent when the callback could not score
+                        # the slice; run the full budget then rather than abort.
+                        strict=False,
+                    ),
+                ]
+            trainer = self.lib["Trainer"](**trainer_kwargs)
+            trainer.fit(tft, train_dataloaders=loader, val_dataloaders=val_loader)
+            # After `fit`, current_epoch is the count that ran: Lightning
+            # increments it past the last completed epoch, and an early stop
+            # leaves it at the epoch the patience expired on.
+            self.epochs_used[horizon].append(int(trainer.current_epoch))
+            self.datasets[horizon] = ds
+            self.calibrators[horizon] = _fit_tft_calibrator(
+                tft,
+                ds,
+                TimeSeriesDataSet,
+                X_norm=normalised,
+                y_dir=y_dir,
+                feature_cols=self.feature_cols,
+                symbol=self.symbol,
+                bar_indices=cal_idx,
+                seq_len=self.seq_len,
+                forward_steps=forward_steps,
+                trainer_kwargs=self.inference_kwargs,
+            )
+            self.depths[horizon] = empirical_depth(
+                y_dir[train_start:train_end],
+                self.labels.depth[horizon][train_start:train_end],
+                self.depth_labels,
+            )
+            return tft
+        except Exception as e:
+            self.failures.record("training", horizon, str(month), e)
+            return None
+
+    def after_fit_month(self, plan: RunPlan, month: Month, bars: list[int]) -> None:
+        """One batched pass per horizon for the whole month.
+
+        Rebuilding a dataset and dataloader for every single bar, not the model,
+        is what used to make a run take ~1.5 h.
+        """
+        month_bars = [b for b in bars if b >= self.seq_len]
+        for horizon in plan.horizons:
+            model = self.models.get(horizon.name)
+            dataset = self.datasets.get(horizon.name)
+            if model is None or dataset is None or self.normalised is None or not month_bars:
+                continue
+            try:
+                self.month_predictions[horizon.name] = _predict_month(
+                    model,
+                    dataset,
+                    self.lib["TimeSeriesDataSet"],
+                    X_norm=self.normalised,
+                    y_dir=self.labels.direction[horizon.name],
+                    feature_cols=self.feature_cols,
+                    symbol=self.symbol,
+                    bar_indices=month_bars,
+                    seq_len=self.seq_len,
+                    forward_steps=plan.steps[horizon.name],
+                    cutoff=bars[0],
+                    trainer_kwargs=self.inference_kwargs,
+                )
+            except Exception as e:
+                # This turns the whole month into untrained rows, so a bare
+                # message is not enough to tell a data problem from a library one.
+                self.failures.record(
+                    "inference", horizon.name, str(month), e, with_traceback=True
+                )
+                self.month_predictions[horizon.name] = {}
+
+    def probabilities(self, bar: int, horizon: str) -> tuple[float, ...] | None:
+        return self.month_predictions.get(horizon, {}).get(bar)
+
+
 def predict_tft(
     symbol: str,
     start: str,
@@ -349,44 +569,14 @@ def predict_tft(
     attention_head_size: int = 2,
     learning_rate: float = 1e-3,
 ) -> dict[str, Any]:
-    """
-    Train a Temporal Fusion Transformer every calendar month (rolling window)
+    """Train a Temporal Fusion Transformer every calendar month (rolling window)
     and produce per-bar JSONL predictions identical in format to ML/GRU models.
     """
     if settings is None:
         settings = get_settings()
 
-    horizon_specs = list(DEFAULT_HORIZONS)
-    selected = set(parse_horizons(horizons_selected))
     epoch_budget = resolve_epochs(max_epochs, parse_epoch_overrides(epochs_by_horizon))
-    window_overrides = parse_window_overrides(train_window_by_horizon)
-
-    # ── Seed & deterministic mode (research) ─────────────────────────────────
-    if settings.deterministic:
-        seed = settings.seed if settings.seed is not None else 42
-        np.random.seed(seed)
-        import random
-
-        random.seed(seed)
-        try:
-            import torch
-
-            torch.manual_seed(seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed(seed)
-                torch.cuda.manual_seed_all(seed)
-                torch.backends.cudnn.deterministic = True
-                torch.backends.cudnn.benchmark = False
-            torch.use_deterministic_algorithms(True)
-        except ImportError:
-            pass
-        print(f"[research] Deterministic mode ON (seed={seed})")
-    elif settings.seed is not None:
-        np.random.seed(settings.seed)
-        import random
-
-        random.seed(settings.seed)
-        print(f"[research] Seed set to {settings.seed} (non-deterministic CUDA)")
+    seed_run(settings, torch_seed=True)
 
     # Suppress noisy upstream warnings
     warnings.filterwarnings("ignore", category=UserWarning)
@@ -394,7 +584,7 @@ def predict_tft(
 
     # Applied to the Trainer that `predict` creates for itself; without it that
     # one logs to `lightning_logs/` in whatever directory the CLI was run from.
-    inference_trainer_kwargs: dict[str, Any] = {
+    inference_kwargs: dict[str, Any] = {
         "logger": False,
         "enable_checkpointing": False,
         "enable_progress_bar": False,
@@ -403,47 +593,25 @@ def predict_tft(
         "default_root_dir": str(settings.meta_dir / "lightning"),
     }
 
-    # ── 1. Load features ──────────────────────────────────────────────────────
-    feat_path = get_features_parquet_path(symbol, interval, settings=settings)
-    if not feat_path.exists():
-        return {"error": f"No features parquet for {symbol}. Run: features build", "symbol": symbol}
+    loaded = load_sequence(symbol, interval, settings)
+    if isinstance(loaded, dict):
+        return loaded
+    frame, feature_cols = loaded
 
-    df_pl = pl.read_parquet(feat_path, hive_partitioning=False).sort("open_time")
-    if df_pl.is_empty():
-        return {"error": "Empty features DataFrame", "symbol": symbol}
-
-    df_pl = df_pl.with_columns(pl.col("open_time").dt.date().alias("_date"))
-    # An include list, not an exclude list. The old form took every column in the
-    # parquet bar a handful of names, which fed the model raw price levels — and
-    # would have adopted each new relative column *alongside* its absolute twin.
-    feature_cols = training_features(df_pl.columns)
-
-    open_times = df_pl["open_time"].to_list()
-    dates = df_pl["_date"].to_list()
-    closes = df_pl["close"].to_list()
-    X_raw = df_pl.select(feature_cols).to_numpy().astype(np.float32)
-    n = len(df_pl)
-
-    start_dt = parse_date(start).date()
-    end_dt = parse_date(end).date()
-
-    # After the load, not before: the window a horizon should get depends on how
-    # much history there is to divide between training it and scoring it.
-    windows = resolve_train_windows(
-        train_window_days, interval, horizon_specs, window_overrides, history_bars=n
-    )
-    steps_by_horizon = windows.forward_steps
-    scored_bars = count_scored_bars(dates, start_dt, end_dt, windows)
-    warn_low_power(windows, scored_bars)
-
-    # ── 2. Pre-compute forward labels ─────────────────────────────────────────
     depth_bins, depth_labels = parse_depth_bins(DEFAULT_DEPTH_BINS_STR)
-    labels = forward_labels(
-        closes, {h.name: steps_by_horizon[h.name] for h in horizon_specs}, depth_bins
+    plan = plan_run(
+        symbol,
+        interval,
+        start,
+        end,
+        open_times=frame["open_time"].to_list(),
+        dates=frame["_date"].to_list(),
+        depth_labels=depth_labels,
+        train_window_days=train_window_days,
+        train_window_by_horizon=train_window_by_horizon,
+        horizons_selected=horizons_selected,
     )
-    y_dir_all, y_depth_all = labels.direction, labels.depth
 
-    # ── 3. Rolling-month train + inference ───────────────────────────────────
     try:
         import lightning as L
         from lightning.pytorch.callbacks import EarlyStopping
@@ -456,333 +624,26 @@ def predict_tft(
             "symbol": symbol,
         }
 
-    predictions: list[dict[str, Any]] = []
-    untrained_counts: dict[str, int] = {h.name: 0 for h in horizon_specs}
-    failures = WindowFailures()
-    # Epochs each horizon actually trained for, per retraining window; see
-    # `summarise_epochs`. `--max-epochs` is a ceiling, so this is a result.
-    epochs_used: dict[str, list[int]] = {h.name: [] for h in horizon_specs}
-    current_train_month = None
-    tft_model: dict[str, Any] = {}
-    dataset_cache: dict[str, Any] = {}
-    calibrator_cache: dict[str, TemperatureCalibrator] = {}
-    depth_cache: dict[str, dict[str, dict[str, float]]] = {}
-    # bar index -> one probability per direction class, filled once per month
-    month_predictions: dict[str, dict[int, tuple[float, float, float]]] = {}
-    X_norm_all: np.ndarray | None = None
-
-    # Bars to predict, grouped by the month whose model will serve them.
-    bars_by_month: dict[tuple[int, int], list[int]] = {}
-    for idx in range(n):
-        if start_dt <= dates[idx] <= end_dt:
-            bars_by_month.setdefault((dates[idx].year, dates[idx].month), []).append(idx)
-
-    for i in range(n):
-        row_date = dates[i]
-        if row_date < start_dt or row_date > end_dt:
-            continue
-
-        month_key = (row_date.year, row_date.month)
-
-        # ── Train once per calendar month ─────────────────────────────────
-        if month_key != current_train_month:
-            current_train_month = month_key
-            tft_model = {}
-            dataset_cache = {}
-            depth_cache = {}
-
-            # Normalise on past rows only; stats never see future bars.
-            # The widest window in use, because normalisation is fitted once
-            # per bar and shared by every horizon. Still causal: it reads only
-            # bars strictly before the one being predicted.
-            X_tr = X_raw[max(0, i - windows.widest_window_steps) : i]
-            if X_tr.shape[0] == 0:
-                # No history behind this bar — see `gru._robust_normalise`. The
-                # statistics are undefined and there is nothing to train on, so
-                # every horizon falls through to the untrained payload rather
-                # than the run failing inside numpy.
-                tft_model = dict.fromkeys(h.name for h in horizon_specs)
-                dataset_cache, depth_cache = {}, {}
-                continue
-            X_safe = np.where(np.isfinite(X_tr), X_tr, 0.0)
-            med = np.median(X_safe, axis=0)
-            iqr_arr = np.percentile(X_safe, 75, axis=0) - np.percentile(X_safe, 25, axis=0)
-            iqr_arr[iqr_arr == 0] = 1.0
-            X_norm_all = _robust_normalize(X_raw, med, iqr_arr)
-
-            for h in horizon_specs:
-                h_name = h.name
-                if h_name not in selected:
-                    tft_model[h_name] = None
-                    continue
-                forward_steps = steps_by_horizon[h_name]
-                y_dir = y_dir_all[h_name]
-                train_start, train_end = windows.bounds(i, h_name)
-                # Build pandas dataframe for TimeSeriesDataSet
-                valid_idx = [k for k in range(train_start, train_end) if y_dir[k] >= 0]
-                if len(valid_idx) < seq_len + 10 or len(set(y_dir[valid_idx])) < 2:
-                    tft_model[h_name] = None
-                    continue
-
-                # Hold out the newest trainable bars to calibrate on. They sit
-                # inside `training_bounds`, so their labels are realised and
-                # invariant 6 is untouched; the model simply never fits them.
-                split, _ = calibration_split(0, len(valid_idx))
-                window_labels = [int(y_dir[k]) for k in valid_idx]
-                if len(set(window_labels[:split])) < 2:
-                    # Same rescue as the GRU: a single-class fit half is
-                    # unlearnable, but a nearby split usually is not.
-                    alternative = usable_split(window_labels, split)
-                    split = len(valid_idx) if alternative is None else alternative
-                fit_idx = valid_idx[:split]
-                cal_idx = valid_idx[split:]
-                if len(fit_idx) < seq_len + 10 or len(set(y_dir[fit_idx])) < 2:
-                    fit_idx, cal_idx = valid_idx, []
-
-                def _frame(bars: list[int]) -> pd.DataFrame:
-                    built = []
-                    for k in bars:
-                        row = {
-                            "time_idx": k,
-                            "group": symbol,
-                            "target": IDX_TO_DIR[int(y_dir[k])],
-                        }
-                        for fi, fc in enumerate(feature_cols):
-                            row[fc] = float(X_norm_all[k, fi])
-                        built.append(row)
-                    return pd.DataFrame(built)
-
-                df_pd = _frame(fit_idx)
-
-                max_enc = min(seq_len, len(df_pd) - seq_len)
-                if max_enc < 5:
-                    tft_model[h_name] = None
-                    continue
-
-                try:
-                    ds = TimeSeriesDataSet(
-                        df_pd,
-                        time_idx="time_idx",
-                        target="target",
-                        group_ids=["group"],
-                        min_encoder_length=max_enc // 2,
-                        max_encoder_length=max_enc,
-                        min_prediction_length=1,
-                        max_prediction_length=1,
-                        time_varying_unknown_reals=feature_cols,
-                        target_normalizer=NaNLabelEncoder(add_nan=True),
-                        add_relative_time_idx=True,
-                        add_target_scales=False,
-                        add_encoder_length=True,
-                    )
-
-                    loader = ds.to_dataloader(train=True, batch_size=32, num_workers=0)
-
-                    # A validation set built from the held-out slice. Without
-                    # one, `reduce_on_plateau_patience` above could never fire —
-                    # Lightning warns that val_loss is unavailable and skips the
-                    # schedule — and there was nothing to stop training on.
-                    # The encoder needs history before the first scored bar,
-                    # so the validation frame reaches back seq_len bars — all
-                    # of them still inside the training window.
-                    val_loader = None
-                    if len(cal_idx) >= MIN_EARLY_STOPPING_SAMPLES:
-                        lo = max(0, min(cal_idx) - seq_len)
-                        val_bars = [k for k in range(lo, max(cal_idx) + 1) if y_dir[k] >= 0]
-                        if len(val_bars) >= MIN_EARLY_STOPPING_SAMPLES + seq_len:
-                            val_ds = TimeSeriesDataSet.from_dataset(
-                                ds, _frame(val_bars), predict=False, stop_randomization=True
-                            )
-                            val_loader = val_ds.to_dataloader(
-                                train=False, batch_size=64, num_workers=0
-                            )
-
-                    # Reseed from this window's own identity. Seeding once before
-                    # the walk-forward loop left every model downstream of every
-                    # other, so raising one horizon's epoch ceiling retrained the
-                    # rest — see `window_seed`.
-                    if settings.deterministic or settings.seed is not None:
-                        import torch as _torch
-
-                        base = settings.seed if settings.seed is not None else 42
-                        _torch.manual_seed(window_seed(base, "tft", h_name, *month_key, symbol=symbol))
-
-                    tft = TemporalFusionTransformer.from_dataset(
-                        ds,
-                        learning_rate=learning_rate,
-                        hidden_size=hidden_size,
-                        attention_head_size=attention_head_size,
-                        dropout=0.1,
-                        hidden_continuous_size=16,
-                        loss=CrossEntropy(),
-                        log_interval=-1,
-                        reduce_on_plateau_patience=2,
-                    )
-
-                    # The model is used immediately and discarded, so neither a
-                    # logger nor a checkpoint is wanted. Left on, Lightning
-                    # writes one lightning_logs/version_N/ and one .ckpt per
-                    # Trainer — a full run once left ~18k directories and
-                    # 260 MB of dead artifacts in the repo root.
-                    trainer_kwargs: dict[str, Any] = dict(
-                        max_epochs=epoch_budget[h_name],
-                        enable_progress_bar=False,
-                        enable_model_summary=False,
-                        enable_checkpointing=False,
-                        logger=False,
-                        accelerator="cpu",
-                        default_root_dir=str(settings.meta_dir / "lightning"),
-                    )
-                    if settings.deterministic:
-                        trainer_kwargs["deterministic"] = True
-                    if val_loader is not None:
-                        trainer_kwargs["callbacks"] = [
-                            _calibrated_val_loss_callback(val_ds),
-                            EarlyStopping(
-                                monitor=CALIBRATED_VAL_METRIC,
-                                patience=EARLY_STOPPING_PATIENCE,
-                                mode="min",
-                                # The metric is absent when the callback could
-                                # not score the slice; run the full budget then
-                                # rather than abort the window.
-                                strict=False,
-                            ),
-                        ]
-                    trainer = L.Trainer(**trainer_kwargs)
-                    trainer.fit(tft, train_dataloaders=loader, val_dataloaders=val_loader)
-                    # After `fit`, current_epoch is the count that ran: Lightning
-                    # increments it past the last completed epoch, and an early
-                    # stop leaves it at the epoch the patience expired on.
-                    epochs_used[h_name].append(int(trainer.current_epoch))
-                    tft_model[h_name] = tft
-                    dataset_cache[h_name] = ds
-                    calibrator_cache[h_name] = _fit_tft_calibrator(
-                        tft,
-                        ds,
-                        TimeSeriesDataSet,
-                        X_norm=X_norm_all,
-                        y_dir=y_dir,
-                        feature_cols=feature_cols,
-                        symbol=symbol,
-                        bar_indices=cal_idx,
-                        seq_len=seq_len,
-                        forward_steps=forward_steps,
-                        trainer_kwargs=inference_trainer_kwargs,
-                    )
-                    depth_cache[h_name] = _empirical_depth(
-                        y_dir_all[h_name][train_start:train_end],
-                        y_depth_all[h_name][train_start:train_end],
-                        depth_labels,
-                    )
-                except Exception as e:
-                    failures.record("training", h_name, str(current_train_month), e)
-                    tft_model[h_name] = None
-
-            # One batched pass per horizon for the whole month, instead of
-            # rebuilding a dataset and dataloader for every single bar.
-            month_predictions = {}
-            month_bars = [b for b in bars_by_month.get(month_key, []) if b >= seq_len]
-            for h in horizon_specs:
-                model = tft_model.get(h.name)
-                ds_ref = dataset_cache.get(h.name)
-                if model is None or ds_ref is None or X_norm_all is None or not month_bars:
-                    continue
-                try:
-                    month_predictions[h.name] = _predict_month(
-                        model,
-                        ds_ref,
-                        TimeSeriesDataSet,
-                        X_norm=X_norm_all,
-                        y_dir=y_dir_all[h.name],
-                        feature_cols=feature_cols,
-                        symbol=symbol,
-                        bar_indices=month_bars,
-                        seq_len=seq_len,
-                        forward_steps=steps_by_horizon[h.name],
-                        cutoff=i,
-                        trainer_kwargs=inference_trainer_kwargs,
-                    )
-                except Exception as e:
-                    # This path turns the whole month into untrained rows, so a
-                    # bare message is not enough to tell a data problem from a
-                    # library one.
-                    failures.record("inference", h.name, str(month_key), e, with_traceback=True)
-                    month_predictions[h.name] = {}
-
-        # ── Inference: read the month's batched result ────────────────────
-        out: dict[str, Any] = {
-            "open_time": open_times[i].isoformat(),
-            "date": row_date.isoformat(),
-            "symbol": symbol,
-        }
-
-        for h in horizon_specs:
-            probs = month_predictions.get(h.name, {}).get(i)
-            if probs is None:
-                out[h.name] = untrained_horizon_payload(depth_labels)
-                untrained_counts[h.name] += 1
-                continue
-
-            probs = calibrator_cache.get(h.name, TemperatureCalibrator(1.0)).apply(probs)
-            depths = depth_cache.get(h.name, {})
-            out[h.name] = {
-                **{f"P_{IDX_TO_DIR[k]}": p for k, p in enumerate(probs)},
-                "depth_long_bins": depths.get("long", _uniform_depth(depth_labels)),
-                "depth_short_bins": depths.get("short", _uniform_depth(depth_labels)),
-                "trained": True,
-            }
-
-        predictions.append(out)
-
-    if not predictions:
-        return {"error": "No predictions generated for the requested date range", "symbol": symbol}
-
-
-    run_dir = write_versioned_predictions(
-        predictions, symbol, "tft", settings, interval=interval
+    model = TFTForecaster(
+        feature_cols=feature_cols,
+        forecasting={
+            "Trainer": L.Trainer,
+            "EarlyStopping": EarlyStopping,
+            "TemporalFusionTransformer": TemporalFusionTransformer,
+            "TimeSeriesDataSet": TimeSeriesDataSet,
+            "NaNLabelEncoder": NaNLabelEncoder,
+            "CrossEntropy": CrossEntropy,
+        },
+        hidden_size=hidden_size,
+        attention_head_size=attention_head_size,
+        learning_rate=learning_rate,
+        inference_kwargs=inference_kwargs,
+        settings=settings,
+        symbol=symbol,
+        features=frame.select(feature_cols).to_numpy().astype(np.float32),
+        labels=forward_labels(frame["close"].to_list(), plan.steps, depth_bins),
+        depth_labels=depth_labels,
+        seq_len=seq_len,
+        epoch_budget=epoch_budget,
     )
-
-    result = {
-        "symbol": symbol,
-        "start": start,
-        "end": end,
-        "interval": interval,
-        "predictions": len(predictions),
-        "untrained_horizons": untrained_counts,
-        "training_windows": windows.describe(scored_bars),
-        "epochs_used": summarise_epochs(epochs_used, epoch_budget),
-        "failed_windows": failures.summary(),
-        "run_dir": str(run_dir),
-    }
-    write_run_summary(run_dir, result, settings)
-    failures.warn_if_any()
-    return result
-
-
-def _uniform_depth(labels: list[str]) -> dict[str, float]:
-    return {label: 1.0 / len(labels) for label in labels}
-
-
-def _empirical_depth(
-    directions: np.ndarray,
-    depths: np.ndarray,
-    labels: list[str],
-) -> dict[str, dict[str, float]]:
-    """Realised depth-bin distribution per direction over a training window."""
-    counts = {"long": [0] * len(labels), "short": [0] * len(labels)}
-    for direction_idx, depth_idx in zip(directions, depths, strict=True):
-        if depth_idx < 0 or direction_idx < 0:
-            continue
-        direction = IDX_TO_DIR.get(int(direction_idx))
-        if direction in counts:
-            counts[direction][int(depth_idx)] += 1
-
-    out: dict[str, dict[str, float]] = {}
-    for direction, bucket in counts.items():
-        total = sum(bucket)
-        out[direction] = (
-            _uniform_depth(labels)
-            if total == 0
-            else {label: c / total for label, c in zip(labels, bucket, strict=True)}
-        )
-    return out
+    return run(model, plan, settings)

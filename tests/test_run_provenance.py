@@ -67,20 +67,24 @@ def test_the_caller_keeps_the_last_word(tmp_path: Path) -> None:
 
 
 def test_every_predictor_stamps_its_run(tmp_path: Path) -> None:
-    """The stamp is only worth anything if no predictor bypasses it."""
+    """The stamp is only worth anything if no predictor bypasses it.
+
+    Predictions reach disk in one place, `walk_forward.finish_run`, which writes
+    the summary with the settings beside them; every predictor ends in `run`.
+    """
     import inspect
 
-    from prosper.predict import baseline, gru, ml, tft, xgboost_model
+    from prosper.predict import baseline, gru, ml, tft, walk_forward, xgboost_model
 
+    finish = inspect.getsource(walk_forward.finish_run)
+    assert "write_run_summary(run_dir, result, settings)" in finish
     for module in (baseline, ml, xgboost_model, gru, tft):
         source = inspect.getsource(module)
-        assert "write_run_summary(" in source, module.__name__
-        call = source[source.index("write_run_summary(", source.index("def predict")) :]
-        call = call[: call.index(")") + 1]
-        assert "settings" in call, (
-            f"{module.__name__} writes a summary without its settings, so the run "
-            "would not record the seed that produced it"
+        assert "write_versioned_predictions" not in source, (
+            f"{module.__name__} writes predictions itself, around the summary"
         )
+        entry = next(name for name in dir(module) if name.startswith("predict_"))
+        assert "return run(" in inspect.getsource(getattr(module, entry)), module.__name__
 
 
 def test_the_environment_that_produced_a_run_is_recorded(tmp_path: Path) -> None:
