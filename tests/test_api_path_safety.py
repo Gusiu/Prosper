@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 
 import pytest
 from fastapi import HTTPException
+
 from prosper.api.commands import build_eval_command, build_train_command
 from prosper.api.models import EvalRequest, TrainRequest
 from prosper.api.routes.runs import delete_ai_model

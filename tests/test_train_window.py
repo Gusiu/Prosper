@@ -20,6 +20,7 @@ import inspect
 from pathlib import Path
 
 import pytest
+
 from prosper.domain import DEFAULT_HORIZONS, MIN_INDEPENDENT_OBSERVATIONS, effective_samples
 from prosper.predict.window import (
     MIN_TRAIN_SAMPLES,

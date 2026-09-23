@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+
 from prosper.domain import DIRECTION_CLASSES
 from prosper.predict.tft import _class_columns, _logits_to_probs
 

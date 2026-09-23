@@ -64,7 +64,7 @@ pytorch-lightning==2.6.1
 PyYAML==6.0.3
 requests==2.32.5
 rich==13.9.4
-ruff==0.1.15
+ruff==0.16.8
 scikit-base==0.13.1
 scikit-learn==1.8.0
 scipy==1.17.1

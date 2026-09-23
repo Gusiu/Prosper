@@ -1,7 +1,8 @@
 """CLI exit-code behavior for pipeline commands."""
 
-from prosper.cli import app
 from typer.testing import CliRunner
+
+from prosper.cli import app
 
 runner = CliRunner()
 

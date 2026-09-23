@@ -18,6 +18,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
+
 from prosper.config import Settings
 from prosper.domain import HORIZON_NAMES
 from prosper.planner.windows import (

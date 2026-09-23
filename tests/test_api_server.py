@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import polars as pl
 import pytest
+
 from prosper.api.server import (
     AggregateRequest,
     PipelineRequest,

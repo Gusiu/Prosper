@@ -7,6 +7,7 @@ medium and long horizons at all.
 """
 
 import pytest
+
 from prosper.domain import DEFAULT_HORIZONS, DIRECTION_CLASSES, HorizonSpec, days_to_steps
 from prosper.predict.window import (
     MIN_TRAIN_SAMPLES,

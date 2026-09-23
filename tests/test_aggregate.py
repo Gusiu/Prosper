@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
+
 from prosper.config import Settings
 from prosper.pipeline.aggregate import aggregate, aggregate_klines, normalize_target_intervals
 from prosper.storage.layout import get_parquet_file_path

@@ -13,6 +13,7 @@ the run.
 from __future__ import annotations
 
 import pytest
+
 from prosper.api.commands import build_train_command
 from prosper.api.models import TrainRequest
 

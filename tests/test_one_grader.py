@@ -17,6 +17,7 @@ import ast
 from pathlib import Path
 
 import pytest
+
 from prosper.planner.windows import RECOMMENDATIONS, STATIC_RISK_GATES, SequenceGrader
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "prosper"

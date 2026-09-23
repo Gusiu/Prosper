@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 
 import pytest
+
 from prosper.eval.backtest import (
     EXPOSURE_KEYS,
     EXPOSURE_POLICY,
@@ -120,6 +121,7 @@ def test_the_api_forwards_every_one_of_them() -> None:
 
 def test_the_cli_offers_the_same_set() -> None:
     import typer
+
     from prosper.cli import app
 
     command = typer.main.get_command(app).commands["eval"].commands["backtest"]  # type: ignore[attr-defined]

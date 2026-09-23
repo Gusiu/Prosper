@@ -15,6 +15,7 @@ a quarter more than doubles the evidence for free.
 from __future__ import annotations
 
 import pytest
+
 from prosper.domain import (
     DEFAULT_HORIZONS,
     DEFAULT_TRADED_HORIZON,
@@ -106,6 +107,7 @@ def test_a_run_with_unknown_horizons_fails_loudly(tmp_path) -> None:
     from datetime import UTC, datetime
 
     import polars as pl
+
     from prosper.config import Settings
     from prosper.eval.predictions import evaluate_predictions
     from prosper.storage.layout import get_parquet_file_path

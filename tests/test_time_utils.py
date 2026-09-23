@@ -3,6 +3,7 @@
 from datetime import UTC
 
 import pytest
+
 from prosper.utils.time import (
     normalize_timestamp_ms,
     parse_date,

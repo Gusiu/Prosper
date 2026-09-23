@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
+
 from prosper.qa.checks import (
     check_duplicates,
     check_gaps,

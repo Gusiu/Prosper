@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import polars as pl
 import pytest
+
 from prosper.config import Settings
 from prosper.domain import DEFAULT_TRADED_HORIZON, HORIZON_NAMES
 from prosper.eval.backtest import run_backtest

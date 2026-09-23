@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 
 import polars as pl
 import pytest
+
 from prosper.config import Settings
 from prosper.domain import HORIZON_NAMES, direction_from_return
 from prosper.eval.stability import (

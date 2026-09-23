@@ -9,6 +9,7 @@ the signals it was most confident about and held ~90% of medium and long bars.
 from __future__ import annotations
 
 import pytest
+
 from prosper.planner.windows import calculate_edge, calculate_risk_metric, map_to_recommendation
 
 # A confident forecast of a large move, in one direction only.

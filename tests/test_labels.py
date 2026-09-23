@@ -1,6 +1,7 @@
 """Tests for label building."""
 
 import pytest
+
 from prosper.domain import assign_depth_bin, parse_depth_bins
 
 

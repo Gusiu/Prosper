@@ -23,6 +23,7 @@ So the report now carries three more comparisons, ordered weakest to strongest:
 from __future__ import annotations
 
 import pytest
+
 from prosper.eval.backtest import (
     MOMENTUM_LOOKBACK_BARS,
     _naive_momentum,

@@ -10,6 +10,7 @@ which it did. Training the baseline from the UI failed with "No such option:
 from __future__ import annotations
 
 import typer
+
 from prosper.api.commands import build_train_command
 from prosper.api.models import ResearchFlags, TrainRequest
 from prosper.cli import app

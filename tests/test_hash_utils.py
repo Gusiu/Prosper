@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+
 from prosper.utils.hash import read_checksum_file, sha256_file, verify_checksum
 
 

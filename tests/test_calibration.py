@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+
 from prosper.domain import DIRECTION_CLASSES
 from prosper.predict.calibration import (
     CALIBRATION_FRACTION,

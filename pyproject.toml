@@ -28,7 +28,7 @@ xgboost = "~1.7.6"
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
 pytest-cov = "^4.1.0"
-ruff = "^0.1.0"
+ruff = "^0.16.8"
 mypy = "^1.7.0"
 types-PyYAML = "^6.0"
 types-requests = "^2.32"
@@ -53,6 +53,12 @@ target-version = "py312"
 select = ["E", "F", "I", "N", "W", "UP"]
 ignore = ["E501", "N803", "N806", "N812"]
 
+[tool.ruff.lint.isort]
+# Stated rather than inferred: ruff 0.1 guessed `prosper` was third-party and
+# later versions guess it is not, so the same tree was clean under one and had
+# fifty import errors under the other.
+known-first-party = ["prosper"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
@@ -69,6 +75,8 @@ files = ["src/prosper"]
 [[tool.mypy.overrides]]
 module = [
     "yaml",
+    "pandas",
+    "pandas.*",
     "pytorch_forecasting.*",
     "lightning.*",
     "xgboost.*",

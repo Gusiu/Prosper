@@ -14,6 +14,8 @@ import json
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
+
 from prosper.domain import HORIZON_NAMES
 from prosper.predict.defaults import (
     EARLY_STOPPING_PATIENCE,
@@ -22,7 +24,6 @@ from prosper.predict.defaults import (
     resolve_epochs,
 )
 from prosper.predict.gru import SequenceDataset, _train_gru
-from torch.utils.data import DataLoader
 
 
 def _fixture(n: int = 400, features: int = 4, seed: int = 0):

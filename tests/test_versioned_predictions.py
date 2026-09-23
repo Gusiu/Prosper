@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+
 from prosper.api.server import (
     EvalRequest,
     TrainRequest,

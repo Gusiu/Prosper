@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 import polars as pl
 import pytest
+
 from prosper.config import Settings
 from prosper.domain import TRAINING_FEATURE_COLUMNS, training_features
 from prosper.features.build import build_features

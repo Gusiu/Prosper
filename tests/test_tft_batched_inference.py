@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 import numpy as np
 import polars as pl
 import pytest
+
 from prosper.config import Settings
 from prosper.domain import DIR_TO_IDX, DIRECTION_CLASSES, HORIZON_NAMES
 from prosper.features.build import build_features

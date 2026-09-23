@@ -14,6 +14,7 @@ month or a year.
 from __future__ import annotations
 
 import pytest
+
 from prosper.config import Settings
 from prosper.planner.windows import (
     clears_cost,

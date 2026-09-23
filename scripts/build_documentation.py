@@ -40,6 +40,7 @@ from documentation_sources import (  # noqa: E402
     settings_reference,
     test_inventory,
 )
+
 from prosper.domain import (  # noqa: E402
     DEFAULT_DEPTH_BINS_STR,
     DEFAULT_HORIZONS,

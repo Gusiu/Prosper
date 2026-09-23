@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
+
 from prosper.config import get_settings
 from prosper.storage.layout import get_parquet_file_path
 from prosper.storage.parquet import save_parquet

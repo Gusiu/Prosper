@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
+
 from prosper.config import Settings
 from prosper.domain import HORIZON_NAMES
 from prosper.inventory import DataManager

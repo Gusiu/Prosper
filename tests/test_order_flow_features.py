@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import polars as pl
 import pytest
+
 from prosper.config import Settings
 from prosper.features.build import build_features
 from prosper.pipeline.aggregate import aggregate_klines

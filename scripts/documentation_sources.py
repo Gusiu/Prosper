@@ -329,6 +329,7 @@ class SymbolStats:
 def dataset_summary(interval: str = "1d") -> list[SymbolStats]:
     """Extent of every symbol in the lake, measured rather than declared."""
     import polars as pl
+
     from prosper.config import get_settings
 
     settings = get_settings()

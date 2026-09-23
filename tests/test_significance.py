@@ -18,6 +18,7 @@ import math
 
 import numpy as np
 import pytest
+
 from prosper.domain import DEFAULT_HORIZONS
 from prosper.eval.significance import (
     MIN_BLOCKS,

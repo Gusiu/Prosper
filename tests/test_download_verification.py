@@ -12,6 +12,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
+
 from prosper.binance import public_data
 
 ARCHIVE = b"PK-fake-zip-bytes" * 64

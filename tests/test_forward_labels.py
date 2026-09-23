@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 import numpy as np
 import polars as pl
 import pytest
+
 from prosper.config import Settings
 from prosper.domain import (
     DEFAULT_DEPTH_BINS_STR,

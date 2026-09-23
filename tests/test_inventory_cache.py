@@ -13,6 +13,7 @@ import shutil
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
+
 from prosper.config import Settings
 from prosper.inventory import DataManager
 from prosper.storage.layout import get_parquet_file_path
