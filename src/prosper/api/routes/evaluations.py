@@ -7,7 +7,12 @@ from typing import Any
 import polars as pl
 from fastapi import APIRouter, HTTPException
 
-from prosper.api.commands import _is_valid_symbol
+from prosper.api.validation import (
+    require_interval,
+    require_model_type,
+    require_run_timestamp,
+    require_symbol,
+)
 from prosper.config import get_settings
 from prosper.eval.predictions import flatten_quality_row
 from prosper.storage.layout import parse_evaluation_folder, resolve_evaluation_run_dir
@@ -188,14 +193,15 @@ def get_ai_evaluation_detail(
     because every recommendation was serialised so the UI could render fifty.
     """
     settings = get_settings()
-    symbol = symbol.upper()
-    if not _is_valid_symbol(symbol):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+    symbol = require_symbol(symbol)
+    model_type = require_model_type(model_type)
+    interval = require_interval(interval)
+    timestamp = require_run_timestamp(timestamp)
     if limit < 1 or limit > 5000:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 5000")
 
     run_dir = resolve_evaluation_run_dir(
-        symbol, model_type.lower(), timestamp, settings=settings, interval=interval
+        symbol, model_type, timestamp, settings=settings, interval=interval
     )
     if not run_dir.exists():
         raise HTTPException(status_code=404, detail="Evaluation not found")
@@ -225,12 +231,13 @@ def get_ai_evaluation_flags(
 ) -> dict[str, Any]:
     """Distinct quality flags in a run, with counts, for the UI filter."""
     settings = get_settings()
-    symbol = symbol.upper()
-    if not _is_valid_symbol(symbol):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+    symbol = require_symbol(symbol)
+    model_type = require_model_type(model_type)
+    interval = require_interval(interval)
+    timestamp = require_run_timestamp(timestamp)
 
     run_dir = resolve_evaluation_run_dir(
-        symbol, model_type.lower(), timestamp, settings=settings, interval=interval
+        symbol, model_type, timestamp, settings=settings, interval=interval
     )
     parquet_path = run_dir / "predictions_quality.parquet"
     if not parquet_path.exists():

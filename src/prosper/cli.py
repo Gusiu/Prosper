@@ -1269,6 +1269,18 @@ def start_ui(
         )
         raise typer.Exit(1)
 
+    if host not in ("127.0.0.1", "localhost"):
+        # The app refuses Host headers that do not name this machine. Binding to
+        # every interface means the name a client uses cannot be known here, and
+        # the server is then reachable by anyone on the network anyway.
+        import os
+
+        os.environ["PROSPER_ALLOWED_HOSTS"] = "*" if host == "0.0.0.0" else host
+        console.print(
+            f"[yellow]Serving on {host}: the dashboard has no authentication and can "
+            "delete data. Only do this on a network you trust.[/yellow]"
+        )
+
     url = f"http://{host}:{port}"
     if open_browser:
         # Launching a browser is a property of this command, not of the ASGI

@@ -4,7 +4,12 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from prosper.api.commands import _is_valid_symbol
+from prosper.api.validation import (
+    require_interval,
+    require_model_type,
+    require_run_timestamp,
+    require_symbol,
+)
 from prosper.config import get_settings
 
 router = APIRouter()
@@ -26,9 +31,11 @@ def run_stability_api(
     whole-run aggregate hides by construction. Returns are not part of it —
     `/api/backtest` owns those.
     """
-    symbol = symbol.upper()
-    if not _is_valid_symbol(symbol):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+    symbol = require_symbol(symbol)
+    # Optional run identity: absent means "the latest run", present means a path.
+    model_type = require_model_type(model_type) if model_type else None
+    interval = require_interval(interval) if interval else None
+    timestamp = require_run_timestamp(timestamp) if timestamp else None
 
     # Imported lazily so the heavy evaluation stack stays out of app startup.
     from prosper.eval.stability import HORIZON_NAMES, eval_stability

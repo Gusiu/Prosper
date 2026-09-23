@@ -24,6 +24,12 @@ DIRECTION_CLASSES: list[str] = ["short", "long"]
 DIR_TO_IDX: dict[str, int] = {c: i for i, c in enumerate(DIRECTION_CLASSES)}
 IDX_TO_DIR: dict[int, str] = {i: c for i, c in enumerate(DIRECTION_CLASSES)}
 
+# ── Model types ──────────────────────────────────────────────────────────────
+# Every architecture the CLI can train. A run folder is named after one of
+# these, so the set doubles as the whitelist for anything that turns a model
+# name from a request into a path.
+MODEL_TYPES: tuple[str, ...] = ("baseline", "ml", "xgboost", "gru", "tft")
+
 # ── Interval arithmetic ──────────────────────────────────────────────────────
 INTERVAL_MINUTES: dict[str, int] = {
     "1m": 1,

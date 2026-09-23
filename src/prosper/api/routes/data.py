@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from prosper.api.commands import _is_valid_symbol
+from prosper.api.validation import require_interval, require_symbol
 from prosper.inventory import DataManager
 
 router = APIRouter()
@@ -37,9 +37,8 @@ def get_kline_chart_data(
     start: str | None = None,
     end: str | None = None,
 ) -> dict[str, Any]:
-    symbol = symbol.upper()
-    if not _is_valid_symbol(symbol):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+    symbol = require_symbol(symbol)
+    interval = require_interval(interval)
     if limit < 1 or limit > 5000:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 5000")
 
@@ -61,8 +60,6 @@ def get_kline_chart_data(
 
 @router.delete("/api/data/{symbol}")
 def delete_symbol_data(symbol: str):
-    symbol = symbol.upper()
-    if not _is_valid_symbol(symbol):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+    symbol = require_symbol(symbol)
     deleted_count = DataManager().delete_symbol_data(symbol)
     return {"status": "deleted", "paths_removed": deleted_count}

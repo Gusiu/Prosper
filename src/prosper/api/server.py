@@ -9,12 +9,13 @@ Names are re-exported below so `from prosper.api.server import ...` keeps
 working for tests and any existing caller.
 """
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from prosper.api.commands import (
     _is_valid_symbol,
@@ -92,13 +93,26 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Prosper Analysis Platform UI", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORS middleware, on purpose. The dashboard is served by this app, so every
+# request it makes is same-origin and needs no permission. The middleware that
+# used to sit here granted `allow_origins=["*"]` with every method, which let
+# any page open in the same browser send DELETE and POST requests to the lake:
+# remove a symbol's data, delete runs, queue training jobs.
+#
+# Same-origin is not enough on its own for a server on localhost: DNS rebinding
+# points an attacker's domain at 127.0.0.1, and the browser then treats that
+# page as same-origin with this app. Refusing any Host header that does not name
+# the machine closes it. `prosper ui --host` extends the list when it binds
+# elsewhere.
+LOOPBACK_HOSTS = ["127.0.0.1", "localhost"]
+
+
+def allowed_hosts() -> list[str]:
+    extra = os.environ.get("PROSPER_ALLOWED_HOSTS", "")
+    return [*LOOPBACK_HOSTS, *(host.strip() for host in extra.split(",") if host.strip())]
+
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts())
 
 for _router in ALL_ROUTERS:
     app.include_router(_router)

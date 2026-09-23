@@ -6,7 +6,13 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from prosper.api.commands import _is_valid_symbol
+from prosper.api.validation import (
+    require_inside,
+    require_interval,
+    require_model_type,
+    require_run_timestamp,
+    require_symbol,
+)
 from prosper.config import get_settings
 from prosper.storage.layout import (
     get_versioned_prediction_file,
@@ -68,8 +74,9 @@ def list_prediction_runs(
     Every downstream artifact (windows, stability, backtest) is keyed by one
     of these runs, so this is the canonical picker for the UI.
     """
-    if symbol and not _is_valid_symbol(symbol.upper()):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+    symbol = require_symbol(symbol) if symbol else None
+    model_type = require_model_type(model_type) if model_type else None
+    interval = require_interval(interval) if interval else None
     runs = list_runs(
         symbol=symbol, model_type=model_type, interval=interval, settings=get_settings()
     )
@@ -95,9 +102,10 @@ def get_ai_predictions(
     and the month narrowing is still the right way to page through a run.
     """
     settings = get_settings()
-    symbol = symbol.upper()
-    if not _is_valid_symbol(symbol):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+    symbol = require_symbol(symbol)
+    model_type = require_model_type(model_type)
+    interval = require_interval(interval)
+    timestamp = require_run_timestamp(timestamp)
 
     path = get_versioned_prediction_file(
         symbol, model_type, timestamp, settings=settings, interval=interval
@@ -147,9 +155,10 @@ def get_ai_prediction_months(
 ) -> dict[str, Any]:
     """Return the sorted list of ``YYYY-MM`` months present in a run."""
     settings = get_settings()
-    symbol = symbol.upper()
-    if not _is_valid_symbol(symbol):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+    symbol = require_symbol(symbol)
+    model_type = require_model_type(model_type)
+    interval = require_interval(interval)
+    timestamp = require_run_timestamp(timestamp)
 
     path = get_versioned_prediction_file(
         symbol, model_type, timestamp, settings=settings, interval=interval
@@ -181,9 +190,10 @@ def get_feature_importances(
     symbol: str, model_type: str, timestamp: str, interval: str = "1d"
 ):
     settings = get_settings()
-    symbol = symbol.upper()
-    if not _is_valid_symbol(symbol):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+    symbol = require_symbol(symbol)
+    model_type = require_model_type(model_type)
+    interval = require_interval(interval)
+    timestamp = require_run_timestamp(timestamp)
 
     p = (
         resolve_versioned_prediction_dir(
@@ -206,12 +216,13 @@ def delete_ai_model(
     symbol: str, model_type: str, timestamp: str, interval: str = "1d"
 ) -> dict[str, Any]:
     settings = get_settings()
-    symbol = symbol.upper()
-    if not _is_valid_symbol(symbol):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+    symbol = require_symbol(symbol)
+    model_type = require_model_type(model_type)
+    interval = require_interval(interval)
+    timestamp = require_run_timestamp(timestamp)
 
     run_dir = resolve_versioned_prediction_dir(
-        symbol, model_type.lower(), timestamp, settings=settings, interval=interval
+        symbol, model_type, timestamp, settings=settings, interval=interval
     )
     if not run_dir.exists():
         raise HTTPException(status_code=404, detail="Model run not found")
@@ -233,6 +244,7 @@ def delete_ai_model(
         if derived.is_dir():
             removed.append(derived)
 
+    removed = [require_inside(path, settings.reports_dir) for path in removed]
     try:
         for path in removed:
             shutil.rmtree(path)

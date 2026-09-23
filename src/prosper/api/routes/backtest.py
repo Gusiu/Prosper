@@ -4,7 +4,12 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from prosper.api.commands import _is_valid_symbol
+from prosper.api.validation import (
+    require_interval,
+    require_model_type,
+    require_run_timestamp,
+    require_symbol,
+)
 from prosper.config import get_settings
 
 router = APIRouter()
@@ -32,9 +37,11 @@ def run_backtest_api(
     The run identity is part of the response: a backtest number is meaningless
     unless you know which model produced the signals behind it.
     """
-    symbol = symbol.upper()
-    if not _is_valid_symbol(symbol):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+    symbol = require_symbol(symbol)
+    # Optional run identity: absent means "the latest run", present means a path.
+    model_type = require_model_type(model_type) if model_type else None
+    interval = require_interval(interval) if interval else None
+    timestamp = require_run_timestamp(timestamp) if timestamp else None
 
     settings = get_settings()
     # Import lazily to avoid pulling heavy ML/runtime deps during module import

@@ -273,12 +273,26 @@ def resolve_evaluation_run_dir(
 KNOWN_PREDICTION_INTERVALS = frozenset({"1m", "1h", "1d", "1w"})
 
 
+def _run_name_part(value: str, what: str) -> str:
+    """One piece of a run folder's name, refused if it could name another folder.
+
+    Every path to a run - its predictions, evaluation, backtest, the directory
+    the delete endpoint removes - is built from this name, so this is the one
+    place where a separator or a `..` can be stopped for all of them.
+    """
+    if not value or "/" in value or "\\" in value or ".." in value:
+        raise ValueError(f"unsafe {what} in a run folder name: {value!r}")
+    return value
+
+
 def versioned_prediction_folder_name(
     model_type: str, timestamp: str, interval: str | None = None
 ) -> str:
     """Build folder name: ``{model_type}_{interval}_{timestamp}`` or legacy ``{model_type}_{timestamp}``."""
+    model_type = _run_name_part(model_type, "model type")
+    timestamp = _run_name_part(timestamp, "timestamp")
     if interval:
-        return f"{model_type}_{interval}_{timestamp}"
+        return f"{model_type}_{_run_name_part(interval, 'interval')}_{timestamp}"
     return f"{model_type}_{timestamp}"
 
 

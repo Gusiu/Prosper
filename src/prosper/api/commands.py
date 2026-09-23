@@ -8,7 +8,6 @@ involves) stay where the data is.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from prosper.api.models import (
@@ -20,13 +19,53 @@ from prosper.api.models import (
     ResearchFlags,
     TrainRequest,
 )
+from prosper.api.validation import (
+    is_valid_interval,
+    is_valid_model_type,
+    is_valid_run_timestamp,
+    is_valid_symbol,
+)
 from prosper.predict.defaults import HORIZON_NAMES, POOLING_MODELS
 
-SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,30}$")
+# Kept under its old name: `prosper.api.server` re-exports it.
+_is_valid_symbol = is_valid_symbol
 
 
-def _is_valid_symbol(symbol: str) -> bool:
-    return bool(SYMBOL_RE.fullmatch(symbol))
+def _interval(value: str) -> str:
+    """An interval that becomes argv, and then a directory the CLI writes into."""
+    if not is_valid_interval(value):
+        raise ValueError(f"Invalid interval: {value}")
+    return value
+
+
+def _intervals(values: list[str]) -> list[str]:
+    return [_interval(value) for value in values]
+
+
+def _model_type(value: str) -> str:
+    normalised = value.lower()
+    if not is_valid_model_type(normalised):
+        raise ValueError(f"Invalid model type: {value}")
+    return normalised
+
+
+def _run_timestamp(value: str) -> str:
+    if not is_valid_run_timestamp(value):
+        raise ValueError(f"Invalid run timestamp: {value}")
+    return value
+
+
+def _number(params: dict[str, Any], key: str, kind: type) -> str:
+    """A numeric model parameter, rendered by us rather than by the caller.
+
+    The value lands in argv after a fixed flag, so it could not smuggle in a
+    flag of its own - but it could still arrive as any JSON type, and a string
+    that happens to parse later is not a number that was checked now.
+    """
+    try:
+        return str(kind(params[key]))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid {key}: {params[key]!r}") from exc
 
 
 def _build_research_flags(flags: ResearchFlags, command_type: str = "generic") -> list[str]:
@@ -71,63 +110,25 @@ def build_pipeline_command(req: PipelineRequest) -> list[list[str]]:
     commands.append(backfill_cmd)
 
     # 2. Aggregate (if intervals selected)
-    if req.intervals:
-        to_arg = ",".join(req.intervals)
-        agg_cmd = [
-            "python", "-m", "prosper.cli", "aggregate",
-            "--symbol", symbol,
-            "--from", "1m",
-            "--start", s_month,
-            "--end", e_month,
-            "--to", to_arg,
-            "--root", "./data",
-            *r_flags,
-        ]
-        commands.append(agg_cmd)
-
-        # 3. Features + Labels for all intervals
-        all_intervals = ["1m", *req.intervals]
-        for interval in all_intervals:
-            features_cmd = [
-                "python", "-m", "prosper.cli", "features", "build",
+    intervals = _intervals(req.intervals)
+    if intervals:
+        commands.append(
+            [
+                "python", "-m", "prosper.cli", "aggregate",
                 "--symbol", symbol,
-                "--base-interval", interval,
-                "--start", req.start,
-                "--end", req.end,
+                "--from", "1m",
+                "--start", s_month,
+                "--end", e_month,
+                "--to", ",".join(intervals),
                 "--root", "./data",
                 *r_flags,
             ]
-            commands.append(features_cmd)
+        )
 
-            labels_cmd = [
-                "python", "-m", "prosper.cli", "labels", "build",
-                "--symbol", symbol,
-                "--base-interval", interval,
-                "--root", "./data",
-                *r_flags,
-            ]
-            commands.append(labels_cmd)
-    else:
-        # Only 1m features + labels
-        features_cmd = [
-            "python", "-m", "prosper.cli", "features", "build",
-            "--symbol", symbol,
-            "--base-interval", "1m",
-            "--start", req.start,
-            "--end", req.end,
-            "--root", "./data",
-            *r_flags,
-        ]
-        commands.append(features_cmd)
-
-        labels_cmd = [
-            "python", "-m", "prosper.cli", "labels", "build",
-            "--symbol", symbol,
-            "--base-interval", "1m",
-            "--root", "./data",
-            *r_flags,
-        ]
-        commands.append(labels_cmd)
+    # 3. Features and labels for the base interval and everything aggregated.
+    commands.extend(
+        _features_and_labels_commands(symbol, ["1m", *intervals], req.start, req.end, r_flags)
+    )
 
     return commands
 
@@ -141,14 +142,14 @@ def build_train_command(req: TrainRequest) -> list[list[str]]:
         raise ValueError(f"Invalid symbol: {symbol}")
 
     r_flags = _build_research_flags(req.flags, "predict")
-    model_type = req.model_type.lower()
+    model_type = _model_type(req.model_type)
 
     cmd = [
         "python", "-m", "prosper.cli", "predict", model_type,
         "--symbol", symbol,
         "--start", req.start,
         "--end", req.end,
-        "--interval", req.interval,
+        "--interval", _interval(req.interval),
         "--root", "./data",
         *r_flags,
     ]
@@ -182,12 +183,12 @@ def build_train_command(req: TrainRequest) -> list[list[str]]:
             if pairs:
                 cmd.extend(["--epochs-per-horizon", pairs])
         if "seq_len" in req.params:
-            cmd.extend(["--seq-len", str(req.params["seq_len"])])
+            cmd.extend(["--seq-len", _number(req.params, "seq_len", int)])
         if "hidden_size" in req.params:
-            cmd.extend(["--hidden-size", str(req.params["hidden_size"])])
+            cmd.extend(["--hidden-size", _number(req.params, "hidden_size", int)])
     elif model_type in POOLING_MODELS:
         if "train_window_days" in req.params:
-            cmd.extend(["--train-window-days", str(req.params["train_window_days"])])
+            cmd.extend(["--train-window-days", _number(req.params, "train_window_days", int)])
         # Only the tabular predictors pool; the sequence models do not offer the
         # flag, so passing it there would fail the whole run rather than be
         # ignored. Each name is validated because this string becomes argv.
@@ -200,11 +201,11 @@ def build_train_command(req: TrainRequest) -> list[list[str]]:
             cmd.extend(["--symbols", ",".join(dict.fromkeys(pooled))])
         if model_type == "xgboost":
             if "n_estimators" in req.params:
-                cmd.extend(["--n-estimators", str(req.params["n_estimators"])])
+                cmd.extend(["--n-estimators", _number(req.params, "n_estimators", int)])
             if "max_depth" in req.params:
-                cmd.extend(["--max-depth", str(req.params["max_depth"])])
+                cmd.extend(["--max-depth", _number(req.params, "max_depth", int)])
             if "learning_rate" in req.params:
-                cmd.extend(["--learning-rate", str(req.params["learning_rate"])])
+                cmd.extend(["--learning-rate", _number(req.params, "learning_rate", float)])
 
     return [cmd]
 
@@ -222,9 +223,9 @@ def build_eval_command(req: EvalRequest) -> list[list[str]]:
     cmd = [
         "python", "-m", "prosper.cli", "eval", "predictions",
         "--symbol", symbol,
-        "--model-type", req.model_type.lower(),
-        "--timestamp", req.timestamp,
-        "--interval", req.interval,
+        "--model-type", _model_type(req.model_type),
+        "--timestamp", _run_timestamp(req.timestamp),
+        "--interval", _interval(req.interval),
         "--root", "./data",
         *r_flags,
     ]
@@ -243,11 +244,14 @@ def build_batch_eval_command(req: BatchEvalRequest) -> list[list[str]]:
         *r_flags,
     ]
     if req.symbol:
-        cmd.extend(["--symbol", req.symbol.upper()])
+        symbol = req.symbol.upper()
+        if not _is_valid_symbol(symbol):
+            raise ValueError(f"Invalid symbol: {symbol}")
+        cmd.extend(["--symbol", symbol])
     if req.model_type:
-        cmd.extend(["--model-type", req.model_type.lower()])
+        cmd.extend(["--model-type", _model_type(req.model_type)])
     if req.interval:
-        cmd.extend(["--interval", req.interval])
+        cmd.extend(["--interval", _interval(req.interval)])
     if req.limit is not None:
         cmd.extend(["--limit", str(req.limit)])
 
@@ -298,7 +302,7 @@ def build_aggregate_command(req: AggregateRequest) -> list[list[str]]:
             "--from", "1m",
             "--start", req.start[:7],
             "--end", req.end[:7],
-            "--to", ",".join(req.intervals),
+            "--to", ",".join(_intervals(req.intervals)),
             "--root", "./data",
             *r_flags,
         ]
