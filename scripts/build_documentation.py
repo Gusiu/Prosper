@@ -771,13 +771,14 @@ def _chapter_2_requirements(doc: Document) -> None:
             ["WN-12",
              "Panel przeglądarkowy działa bez etapu budowania i bez zewnętrznych zależności "
              "pobieranych w czasie działania.",
-             "natywne moduły ES; brak menedżera pakietów i pliku konfiguracji budowania po "
-             "stronie klienta",
-             "przegląd katalogu frontend/"],
+             "natywne moduły ES; biblioteki wykresów i fonty w przypiętych wersjach w katalogu "
+             "frontend/vendor, z sumami kontrolnymi i licencjami",
+             "przegląd frontend/: brak adresów spoza aplikacji"],
             ["WN-13",
              "Praca w całości na danych lokalnych: po pobraniu archiwów system nie wymaga "
              "połączenia z siecią.",
-             "jezioro danych w formacie Parquet pod katalogiem data/",
+             "jezioro danych w formacie Parquet pod katalogiem data/; panel serwowany wraz "
+             "ze wszystkimi zasobami przez tę samą aplikację",
              _verified_by("test_integration.py") + " (bez rzeczywistej sieci)"],
             ["WN-14",
              "Zachowanie jakości kodu: brak ostrzeżeń narzędzia kontroli statycznej, komplet "
@@ -986,8 +987,7 @@ def _acceptance_criteria(doc: Document) -> None:
              "spełnione"],
             ["Powtórzenie przebiegu pod tym samym ziarnem daje wynik identyczny co do bajtu.",
              "porównanie plików wynikowych dwóch uruchomień",
-             "spełnione dla modeli gradientowych; dla sieci zależne od deterministycznych "
-             "jąder obliczeniowych"],
+             "spełnione dla wszystkich architektur, na procesorze CPU"],
             ["Każdy raportowany wynik da się odtworzyć z artefaktu na dysku bez odwołania do "
              "notatek.",
              "run_summary.json zawiera model, interwał, ziarno i tryb",
@@ -1012,10 +1012,11 @@ def _acceptance_criteria(doc: Document) -> None:
     )
     add_caption(
         doc, "Tabela",
-        "Kryteria akceptacji wraz ze stanem na dzień wygenerowania dokumentu. Kryterium "
-        "odtwarzalności co do bajtu spełnione jest w pełni dla modeli gradientowych; dla "
-        "sieci neuronowych zależy od dostępności deterministycznych implementacji operacji na "
-        "procesorze graficznym, co omówiono w rozdziale 9.6.",
+        "Kryteria akceptacji wraz ze stanem na dzień wygenerowania dokumentu. Odtwarzalność "
+        "co do bajtu zweryfikowano dla każdej architektury, w tym obu sieci neuronowych, na "
+        "procesorze CPU, na którym policzono wszystkie wyniki (rozdział 9.6). Na procesorze "
+        "graficznym nie była badana: tamtejsze implementacje części operacji nie są "
+        "deterministyczne bez dodatkowych ustawień.",
     )
 
 
