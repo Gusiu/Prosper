@@ -142,3 +142,32 @@ def test_aggregate_no_work_no_errors_exits_zero(monkeypatch) -> None:
     )
 
     assert result.exit_code == 0, result.stdout
+
+
+def test_a_failure_keeps_its_traceback(monkeypatch, tmp_path) -> None:
+    """Commands printed only the exception message, so an unexpected failure was
+    one line with no location - and the dashboard's task log showed only that."""
+
+    def explode(**kwargs):
+        raise KeyError("missing_column")
+
+    monkeypatch.setattr("prosper.cli.build_labels", explode)
+    result = runner.invoke(
+        app, ["labels", "build", "--symbol", "BTCUSDT", "--root", str(tmp_path)]
+    )
+
+    assert result.exit_code == 1
+    # CliRunner mixes stderr into the output, where the traceback lands.
+    assert "Traceback" in result.output and "missing_column" in result.output
+
+
+def test_a_deliberate_exit_is_not_reported_twice(tmp_path) -> None:
+    """The broad handler caught `typer.Exit(1)` raised inside the try and printed
+    a second line, "Error: 1", after the real message."""
+    result = runner.invoke(
+        app, ["labels", "build", "--symbol", "NOPEUSDT", "--root", str(tmp_path)]
+    )
+
+    assert result.exit_code == 1
+    assert "No data found" in result.stdout
+    assert "Error: 1" not in result.stdout

@@ -2,8 +2,10 @@
 
 import json
 import logging
+import sys
+import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import polars as pl
 import typer
@@ -55,6 +57,24 @@ LONGEST_HORIZON_DAYS = max(h.forward_days for h in DEFAULT_HORIZONS)
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+
+def _fail(error: Exception) -> NoReturn:
+    """Report a failed command and exit 1, keeping where it failed.
+
+    Every command used to catch Exception and print only its message, so an
+    unexpected failure became one line with no location - and the dashboard's
+    task log shows exactly these lines, so that was all anyone ever had. The
+    traceback goes to stderr in plain text, which survives any console encoding.
+
+    A `typer.Exit` raised on purpose inside the `try` passes straight through;
+    it used to be caught here too and reported as "Error: 1".
+    """
+    if isinstance(error, typer.Exit):
+        raise error
+    console.print(f"[red]Error: {error}[/red]")
+    traceback.print_exception(error, file=sys.stderr)
+    raise typer.Exit(1) from error
 app = typer.Typer(help="Prosper - Crypto market analysis tool for Binance SPOT data")
 
 symbols_app = typer.Typer(help="Symbol management")
@@ -148,8 +168,7 @@ def symbols_list(
             console.print(f"  ... and {len(symbols_list_data) - 20} more")
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @app.command("backfill")
@@ -200,8 +219,7 @@ def backfill_cmd(
             raise typer.Exit(1)
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @qa_app.command("check")
@@ -240,8 +258,7 @@ def qa_check(
             raise typer.Exit(1)
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @app.command("aggregate")
@@ -303,8 +320,7 @@ def aggregate_cmd(
             )
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @labels_app.command("build")
@@ -356,8 +372,7 @@ def labels_build(
         console.print(table)
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @features_app.command("build")
@@ -390,8 +405,7 @@ def features_build(
 
         console.print(f"[green][OK][/green] Feature parquet saved: {results['path']}")
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @predict_app.command("baseline")
@@ -447,8 +461,7 @@ def predict_baseline_cmd(
 
         console.print(f"[green][OK][/green] Predictions generated: {results['predictions']}")
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @predict_app.command("ml")
@@ -511,8 +524,7 @@ def predict_ml_cmd(
 
         console.print(f"[green][OK][/green] ML Predictions generated: {results['predictions']}")
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @predict_app.command("xgboost")
@@ -583,8 +595,7 @@ def predict_xgboost_cmd(
             f"[green][OK][/green] XGBoost Predictions generated: {results['predictions']}"
         )
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @predict_app.command("gru")
@@ -656,8 +667,7 @@ def predict_gru_cmd(
         )
         _print_epoch_usage(results)
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @predict_app.command("tft")
@@ -731,8 +741,7 @@ def predict_tft_cmd(
         )
         _print_epoch_usage(results)
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @planner_app.command("windows")
@@ -790,8 +799,7 @@ def planner_windows(
             )
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @eval_app.command("stability")
@@ -822,8 +830,7 @@ def eval_stability_cmd(
             interval=interval,
         )
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
     console.print(f"[green][OK][/green] Stability report saved to: {report['report_path']}")
     console.print(f"Source run: {report['run']['slug']}  months: {len(report['months'])}")
@@ -1006,8 +1013,7 @@ def eval_backtest_cmd(
             console.print(f"  - {note}")
 
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 def _run_predictions_evaluation(
@@ -1078,8 +1084,7 @@ def _run_predictions_evaluation(
         console.print(f"Quality rows: {artifacts['predictions_quality']}")
         console.print(f"Recommendations: {artifacts['recommendations']}")
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @eval_app.command("predictions")
@@ -1175,8 +1180,7 @@ def eval_batch_cmd(
         if result.get("status_path"):
             console.print(f"Status: {result['status_path']}")
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        _fail(e)
 
 
 @app.command("ui")
