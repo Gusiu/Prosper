@@ -150,7 +150,10 @@ class TaskRunner:
         try:
             total_commands = max(1, len(task.commands))
             for command_index, original_args in enumerate(task.commands):
-                self._append_log(f"$ {' '.join(original_args)}")
+                # The task's first log line already shows the whole chain; repeat
+                # each command only when there is more than one to tell apart.
+                if total_commands > 1:
+                    self._append_log(f"$ {' '.join(original_args)}")
                 self._set_command_progress(command_index, total_commands, original_args)
 
                 # Ensure we use the current virtualenv's Python

@@ -16,7 +16,6 @@ import {
   moveQueue,
   pollTaskStatus,
   removeQueue,
-  startQueueProcessing,
   updateQueueUI,
 } from "./queue.js";
 import {
@@ -98,7 +97,6 @@ registerActions({
 
   // Data Manager
   "queue-add": () => addToQueue(),
-  "queue-start": () => startQueueProcessing(),
   "queue-move": ({ id, direction }) => moveQueue(Number(id), Number(direction)),
   "queue-remove": ({ id }) => removeQueue(Number(id)),
   "inventory-refresh": () => loadInventory(),

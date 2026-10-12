@@ -165,16 +165,6 @@ export function addToQueue() {
 }
 
 
-export function startQueueProcessing() {
-  // The server drains its own queue, so "start" only has to make sure whatever
-  // is in the form gets submitted.
-  if (document.getElementById("base-coin").value.trim()) {
-    addToQueue();
-    return;
-  }
-  alert("Nothing to submit. Fill the form or use the 'Aggregate' panel.");
-}
-
 /**
  * Enqueue a task on the server and reflect the returned snapshot.
  *
