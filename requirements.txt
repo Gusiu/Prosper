@@ -78,6 +78,8 @@ torch==2.11.0
 torchmetrics==1.9.0
 tqdm==4.67.3
 typer==0.12.5
+types-PyYAML==6.0.12.20260724
+types-requests==2.33.0.20260712
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2026.1
