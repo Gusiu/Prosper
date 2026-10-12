@@ -18,9 +18,9 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import sys
 from collections import defaultdict
-from datetime import date
 
 import numpy as np
 from docx import Document
@@ -33,10 +33,13 @@ from docx.shared import Cm, Pt, RGBColor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from documentation_sources import (  # noqa: E402
+    STUDY_MODELS,
+    STUDY_SYMBOLS,
     api_reference,
     cli_reference,
     dataset_summary,
     feature_catalogue,
+    is_study_run,
     settings_reference,
     test_inventory,
 )
@@ -49,12 +52,32 @@ from prosper.domain import (  # noqa: E402
 )
 
 REPORT_ROOT = "data/reports"
-SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
-MODELS = ("baseline", "ml", "xgboost", "gru", "tft")
+# Which runs are the study is decided in one place: documentation_sources.
+SYMBOLS = STUDY_SYMBOLS
+MODELS = STUDY_MODELS
 ACCENT = RGBColor(0x1F, 0x3B, 0x63)
 MUTED = RGBColor(0x55, 0x5F, 0x6B)
 
 _counters: dict[str, int] = defaultdict(int)
+
+# The formal details of the thesis. The title is a working one until the
+# supervisor approves it; the title page layout follows the PJATK template
+# once it is supplied.
+THESIS_TITLE = (
+    "Platforma badawcza do porównania architektur uczenia maszynowego w prognozowaniu "
+    "kierunku zmian cen kryptowalut na podstawie historii notowań"
+)
+THESIS_TITLE_EN = (
+    "A research platform for comparing machine learning architectures in forecasting the "
+    "direction of cryptocurrency price changes from historical quotes"
+)
+AUTHOR = "Adrian Budzich"
+ALBUM_NUMBER = "30076"
+SUPERVISOR = "dr Michał Majewski"
+UNIVERSITY = "Polsko-Japońska Akademia Technik Komputerowych"
+FIELD = "Informatyka"
+SPECIALISATION = "Robotyka i Inteligentne Systemy Autonomiczne"
+YEAR = "2028"
 
 try:
     from documentation_figures import build_all as _build_figures
@@ -78,7 +101,7 @@ def load_runs() -> dict[tuple[str, str], list[dict]]:
         parts = path.replace("\\", "/").split("/")
         symbol, slug = parts[-3], parts[-2]
         model = slug.split("_")[0]
-        if symbol not in SYMBOLS or model not in MODELS:
+        if not is_study_run(symbol, slug):
             continue
         try:
             payload = json.load(open(path, encoding="utf-8"))
@@ -207,14 +230,57 @@ def add_table(
     doc.add_paragraph()
 
 
+def _field(paragraph, instruction: str, shown: str) -> None:
+    """A Word field: *instruction* computed by Word, *shown* until it updates."""
+    parts = []
+    for kind in ("begin", "instr", "separate", "text", "end"):
+        if kind == "instr":
+            element = OxmlElement("w:instrText")
+            element.set(qn("xml:space"), "preserve")
+            element.text = f" {instruction} "
+        elif kind == "text":
+            element = OxmlElement("w:t")
+            element.text = shown
+        else:
+            element = OxmlElement("w:fldChar")
+            element.set(qn("w:fldCharType"), kind)
+        parts.append(element)
+    for element in parts:
+        run = paragraph.add_run()
+        run.italic = True
+        run.font.size = Pt(8.5)
+        run.font.color.rgb = MUTED
+        run._r.append(element)
+
+
 def add_caption(doc: Document, kind: str, text: str) -> None:
+    """"Tabela N. text", where N is a SEQ field: the lists of tables and figures
+    at the end of the document are built by Word from these fields."""
     _counters[kind] += 1
     paragraph = doc.add_paragraph()
     paragraph.paragraph_format.space_after = Pt(12)
-    run = paragraph.add_run(plain_dashes(f"{kind} {_counters[kind]}. {text}"))
-    run.italic = True
-    run.font.size = Pt(8.5)
-    run.font.color.rgb = MUTED
+
+    def styled(fragment: str) -> None:
+        run = paragraph.add_run(plain_dashes(fragment))
+        run.italic = True
+        run.font.size = Pt(8.5)
+        run.font.color.rgb = MUTED
+
+    # Only the first sentence goes in the numbered caption, so the lists of
+    # tables and figures stay one line per entry; the rest follows beneath.
+    match = re.search(r"(?<=[^\s.]{2})\. (?=[A-ZĄĆĘŁŃÓŚŹŻ„])", text)
+    title, rest = (text[: match.start() + 1], text[match.end():]) if match else (text, "")
+    styled(f"{kind} ")
+    _field(paragraph, f"SEQ {kind} \\* ARABIC", str(_counters[kind]))
+    styled(f". {title}")
+    if rest:
+        paragraph.paragraph_format.space_after = Pt(2)
+        follow = doc.add_paragraph()
+        follow.paragraph_format.space_after = Pt(12)
+        run = follow.add_run(plain_dashes(rest))
+        run.italic = True
+        run.font.size = Pt(8.5)
+        run.font.color.rgb = MUTED
 
 
 def add_figure(doc: Document, key: str, caption: str) -> None:
@@ -235,7 +301,7 @@ def add_figure(doc: Document, key: str, caption: str) -> None:
     paragraph.add_run().add_picture(path, width=Cm(15.5))
     add_caption(doc, "Rysunek", caption)
 
-def add_toc(doc: Document) -> None:
+def add_toc(doc: Document, switches: str = '\\o "1-3" \\h \\z \\u') -> None:
     """A field Word fills in on open; python-docx cannot compute page numbers."""
     paragraph = doc.add_paragraph()
     run = paragraph.add_run()
@@ -243,15 +309,25 @@ def add_toc(doc: Document) -> None:
     begin.set(qn("w:fldCharType"), "begin")
     instruction = OxmlElement("w:instrText")
     instruction.set(qn("xml:space"), "preserve")
-    instruction.text = r'TOC \o "1-3" \h \z \u'
+    instruction.text = f"TOC {switches}"
     separate = OxmlElement("w:fldChar")
     separate.set(qn("w:fldCharType"), "separate")
     placeholder = OxmlElement("w:t")
-    placeholder.text = "Spis treści zostanie zbudowany po otwarciu dokumentu (F9)."
+    placeholder.text = "Spis zostanie zbudowany po otwarciu dokumentu (F9)."
     end = OxmlElement("w:fldChar")
     end.set(qn("w:fldCharType"), "end")
     for element in (begin, instruction, separate, placeholder, end):
         run._r.append(element)
+
+
+def add_front_heading(doc: Document, text: str) -> None:
+    """A heading for front and back matter that stays out of the table of contents."""
+    paragraph = doc.add_paragraph()
+    paragraph.paragraph_format.space_after = Pt(12)
+    run = paragraph.add_run(text)
+    run.bold = True
+    run.font.size = Pt(16)
+    run.font.color.rgb = ACCENT
 
 
 def page_break(doc: Document) -> None:
@@ -274,8 +350,9 @@ def build() -> str:
 
     _title_page(doc)
     page_break(doc)
+    _abstracts(doc, runs)
 
-    add_heading(doc, "Spis treści", 1)
+    add_front_heading(doc, "Spis treści")
     add_toc(doc)
     page_break(doc)
 
@@ -296,6 +373,7 @@ def build() -> str:
     _chapter_12b_screenshots(doc)
     _chapter_13_limits(doc)
     _chapter_14_bibliography(doc)
+    _lists_of_tables_and_figures(doc)
     _appendix_tests(doc)
     _appendix_cli(doc)
     _appendix_api(doc)
@@ -312,38 +390,189 @@ def build() -> str:
 # ── front matter ─────────────────────────────────────────────────────────────
 
 def _title_page(doc: Document) -> None:
-    title = doc.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title.paragraph_format.space_before = Pt(150)
-    run = title.add_run("Prosper")
-    run.bold = True
-    run.font.size = Pt(40)
-    run.font.color.rgb = ACCENT
+    """Until the PJATK template arrives: the usual fields, in the usual order."""
 
-    for text, size, italic in (
-        ("Platforma badawcza do analizy rynku kryptowalut", 15, False),
-        ("Dokumentacja techniczna", 12, True),
-    ):
+    def line(text: str, size: float, *, bold: bool = False, italic: bool = False,
+             before: float = 0, after: float = 4, colour=None) -> None:
         paragraph = doc.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        added = paragraph.add_run(text)
-        added.font.size = Pt(size)
-        added.italic = italic
+        paragraph.paragraph_format.space_before = Pt(before)
+        paragraph.paragraph_format.space_after = Pt(after)
+        run = paragraph.add_run(text)
+        run.font.size = Pt(size)
+        run.bold = bold
+        run.italic = italic
+        if colour is not None:
+            run.font.color.rgb = colour
 
-    spacer = doc.add_paragraph()
-    spacer.paragraph_format.space_after = Pt(80)
+    line(UNIVERSITY, 14, bold=True, before=30)
+    line(f"Kierunek: {FIELD}", 11)
+    line(f"Specjalizacja: {SPECIALISATION}", 11, after=70)
+    line(AUTHOR, 14, bold=True)
+    line(f"Nr albumu {ALBUM_NUMBER}", 11, after=50)
+    line(THESIS_TITLE, 18, bold=True, colour=ACCENT, after=10)
+    line(THESIS_TITLE_EN, 11, italic=True, colour=MUTED, after=50)
+    line("Praca inżynierska", 13, after=4)
+    line(f"Promotor: {SUPERVISOR}", 12, after=110)
+    line(YEAR, 11)
 
-    meta = doc.add_paragraph()
-    meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = meta.add_run(
-        "Praca inżynierska\n"
-        "Polsko-Japońska Akademia Technik Komputerowych\n\n"
-        f"Dokument wygenerowany automatycznie z artefaktów projektu\n"
-        f"dnia {date.today().isoformat()} poleceniem "
-        f"scripts/build_documentation.py"
-    )
-    run.font.size = Pt(9)
-    run.font.color.rgb = MUTED
+
+KEYWORDS_PL = [
+    "uczenie maszynowe", "prognozowanie szeregów czasowych", "kryptowaluty",
+    "hipoteza efektywności rynku", "walidacja krocząca", "kalibracja prognoz",
+    "Temporal Fusion Transformer",
+]
+KEYWORDS_EN = [
+    "machine learning", "time series forecasting", "cryptocurrencies",
+    "efficient market hypothesis", "walk-forward validation", "forecast calibration",
+    "Temporal Fusion Transformer",
+]
+
+
+def rank_agreement(runs: dict) -> tuple[dict[str, list[str]], float]:
+    """Order of the learning architectures per horizon, and the mean rank
+    correlation between horizons (+1 the same order everywhere, 0 unrelated).
+
+    The baseline is excluded: it does not learn and including it would inflate
+    the apparent agreement.
+    """
+    learners = [m for m in MODELS if m != "baseline"]
+    order: dict[str, list[str]] = {}
+    for horizon in HORIZON_NAMES:
+        means = {}
+        for model in learners:
+            values = []
+            for symbol in SYMBOLS:
+                values.extend(horizon_values(runs.get((symbol, model), []), horizon, "accuracy"))
+            if values:
+                means[model] = float(np.mean(values))
+        if len(means) == len(learners):
+            order[horizon] = sorted(means, key=lambda m: -means[m])
+    correlations = []
+    horizons = list(order)
+    for index, first in enumerate(horizons):
+        for second in horizons[index + 1:]:
+            left = np.array([order[first].index(m) for m in learners], dtype=float)
+            right = np.array([order[second].index(m) for m in learners], dtype=float)
+            if left.std() and right.std():
+                correlations.append(float(np.corrcoef(left, right)[0, 1]))
+    return order, float(np.mean(correlations)) if correlations else float("nan")
+
+
+def study_facts(runs: dict) -> dict:
+    """The few numbers the abstracts quote, all read from the artifacts."""
+    symbols = sorted({symbol for symbol, _ in runs})
+    total = sum(len(v) for v in runs.values())
+    facts: dict = {"symbols": len(symbols), "runs": total, "by_horizon": {}}
+    for horizon in HORIZON_NAMES:
+        accuracies, above, below, estimable = [], 0, 0, 0
+        for entries in runs.values():
+            for run in entries:
+                cell = run["by_horizon"].get(horizon) or {}
+                if cell.get("accuracy") is None:
+                    continue
+                accuracies.append(float(cell["accuracy"]))
+                interval = cell.get("accuracy_ci") or {}
+                low, high = interval.get("low"), interval.get("high")
+                if low is None or high is None:
+                    continue
+                estimable += 1
+                above += low > 0.5
+                below += high < 0.5
+        facts["by_horizon"][horizon] = {
+            "low": min(accuracies) if accuracies else None,
+            "high": max(accuracies) if accuracies else None,
+            "above": above, "below": below, "estimable": estimable,
+        }
+    facts["rank_correlation"] = rank_agreement(runs)[1]
+    return facts
+
+
+def abstract_texts(runs: dict) -> tuple[list[str], list[str]]:
+    """Streszczenie and abstract. Every number in them is read from the runs."""
+    f = study_facts(runs)
+    week = f["by_horizon"].get("week", {})
+    month = f["by_horizon"].get("month", {})
+
+    powered_above = week.get("above", 0) + month.get("above", 0)
+    powered = week.get("estimable", 0) + month.get("estimable", 0)
+    rho = f["rank_correlation"]
+
+    polish = [
+        "Praca dotyczy pytania, w jakim stopniu architektury uczenia maszynowego różnego "
+        "rodzaju potrafią przewidzieć kierunek zmiany ceny aktywa wyłącznie na podstawie "
+        "historii jego notowań. W ramach pracy zaprojektowano i zbudowano platformę Prosper, "
+        "obejmującą pozyskiwanie danych giełdy Binance, kontrolę ich jakości, wyznaczanie cech "
+        "i etykiet, trening pięciu architektur - od modelu odniesienia, przez regresję "
+        "logistyczną i wzmacnianie gradientowe, po sieć rekurencyjną GRU i Temporal Fusion "
+        "Transformer - we wspólnym protokole kroczącym, ocenę regułami oceny właściwej z "
+        "przedziałami ufności uwzględniającymi nakładanie się etykiet oraz symulację handlową "
+        "z czterema hipotezami zerowymi. System udostępnia interfejs wiersza poleceń i panel "
+        "przeglądarkowy.",
+        f"Badanie objęło {f['runs']} przebiegów na {f['symbols']} instrumentach, w czterech "
+        "horyzontach od tygodnia do roku, każdą konfigurację pod trzema ziarnami "
+        f"inicjalizacji. Na horyzontach tygodniowym i miesięcznym, jedynych o wystarczającej "
+        f"mocy statystycznej, trafność istotnie wyższą od losowej osiągnęło {powered_above} z "
+        f"{powered} przebiegów. Na horyzoncie rocznym liczba obserwacji niezależnych nie "
+        "pozwala na żaden rozstrzygający pomiar. Ranking architektur zmienia się z horyzontem "
+        f"(średnia korelacja rang {rho:+.2f}), więc różnice zmierzone dla jednego horyzontu "
+        "nie przenoszą się na inny. Wynik jest zgodny ze słabą formą hipotezy efektywności "
+        "rynku i stanowi górne ograniczenie przewagi możliwej do uzyskania z samych notowań. "
+        "Pozytywnym wynikiem inżynierskim jest kalibracja: system poprawnie raportuje własną "
+        "niepewność.",
+    ]
+    english = [
+        "This thesis asks how well machine learning architectures of different kinds can "
+        "forecast the direction of an asset's price from its quotation history alone. It "
+        "presents Prosper, a platform designed and built for the purpose: it acquires Binance "
+        "market data and checks its quality, derives features and labels, trains five "
+        "architectures - a frequency baseline, logistic regression, gradient boosting, a GRU "
+        "recurrent network and a Temporal Fusion Transformer - under one walk-forward "
+        "protocol, evaluates them with proper scoring rules and confidence intervals that "
+        "account for overlapping labels, and simulates trading against four null hypotheses. "
+        "It is operated from a command line and a browser dashboard.",
+        f"The study comprises {f['runs']} runs on {f['symbols']} instruments, over four "
+        "horizons from a week to a year, each configuration under three initialisation "
+        "seeds. On the weekly and monthly horizons, the only ones with enough statistical "
+        f"power, {powered_above} of {powered} runs reached an accuracy significantly above "
+        "chance. At the yearly horizon the number of independent observations allows no "
+        "conclusive measurement. The ranking of architectures changes with the horizon "
+        f"(mean rank correlation {rho:+.2f}), so a difference measured on one horizon does "
+        "not carry over to another. The result is consistent with the weak form of the "
+        "efficient market hypothesis and bounds the edge obtainable from prices alone. "
+        "Calibration is a positive engineering result: the system reports its own "
+        "uncertainty correctly.",
+    ]
+
+    return polish, english
+
+
+def _abstracts(doc: Document, runs: dict) -> None:
+    """Streszczenie and abstract, each with keywords, before the table of contents."""
+    polish, english = abstract_texts(runs)
+    for heading, text, label, words in (
+        ("Streszczenie", polish, "Słowa kluczowe", KEYWORDS_PL),
+        ("Abstract", english, "Keywords", KEYWORDS_EN),
+    ):
+        add_front_heading(doc, heading)
+        for paragraph_text in text:
+            add_body(doc, paragraph_text)
+        keywords = doc.add_paragraph()
+        keywords.paragraph_format.space_before = Pt(8)
+        lead = keywords.add_run(f"{label}: ")
+        lead.bold = True
+        lead.font.size = Pt(10)
+        rest = keywords.add_run(", ".join(words))
+        rest.font.size = Pt(10)
+        page_break(doc)
+
+
+def _lists_of_tables_and_figures(doc: Document) -> None:
+    add_front_heading(doc, "Spis rysunków")
+    add_toc(doc, '\\h \\z \\c "Rysunek"')
+    add_front_heading(doc, "Spis tabel")
+    add_toc(doc, '\\h \\z \\c "Tabela"')
+    page_break(doc)
 
 
 # ── 1 ────────────────────────────────────────────────────────────────────────
@@ -1981,7 +2210,7 @@ def _results_baserate(doc: Document) -> None:
     for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/predictions_quality.parquet")):
         parts = path.replace("\\", "/").split("/")
         symbol, model = parts[-3], parts[-2].split("_")[0]
-        if symbol not in SYMBOLS or model not in MODELS:
+        if not is_study_run(symbol, parts[-2]):
             continue
         try:
             frame = pl.read_parquet(path).filter(pl.col("status") == "scored")
@@ -2092,7 +2321,7 @@ def _results_backtest(doc: Document) -> None:
     for path in sorted(glob.glob(f"{REPORT_ROOT}/backtests/*/*/backtest.json")):
         parts = path.replace("\\", "/").split("/")
         symbol, model = parts[-3], parts[-2].split("_")[0]
-        if symbol not in SYMBOLS or model not in MODELS:
+        if not is_study_run(symbol, parts[-2]):
             continue
         try:
             payload = json.load(open(path, encoding="utf-8"))
@@ -2159,7 +2388,7 @@ def _results_max_vs_mean(doc: Document) -> None:
     for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/metrics.json")):
         parts = path.replace("\\", "/").split("/")
         symbol, slug = parts[-3], parts[-2]
-        if symbol not in SYMBOLS:
+        if not is_study_run(symbol, slug):
             continue
         try:
             by_horizon = json.load(open(path, encoding="utf-8")).get("by_horizon") or {}
@@ -2227,7 +2456,7 @@ def _results_stability(doc: Document) -> None:
         parts = path.replace("\\", "/").split("/")
         symbol, slug = parts[-3], parts[-2]
         model = slug.split("_")[0]
-        if symbol not in SYMBOLS or model not in MODELS:
+        if not is_study_run(symbol, slug):
             continue
         try:
             payload = json.load(open(path, encoding="utf-8"))

@@ -12,10 +12,56 @@ looks on the page.
 from __future__ import annotations
 
 import ast
+import functools
 import inspect
+import json
 import pathlib
 import re
 from dataclasses import dataclass, field
+
+# ── which runs are the study ─────────────────────────────────────────────────
+
+# Ordered roughly by market capitalisation, so the tables read the same way.
+STUDY_SYMBOLS = (
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT",
+    "LINKUSDT", "LTCUSDT",
+)
+STUDY_MODELS = ("baseline", "ml", "xgboost", "gru", "tft")
+STUDY_SEEDS = (7, 42, 123)
+STUDY_PROTOCOL = {"interval": "1d", "start": "2020-01-01", "end": "2026-06-30",
+                  "deterministic": True}
+
+
+@functools.cache
+def study_runs(report_root: str = "data/reports") -> frozenset[tuple[str, str]]:
+    """(symbol, run slug) of every run that belongs to the study.
+
+    Selected by what each run says about itself in run_summary.json - interval,
+    period, deterministic mode, seed - rather than by which folders exist. A run
+    trained from the dashboard while testing it, on another period or seed, is
+    then never counted, however long it stays in the lake.
+    """
+    selected = set()
+    for summary in pathlib.Path(report_root, "predictions").glob("*/*/run_summary.json"):
+        symbol, slug = summary.parent.parent.name, summary.parent.name
+        model = slug.split("_")[0]
+        if symbol not in STUDY_SYMBOLS or model not in STUDY_MODELS:
+            continue
+        try:
+            record = json.loads(summary.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if any(record.get(key) != value for key, value in STUDY_PROTOCOL.items()):
+            continue
+        if record.get("seed") not in STUDY_SEEDS:
+            continue
+        selected.add((symbol, slug))
+    return frozenset(selected)
+
+
+def is_study_run(symbol: str, slug: str) -> bool:
+    return (symbol, slug) in study_runs()
+
 
 # ── features ─────────────────────────────────────────────────────────────────
 

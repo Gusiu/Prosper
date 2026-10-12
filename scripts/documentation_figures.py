@@ -22,13 +22,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+from documentation_sources import STUDY_MODELS, STUDY_SYMBOLS, is_study_run  # noqa: E402
 
 from prosper.domain import HORIZON_NAMES  # noqa: E402
 
 REPORT_ROOT = "data/reports"
 FIGURE_DIR = "data/_figures"
-SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
-MODELS = ("baseline", "ml", "xgboost", "gru", "tft")
+# The same selection as the tables: documentation_sources decides what the study is.
+SYMBOLS = STUDY_SYMBOLS
+MODELS = STUDY_MODELS
 ACCENT = "#1F3B63"
 MUTED = "#8894A3"
 
@@ -61,7 +63,7 @@ def _runs() -> dict[tuple[str, str], list[dict]]:
         parts = path.replace("\\", "/").split("/")
         symbol, slug = parts[-3], parts[-2]
         model = slug.split("_")[0]
-        if symbol not in SYMBOLS or model not in MODELS:
+        if not is_study_run(symbol, slug):
             continue
         try:
             payload = json.load(open(path, encoding="utf-8"))
@@ -214,7 +216,7 @@ def backtest_percentiles() -> str | None:
     for path in sorted(glob.glob(f"{REPORT_ROOT}/backtests/*/*/backtest.json")):
         parts = path.replace("\\", "/").split("/")
         symbol, model = parts[-3], parts[-2].split("_")[0]
-        if symbol not in SYMBOLS or model not in MODELS:
+        if not is_study_run(symbol, parts[-2]):
             continue
         try:
             payload = json.load(open(path, encoding="utf-8"))
@@ -252,8 +254,8 @@ def reliability_diagram() -> str | None:
     for axis, horizon in zip(np.atleast_1d(axes), HORIZON_NAMES, strict=False):
         confidence, correct = [], []
         for path in glob.glob(f"{REPORT_ROOT}/evaluations/*/*/predictions_quality.parquet"):
-            symbol = path.replace("\\", "/").split("/")[-3]
-            if symbol not in SYMBOLS:
+            symbol, slug = path.replace("\\", "/").split("/")[-3:-1]
+            if not is_study_run(symbol, slug):
                 continue
             try:
                 frame = pl.read_parquet(path).filter(
@@ -361,7 +363,7 @@ def observation_power() -> str | None:
     """Independent observations per horizon — the binding constraint, drawn."""
     counts: dict[str, list[float]] = defaultdict(list)
     for path in glob.glob(f"{REPORT_ROOT}/evaluations/*/*/metrics.json"):
-        if path.replace("\\", "/").split("/")[-3] not in SYMBOLS:
+        if not is_study_run(*path.replace("\\", "/").split("/")[-3:-1]):
             continue
         try:
             by_horizon = json.load(open(path, encoding="utf-8")).get("by_horizon") or {}
