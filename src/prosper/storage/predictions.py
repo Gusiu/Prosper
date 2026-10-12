@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -115,10 +116,20 @@ def run_environment() -> dict[str, Any]:
     except (OSError, subprocess.SubprocessError):
         pass
 
+    # Parallel reductions can split work differently with a different thread
+    # count, so the same code and seed may not give the same bytes on 4 threads
+    # as on 8. Recorded so two runs can be compared on like terms.
+    threads: dict[str, int | str | None] = {
+        "torch": int(sys.modules["torch"].get_num_threads()) if "torch" in sys.modules else None,
+        "OMP_NUM_THREADS": os.environ.get("OMP_NUM_THREADS"),
+        "POLARS_MAX_THREADS": os.environ.get("POLARS_MAX_THREADS"),
+    }
+
     return {
         "python": platform.python_version(),
         "platform": platform.platform(),
         "packages": packages,
+        "threads": threads,
         "git_commit": commit,
         "git_dirty": dirty,
     }

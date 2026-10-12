@@ -100,6 +100,7 @@ def test_the_environment_that_produced_a_run_is_recorded(tmp_path: Path) -> None
     assert environment["packages"]["xgboost"] == "1.7.6"
     assert set(environment["packages"]) >= {"numpy", "polars", "torch", "scikit-learn"}
     assert "git_commit" in environment and "git_dirty" in environment
+    assert set(environment["threads"]) == {"torch", "OMP_NUM_THREADS", "POLARS_MAX_THREADS"}
 
 
 def test_no_command_offers_a_flag_that_does_nothing() -> None:
