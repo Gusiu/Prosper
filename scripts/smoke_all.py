@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import subprocess
 from pathlib import Path
 
 import polars as pl
+
+from prosper.domain import HORIZON_NAMES
 
 ALLOWED_RECOMMENDATIONS = {
     "Strong Buy",
@@ -48,7 +51,10 @@ def smoke_check_1w_any(root_dir: Path, symbol: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", default="BTCUSDT")
-    parser.add_argument("--start", default="2020-01")  # YYYY-MM
+    # Two months: the first is history, the second is predicted. With one month
+    # every horizon is untrained by design (nothing realised to learn from), the
+    # planner rightly has nothing to grade, and the smoke run checked nothing.
+    parser.add_argument("--start", default="2019-12")  # YYYY-MM
     parser.add_argument("--end", default="2020-01")  # YYYY-MM
     parser.add_argument("--root", default="data_smoke")
     parser.add_argument("--workers", type=int, default=2)
@@ -57,10 +63,12 @@ def main() -> None:
     root = Path(args.root)
     symbol = args.symbol
 
-    # Unpack month boundaries (this script targets a single month smoke).
+    # The first month downloaded is checked artifact by artifact; the last is predicted.
     start_year = int(args.start[:4])
     start_month = int(args.start[5:7])
-    ym = f"{start_year:04d}-{start_month:02d}"
+    end_year = int(args.end[:4])
+    end_month = int(args.end[5:7])
+    last_day = f"{end_year:04d}-{end_month:02d}-{calendar.monthrange(end_year, end_month)[1]:02d}"
 
     run(
         [
@@ -193,7 +201,7 @@ def main() -> None:
             "--start",
             f"{start_year:04d}-{start_month:02d}-01",
             "--end",
-            f"{start_year:04d}-{start_month:02d}-31",
+            last_day,
             "--root",
             str(root),
         ]
@@ -244,9 +252,9 @@ def main() -> None:
             "--symbol",
             symbol,
             "--start",
-            f"{start_year:04d}-{start_month:02d}-01",
+            f"{end_year:04d}-{end_month:02d}-01",
             "--end",
-            f"{start_year:04d}-{start_month:02d}-31",
+            last_day,
             "--root",
             str(root),
         ]
@@ -266,11 +274,13 @@ def main() -> None:
     if not lines:
         raise SystemExit("Predictions file is empty")
     first = json.loads(lines[0])
-    # Sum whatever direction classes the run carries. Naming them meant this
-    # raised KeyError the moment `flat` was dropped.
-    s = sum(v for k, v in first["short"].items() if k.startswith("P_"))
-    if abs(s - 1.0) > 1e-6:
-        raise SystemExit(f"Probability sum != 1.0 for first row: {s}")
+    # Every horizon this build knows, by name from the domain - this check used
+    # to name the horizon, and raised KeyError when `short` became `week`.
+    # Sum whatever direction classes each carries, for the same reason.
+    for horizon in HORIZON_NAMES:
+        s = sum(v for k, v in first[horizon].items() if k.startswith("P_"))
+        if abs(s - 1.0) > 1e-6:
+            raise SystemExit(f"Probability sum != 1.0 for {horizon} in the first row: {s}")
 
     # Planner windows, scoped to the run we just produced
     model_type, interval, timestamp = run_dir.name.split("_")
@@ -288,9 +298,9 @@ def main() -> None:
             "--interval",
             interval,
             "--start",
-            f"{start_year:04d}-{start_month:02d}-01",
+            f"{end_year:04d}-{end_month:02d}-01",
             "--end",
-            f"{start_year:04d}-{start_month:02d}-31",
+            last_day,
             "--root",
             str(root),
         ]
@@ -301,10 +311,12 @@ def main() -> None:
         / "recommendations"
         / symbol
         / run_dir.name
-        / f"{start_year:04d}-{start_month:02d}.json"
+        / f"{end_year:04d}-{end_month:02d}.json"
     )
     if not win_path.exists():
         raise SystemExit(f"Missing windows JSON: {win_path}")
+    if not json.loads(win_path.read_text(encoding="utf-8"))["windows"]:
+        raise SystemExit("The planner produced no windows: no horizon was trained")
     payload = json.loads(win_path.read_text(encoding="utf-8"))
     if payload.get("model_type") != model_type:
         raise SystemExit(f"Windows report is not attributed to {model_type}: {payload}")
@@ -313,7 +325,7 @@ def main() -> None:
         if rec not in ALLOWED_RECOMMENDATIONS:
             raise SystemExit(f"Invalid recommendation {rec}")
 
-    print(f"\nSmoke pipeline OK for {symbol} month {ym} (root={root})")
+    print(f"\nSmoke pipeline OK for {symbol}, predicted {end_year:04d}-{end_month:02d} (root={root})")
 
 
 if __name__ == "__main__":

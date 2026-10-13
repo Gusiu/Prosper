@@ -43,20 +43,29 @@ The following checklist is intended to run a complete smoke pipeline on a fresh 
    poetry install
    ```
 
-8. Smoke pipeline for `BTCUSDT` in a separate root:
+8. Smoke pipeline for `BTCUSDT` in a separate root. Two months are downloaded: the first is
+   history, the second is predicted.
    ```powershell
-   poetry run prosper backfill --symbol BTCUSDT --start 2020-01 --end 2020-01 --workers 2 --root data_smoke
+   poetry run prosper backfill --symbol BTCUSDT --start 2019-12 --end 2020-01 --workers 2 --root data_smoke
    poetry run prosper qa check --symbol BTCUSDT --interval 1m --year 2020 --month 01 --root data_smoke
-   poetry run prosper aggregate --symbol BTCUSDT --from 1m --to 1h 1d 1w --start 2020-01 --end 2020-01 --root data_smoke
-   poetry run prosper features build --symbol BTCUSDT --base_interval 1d --start 2020-01-01 --end 2020-01-31 --root data_smoke
-   poetry run prosper labels build --symbol BTCUSDT --base_interval 1d --forward_days 1 --root data_smoke
+   poetry run prosper aggregate --symbol BTCUSDT --from 1m --to 1h,1d,1w --start 2019-12 --end 2020-01 --root data_smoke
+   poetry run prosper features build --symbol BTCUSDT --base-interval 1d --start 2019-12-01 --end 2020-01-31 --root data_smoke
+   poetry run prosper labels build --symbol BTCUSDT --base-interval 1d --root data_smoke
    poetry run prosper predict baseline --symbol BTCUSDT --start 2020-01-01 --end 2020-01-31 --root data_smoke
    poetry run prosper planner windows --symbol BTCUSDT --start 2020-01-01 --end 2020-01-31 --root data_smoke
    ```
+   The same steps, with checks after each, are scripted:
+   `poetry run python scripts\smoke_all.py --root data_smoke`.
 
-9. Run tests:
+   This checks the plumbing, not the models. A model only learns from outcomes that had already
+   happened, so with a month of history the week horizon trains for most of January, the month
+   horizon for its last few days, and the quarter and year not at all - those rows are written
+   with `trained: false` and every later stage skips them, which is the intended behaviour. For
+   real results backfill several years.
+
+9. Run tests (`-m "not slow"` skips the few that train a real model for tens of seconds):
    ```powershell
-   poetry run pytest
+   poetry run pytest -m "not slow"
    ```
 
 10. Alternative without Poetry (venv + pip):
@@ -65,6 +74,7 @@ The following checklist is intended to run a complete smoke pipeline on a fresh 
    .\.venv\Scripts\Activate.ps1
    py -m pip install -U pip
    py -m pip install -r requirements.txt
+   py -m pip install -e . --no-deps
    prosper --help
    ```
 
@@ -90,9 +100,10 @@ The following checklist is intended to run a complete smoke pipeline on a fresh 
      ```
 
 5. No internet
-   - Generate offline fixture (synthetic 1m Parquet) in `data_smoke`, then run smoke pipeline as in step 8.
-   - Offline fixture command:
+   - Generate offline fixtures (synthetic 1m Parquet) for both months of step 8 in `data_smoke`:
      ```powershell
+     py scripts\offline_smoke_fixture.py --root data_smoke --symbol BTCUSDT --year 2019 --month 12
      py scripts\offline_smoke_fixture.py --root data_smoke --symbol BTCUSDT --year 2020 --month 1
      ```
-   - Then you can run from step 8, including `backfill` (the pipeline should skip downloading as Parquet already exists).
+   - Then run step 8 as written, including `backfill`: it finds the Parquet already there and
+     downloads nothing.
