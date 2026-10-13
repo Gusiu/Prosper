@@ -106,3 +106,26 @@ def test_build_features_exports_professional_analysis_indicators(tmp_path) -> No
     assert features["bb_upper"][0] > features["bb_mid"][0] > features["bb_lower"][0]
     assert features["atr_14"].null_count() == 0
     assert features["obv"].to_list() == [sum(1000.0 + i for i in range(1, day + 1)) for day in range(24, 35)]
+
+
+def test_partitions_with_and_without_order_flow_build_together(tmp_path) -> None:
+    """Months written before the order-flow columns were kept hold only OHLCV;
+    newer ones carry five more columns. A plain concat refused the mix with a
+    ShapeError, which stopped the rebuild of ETHUSDT's 12h features."""
+    settings = Settings(data_root=tmp_path)
+    symbol = "TESTUSDT"
+    old = _daily_rows(datetime(2024, 1, 1, tzinfo=UTC), 31)
+    new = _daily_rows(datetime(2024, 2, 1, tzinfo=UTC), 29).with_columns(
+        pl.lit(10).alias("num_trades"),
+        pl.lit(500.0).alias("taker_buy_base_volume"),
+        pl.lit(50_000.0).alias("taker_buy_quote_volume"),
+        pl.lit(100_000.0).alias("quote_asset_volume"),
+    )
+    save_parquet(old, get_parquet_file_path(symbol, "1d", 2024, month=1, settings=settings))
+    save_parquet(new, get_parquet_file_path(symbol, "1d", 2024, month=2, settings=settings))
+
+    build_features(symbol, "1d", "2024-01-01", "2024-02-29", settings=settings)
+    features = load_parquet(get_features_parquet_path(symbol, "1d", settings=settings))
+
+    assert len(features) == 60
+    assert features["open_time"].is_sorted()

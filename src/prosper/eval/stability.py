@@ -76,11 +76,14 @@ def load_closes(symbol: str, interval: str, settings: Settings) -> pl.DataFrame:
         raise FileNotFoundError(f"No {interval} parquet found for {symbol}: {base}")
 
     df = (
-        pl.concat([pl.read_parquet(path, hive_partitioning=False) for path in files])
-        .select(["open_time", "close"])
+        pl.concat(
+            [pl.read_parquet(path, hive_partitioning=False).select(["open_time", "close"])
+             for path in files]
+        )
         .with_columns(pl.col("open_time").cast(pl.Datetime("us", "UTC")))
         .sort("open_time")
-        .unique(subset=["open_time"], keep="first")
+        # Outcomes are read k rows ahead, so row order is part of the answer.
+        .unique(subset=["open_time"], keep="first", maintain_order=True)
     )
     return df.with_columns(
         pl.col("open_time").dt.strftime("%Y-%m-%dT%H:%M:%S").alias("_key")

@@ -51,7 +51,7 @@ def _load_klines(symbol: str, interval: str, settings: Settings) -> pl.DataFrame
         return None
     # Deduplicate, then sort. The other order relied on `unique` keeping rows
     # where `sort` put them, which polars does not promise.
-    return pl.concat(frames).unique(subset=["open_time"], keep="first").sort("open_time")
+    return pl.concat(frames, how="diagonal_relaxed").unique(subset=["open_time"], keep="first").sort("open_time")
 
 
 def build_labels(

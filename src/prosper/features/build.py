@@ -78,10 +78,15 @@ def build_features(
         }
 
     df = (
-        pl.concat(parts)
+        # Diagonal: partitions written before the order-flow columns were kept
+        # have fewer columns than newer ones, and a plain concat refused the mix.
+        pl.concat(parts, how="diagonal_relaxed")
         .with_columns(pl.col("open_time").cast(pl.Datetime("us", "UTC")).alias("open_time"))
         .sort("open_time")
-        .unique(subset=["open_time"], keep="first")
+        # Every feature below is a window over consecutive rows, so the order
+        # the sort established must survive deduplication; polars only
+        # promises that when asked.
+        .unique(subset=["open_time"], keep="first", maintain_order=True)
     )
 
     # Timeframe-agnostic features (based on rows/candles)
@@ -213,10 +218,10 @@ def build_features(
 
         if intraday_parts:
             df_1m = (
-                pl.concat(intraday_parts)
+                pl.concat(intraday_parts, how="diagonal_relaxed")
                 .with_columns(pl.col("open_time").cast(pl.Datetime("us", "UTC")).alias("open_time"))
                 .sort("open_time")
-                .unique(subset=["open_time"], keep="first")
+                .unique(subset=["open_time"], keep="first", maintain_order=True)
             )
             df_1m = df_1m.with_columns(pl.col("open_time").dt.date().alias("_date"))
 

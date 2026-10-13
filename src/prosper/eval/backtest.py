@@ -179,10 +179,12 @@ def _load_price_bars(
         return {}
 
     frame = (
-        pl.concat([pl.read_parquet(f, hive_partitioning=False) for f in files])
+        pl.concat(
+            [pl.read_parquet(f, hive_partitioning=False).select(["open_time", "open", "close"])
+             for f in files]
+        )
         .sort("open_time")
-        .unique(subset=["open_time"], keep="first")
-        .select(["open_time", "open", "close"])
+        .unique(subset=["open_time"], keep="first", maintain_order=True)
     )
     return {
         row["open_time"].date().isoformat(): {

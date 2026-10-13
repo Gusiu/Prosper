@@ -319,10 +319,11 @@ def _load_ohlc(symbol: str, interval: str, settings: Settings) -> tuple[list[dic
         raise FileNotFoundError(f"No OHLC parquet files found for {symbol} {interval}: {base_path}")
 
     df = (
-        pl.concat(parts)
+        pl.concat(parts, how="diagonal_relaxed")
         .with_columns(pl.col("open_time").cast(pl.Datetime("us", "UTC")).alias("open_time"))
         .sort("open_time")
-        .unique(subset=["open_time"], keep="first")
+        # Outcomes are read k rows ahead, so row order is part of the answer.
+        .unique(subset=["open_time"], keep="first", maintain_order=True)
     )
     rows = df.select(["open_time", "open", "high", "low", "close", "volume"]).to_dicts()
     return rows, _detect_time_gaps(rows, interval)
