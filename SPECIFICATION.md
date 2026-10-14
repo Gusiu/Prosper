@@ -79,7 +79,10 @@ alone reads as an invitation to widen the window until the evaluation dies.
 `HorizonSpec.forward_days` is converted per interval via `.steps(interval)`, so a 1h run and a 1d
 run of the same horizon mean the same span. The set is `week / month / quarter / year` =
 7/28/91/364 days - whole weeks (1/4/13/52), because `days_to_steps` rounds and a 365-day horizon
-became 364 at the 1w interval while staying 365 at 1d. A year is exactly four quarters.
+became 364 at the 1w interval while staying 365 at 1d. A year is exactly four quarters. The
+quarter replaced a half-year because a 730-day window holds 7.0 independent observations at 91 days
+against 3.0 at 182. At the 3d interval no span in the set is a whole number of bars, so 3d horizons
+stay approximate.
 
 The names state the span. The former `short`/`medium`/`long` were vague (`short` was four weeks)
 and *collided*: `short` and `long` are also the two direction classes.
@@ -106,8 +109,9 @@ is no shared "latest" directory, and nothing may create one.
 
 A run records what produced it - model, interval, seed, deterministic flag, generation time, the
 versions of the libraries that can change a prediction (torch with its build tag, since a CPU and a
-CUDA build do not produce the same bytes), the git commit and whether the package had uncommitted
-changes, and how many retraining windows raised - in `run_summary.json`, so a result can be traced
+CUDA build do not produce the same bytes), the thread counts torch and Polars ran with, the git
+commit and whether the package had uncommitted changes, and how many retraining windows raised - in
+`run_summary.json`, so a result can be traced
 from the artifact alone without reference to notes.
 
 Deleting a run removes its backtest, evaluation, recommendation and stability directories too.
@@ -168,7 +172,14 @@ that does not exist.
 Any hyperparameter experiment must keep an untouched horizon as an in-run control, and check that
 it did not move.
 
-*Guarded by* `tests/test_window_seed.py`.
+A seed reproduces a network run only at the same thread count. GRU and TFT runs repeated at a fixed
+count are identical byte for byte; at 8 threads against 4 they are not, because parallel reductions
+sum in a different order. GRU differs in the last bits; TFT agrees on the predicted side for 98-99%
+of bars, with probabilities apart by up to 0.88 on the longer horizons. Baseline, ml and xgboost
+runs reproduce across thread counts. Two network runs are therefore compared only at equal counts,
+which `run_summary.json` records.
+
+*Guarded by* `tests/test_window_seed.py`, `tests/test_run_provenance.py`.
 
 ### 2.10 Early stopping measures the calibrated loss
 
@@ -285,6 +296,11 @@ would change published numbers; it is recorded in `predict/sequence.py` rather t
   absent, so the API must *omit* a parameter the caller did not choose. Appending it unconditionally
   is what once made the dashboard train 5 epochs where the CLI trained 20.
   (`tests/test_cli_api_contract.py`, `tests/test_api_pool_command.py`)
+- **No CORS middleware.** The SPA is served by the same app, so nothing needs it, and
+  `allow_origins=["*"]` once let any web page delete directories outside the lake.
+  `TrustedHostMiddleware` blocks DNS rebinding. Every route that takes a symbol, model, interval or
+  timestamp checks it in `api/validation.py`, because each of them can become part of a path.
+  (`tests/test_api_path_safety.py`)
 - **The work queue lives on the server** (`api/tasks.py`), drained by one worker because the steps
   write the same parquet partitions. The browser renders `/api/task/queue`; it must not keep its own
   copy, or a reload silently loses pending jobs. (`tests/test_task_queue.py`)
@@ -301,7 +317,8 @@ would change published numbers; it is recorded in `predict/sequence.py` rather t
 - **The SPA uses native ES modules** - no build step. `<script type="module">` is deferred, so
   `main.js` boots on `readyState` rather than waiting for `DOMContentLoaded`, which has usually
   already fired. Markup declares behaviour with `data-action`, dispatched by one delegated listener
-  in `js/actions.js`; no inline `onclick`.
+  in `js/actions.js`; no inline `onclick`, which would interpolate symbols straight into attribute
+  strings.
 
 ---
 
@@ -317,7 +334,7 @@ an invitation to repeat the measurement until it returns the expected value.
 | Static analysis is clean | `ruff check .` |
 | The data lake has no quality defects | `prosper qa check` over all partitions |
 | Every horizon trains, or is explicitly `trained: false` | `trained` field per run; `untrained_rows` in evaluation |
-| A run under the same seed reproduces | comparison of two runs' output files (exact for the gradient models; for the networks, subject to deterministic kernels) |
+| A run under the same seed reproduces | comparison of two runs' output files (exact for the gradient models; for the networks, at the same thread count and with deterministic kernels) |
 | Any reported number is reconstructible from disk | `run_summary.json` carries model, interval, seed, mode, library versions and commit |
 | Every result carries an overlap-aware interval | block bootstrap, minimum 10 blocks |
 | Every architecture ran under at least three seeds | run count per cell |
