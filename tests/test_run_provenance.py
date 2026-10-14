@@ -106,13 +106,17 @@ def test_the_environment_that_produced_a_run_is_recorded(tmp_path: Path) -> None
 def test_no_command_offers_a_flag_that_does_nothing() -> None:
     """--strict and --save-metadata were accepted by fifteen commands and read by
     none. The dashboard offered both as switches."""
+    import os
     import subprocess
     import sys
 
+    # The help is drawn with box characters; decoding them in the locale's
+    # code page fails on Windows whenever the child writes UTF-8.
+    utf8 = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     for command in (["predict", "xgboost"], ["eval", "predictions"], ["backfill"]):
         help_text = subprocess.run(
             [sys.executable, "-m", "prosper.cli", *command, "--help"],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, encoding="utf-8", env=utf8, check=True,
         ).stdout
         assert "--strict" not in help_text and "--save-metadata" not in help_text
 
