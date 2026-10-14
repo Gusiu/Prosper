@@ -198,14 +198,21 @@ def test_the_caller_dict_survives_repeated_prediction() -> None:
     assert shared == {"logger": False}, "the caller's dict must not be mutated"
 
 
-def _write_cyclical_history(settings: Settings, days: int = 1500) -> None:
+def _write_cyclical_history(
+    settings: Settings, days: int = 1500, flat_week_from: int | None = None
+) -> list[float]:
+    """A noisy cycle; `flat_week_from` makes that bar's 7-day return exactly zero."""
     rng = random.Random(3)
     rows = []
+    closes: list[float] = []
     level = 100.0
     start = datetime(2019, 1, 1, tzinfo=UTC)
     for i in range(days):
         level *= 1 + rng.gauss(0, 0.015)
         price = level * (1 + 0.5 * math.sin(2 * math.pi * i / 500))
+        if flat_week_from is not None and i == flat_week_from + 7:
+            price = closes[flat_week_from]
+        closes.append(price)
         ts = start + timedelta(days=i)
         rows.append(
             {
@@ -226,6 +233,7 @@ def _write_cyclical_history(settings: Settings, days: int = 1500) -> None:
             group.drop(["_y", "_m"]).sort("open_time"),
             get_parquet_file_path(SYMBOL, "1d", int(year), month=int(month), settings=settings),
         )
+    return closes
 
 
 @pytest.mark.slow
@@ -253,3 +261,37 @@ def test_tft_end_to_end_produces_trained_predictions(tmp_path) -> None:
     assert "error" not in result
     assert result["untrained_horizons"] == {name: 0 for name in HORIZON_NAMES}
     assert result["predictions"] == 20
+
+
+@pytest.mark.slow
+def test_a_bar_without_a_label_does_not_stop_training(tmp_path) -> None:
+    """A zero forward return has no side, so its bar has no label.
+
+    TimeSeriesDataSet needs consecutive time steps. Dropping that bar from the
+    training frame left a hole, every window containing it raised, and the
+    horizon was written untrained - on ADAUSDT for every month of the study.
+    """
+    pytest.importorskip("pytorch_forecasting")
+    from prosper.labels.forward import forward_returns
+    from prosper.predict.tft import predict_tft
+
+    settings = Settings(data_root=tmp_path)
+    flat = 882  # 2021-06-01, inside the training window of June 2022
+    closes = _write_cyclical_history(settings, flat_week_from=flat)
+    build_features(SYMBOL, "1d", "2019-01-01", "2023-02-01", settings=settings)
+    assert forward_returns(closes, 7)[flat] == 0.0, "the planted bar must have no side"
+
+    result = predict_tft(
+        symbol=SYMBOL,
+        start="2022-06-01",
+        end="2022-06-20",
+        settings=settings,
+        interval="1d",
+        seq_len=30,
+        train_window_days=730,
+        max_epochs=1,
+        hidden_size=8,
+    )
+
+    assert "error" not in result
+    assert result["untrained_horizons"] == {name: 0 for name in HORIZON_NAMES}

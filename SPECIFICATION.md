@@ -55,7 +55,17 @@ constant as a forecast.
 Where a horizon cannot be trained, its rows carry `trained: false` and evaluation, planner and
 backtest all exclude them. Anything that averages the uniform prior into a result is a bug.
 
-*Guarded by* `tests/test_train_window.py`, `tests/test_predictor_training_edges.py`.
+A bar without a label still belongs to the series. A forward return of exactly zero has no side
+(2.11), so the bar has no label, but its features are known and its neighbours are still
+consecutive. TFT, whose dataset requires consecutive time steps, keeps such a bar in its frame with
+an unknown target and only leaves it out as a training target. Dropping the row instead left a
+hole, and every window containing one raised: TFT left nine runs on six symbols partly untrained,
+ADAUSDT's week horizon in all 78 months. BTCUSDT, ETHUSDT and SOLUSDT never close a horizon flat
+and were unaffected. Windows that raise are counted in `run_summary.json`, so a run with a non-zero
+count is to be read before it is used.
+
+*Guarded by* `tests/test_train_window.py`, `tests/test_predictor_training_edges.py`,
+`tests/test_tft_batched_inference.py`.
 
 ### 2.3 The training window is derived, never configured
 
@@ -347,6 +357,8 @@ an invitation to repeat the measurement until it returns the expected value.
 
 - Evaluations whose horizons show `entropy == 1.0985126` (ln 3) and `confidence == 0.34` predate
   the training fix and are invalid.
+- TFT runs whose `failed_windows` in `run_summary.json` name `Time difference between steps`
+  predate the fix for unlabelled bars (2.2) and are invalid.
 - `data/reports/predictions/{symbol}/daily/` is orphaned output from before the run-attribution
   refactor. Nothing reads it; do not resurrect it.
 - Klines written before 2026-07-29 hold only OHLCV. `candles_to_dataframe` now keeps the order-flow

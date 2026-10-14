@@ -396,18 +396,37 @@ class TFTForecaster(SequenceForecaster):
             fit_idx, cal_idx = valid_idx, []
 
         def frame(bars: list[int]) -> pd.DataFrame:
+            # Every bar from the first to the last of `bars`: TimeSeriesDataSet
+            # needs consecutive time steps, and a bar whose forward return is
+            # exactly zero has no label. It keeps its place and its features,
+            # with an unknown target, as in `_predict_month`; `unlabelled`
+            # then drops it as a training target.
             built = []
-            for k in bars:
-                row = {"time_idx": k, "group": self.symbol, "target": IDX_TO_DIR[int(y_dir[k])]}
+            for k in range(bars[0], bars[-1] + 1):
+                target = IDX_TO_DIR[int(y_dir[k])] if y_dir[k] >= 0 else np.nan
+                row = {"time_idx": k, "group": self.symbol, "target": target}
                 for fi, fc in enumerate(self.feature_cols):
                     row[fc] = float(normalised[k, fi])
                 built.append(row)
             return pd.DataFrame(built)
 
+        def labelled_only(dataset: Any, df: pd.DataFrame) -> Any:
+            unlabelled = df.loc[df["target"].isna(), "time_idx"]
+            if unlabelled.empty:
+                return dataset
+            return dataset.filter(lambda index: ~index.time_idx_first_prediction.isin(unlabelled))
+
         df_pd = frame(fit_idx)
         max_enc = min(self.seq_len, len(df_pd) - self.seq_len)
         if max_enc < 5:
             return None
+
+        # The encoder cannot be fitted on a column holding NaN, so where the
+        # frame has an unlabelled bar it is fitted on the labels alone. Same
+        # classes either way: `add_nan` reserves index 0 for the unknown one.
+        target_encoder = self.lib["NaNLabelEncoder"](add_nan=True)
+        if df_pd["target"].isna().any():
+            target_encoder.fit(df_pd["target"].dropna())
 
         try:
             ds = TimeSeriesDataSet(
@@ -420,11 +439,12 @@ class TFTForecaster(SequenceForecaster):
                 min_prediction_length=1,
                 max_prediction_length=1,
                 time_varying_unknown_reals=self.feature_cols,
-                target_normalizer=self.lib["NaNLabelEncoder"](add_nan=True),
+                target_normalizer=target_encoder,
                 add_relative_time_idx=True,
                 add_target_scales=False,
                 add_encoder_length=True,
             )
+            ds = labelled_only(ds, df_pd)
             loader = ds.to_dataloader(train=True, batch_size=32, num_workers=0)
 
             # A validation set built from the held-out slice. Without one,
@@ -439,8 +459,12 @@ class TFTForecaster(SequenceForecaster):
                 lo = max(0, min(cal_idx) - self.seq_len)
                 val_bars = [k for k in range(lo, max(cal_idx) + 1) if y_dir[k] >= 0]
                 if len(val_bars) >= MIN_EARLY_STOPPING_SAMPLES + self.seq_len:
-                    val_ds = TimeSeriesDataSet.from_dataset(
-                        ds, frame(val_bars), predict=False, stop_randomization=True
+                    val_frame = frame(val_bars)
+                    val_ds = labelled_only(
+                        TimeSeriesDataSet.from_dataset(
+                            ds, val_frame, predict=False, stop_randomization=True
+                        ),
+                        val_frame,
                     )
                     val_loader = val_ds.to_dataloader(train=False, batch_size=64, num_workers=0)
 
