@@ -279,7 +279,13 @@ class GRUForecaster(SequenceForecaster):
         if len(valid) < self.seq_len + 5 or len(set(y_slice[valid])) <= 1:
             return None
 
-        ds = SequenceDataset(X_slice, y_slice, self.seq_len)
+        sequences = SequenceDataset(X_slice, y_slice, self.seq_len)
+        # A bar whose forward return is exactly zero has no side, so no label
+        # (labels/forward.py). Its features are known, so it stays inside the
+        # input sequences; it only cannot be a target - CrossEntropyLoss rejects
+        # the -1 outright.
+        labelled = [k for k in range(len(sequences)) if y_slice[k + self.seq_len] >= 0]
+        ds: Any = sequences if len(labelled) == len(sequences) else Subset(sequences, labelled)
         if len(ds) < 8:
             return None
 
