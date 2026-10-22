@@ -200,9 +200,8 @@ def _predict_month(
 ) -> dict[int, tuple[float, ...]]:
     """Predict every bar of a retraining month in one batched pass.
 
-    Building a TimeSeriesDataSet and a DataLoader per bar — which is what this
-    replaces — dominated the runtime: a full run took hours, almost none of it
-    spent in the model.
+    Building a TimeSeriesDataSet and a DataLoader per bar would dominate the
+    runtime: a full run would take hours, almost none of it spent in the model.
 
     The target history is masked at *cutoff*, the first bar of the month. The
     model was fitted on information available at that point, so using the same
@@ -235,9 +234,9 @@ def _predict_month(
 
     # `predict` builds its own Trainer when none is configured, and that one
     # defaults to a TensorBoard logger writing `lightning_logs/version_N` in
-    # the CWD — the flags on the *training* Trainer do not reach it. Batching
-    # cut the call count from one per bar to one per month, which hid the leak
-    # rather than closing it.
+    # the CWD - the flags on the *training* Trainer do not reach it. Batching
+    # cuts the call count from one per bar to one per month, which would hide
+    # such a leak rather than close it.
     #
     # The copy is not optional. pytorch-forecasting does
     #   trainer_kwargs.setdefault("callbacks", ... + [predict_callback])
@@ -484,7 +483,7 @@ class TFTForecaster(SequenceForecaster):
             # The model is used immediately and discarded, so neither a logger
             # nor a checkpoint is wanted. Left on, Lightning writes one
             # lightning_logs/version_N/ and one .ckpt per Trainer - a full run
-            # once left ~18k directories and 260 MB of dead artifacts.
+            # would leave ~18k directories and 260 MB of dead artifacts.
             trainer_kwargs: dict[str, Any] = dict(
                 max_epochs=self.epoch_budget[horizon],
                 enable_progress_bar=False,
@@ -541,8 +540,8 @@ class TFTForecaster(SequenceForecaster):
     def after_fit_month(self, plan: RunPlan, month: Month, bars: list[int]) -> None:
         """One batched pass per horizon for the whole month.
 
-        Rebuilding a dataset and dataloader for every single bar, not the model,
-        is what used to make a run take ~1.5 h.
+        Rebuilding a dataset and dataloader for every single bar would cost more
+        than the model itself - about 1.5 h per run.
         """
         month_bars = [b for b in bars if b >= self.seq_len]
         for horizon in plan.horizons:

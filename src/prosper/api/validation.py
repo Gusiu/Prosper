@@ -1,11 +1,11 @@
 """Checks for every value a request can turn into a filesystem path.
 
 A run is addressed by symbol, model, interval and timestamp, and all four end up
-inside a path - one of which the delete endpoint hands to `shutil.rmtree`. Only
-the symbol used to be checked. `?interval=1d/../../../victim` walked out of the
-data lake through the query string, and on Windows a `%5C` in the timestamp
-segment did the same through the URL path, because a backslash is a separator
-there.
+inside a path - one of which the delete endpoint hands to `shutil.rmtree` - so
+all four are checked, not only the symbol. Unchecked,
+`?interval=1d/../../../victim` walks out of the data lake through the query
+string, and on Windows a `%5C` in the timestamp segment does the same through
+the URL path, because a backslash is a separator there.
 
 Each helper returns the value normalised the way the storage layer expects it,
 or raises 400. Routes call them first, before anything touches the disk.

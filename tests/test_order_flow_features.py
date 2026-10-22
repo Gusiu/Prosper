@@ -1,9 +1,9 @@
-"""Binance ships more than OHLCV per kline; the pipeline used to discard it.
+"""Binance ships more than OHLCV per kline, and the pipeline keeps it.
 
-`extract_csv_from_zip` parsed `num_trades`, `quote_asset_volume` and the
-taker-buy columns on every download, then `candles_to_dataframe` pinned a
-six-column schema that dropped them. The aggregation step even had code to sum
-them, which could never run.
+`extract_csv_from_zip` parses `num_trades`, `quote_asset_volume` and the
+taker-buy columns on every download; a six-column schema in
+`candles_to_dataframe` would drop them, and the aggregation step's code to sum
+them would never run.
 """
 
 from __future__ import annotations

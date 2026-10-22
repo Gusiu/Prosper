@@ -4,14 +4,13 @@ Every predictor does the same thing around its model: decide each horizon's
 training window from the history available, walk the requested range bar by
 bar, refit at the first bar of every calendar month on data that ends before
 that bar, write one row per bar with an explicitly untrained payload wherever a
-horizon could not be fitted, and record what the run did. That skeleton used to
-be written out in full five times, so a rule added to one copy - the power
-warning, the untrained counter, the empty-range error - reached the others one
-at a time or not at all. The baseline, for one, wrote an empty run where the
-other four refused to.
+horizon could not be fitted, and record what the run did. Written out once per
+model, that skeleton would let a rule added to one copy - the power warning, the
+untrained counter, the empty-range error - reach the others one at a time or not
+at all.
 
-A model now supplies two things: what to fit at the start of a month, and what
-to say about one bar. `walk_forward` owns the loop and `finish_run` the output.
+A model supplies two things: what to fit at the start of a month, and what to
+say about one bar. `walk_forward` owns the loop and `finish_run` the output.
 """
 
 from __future__ import annotations

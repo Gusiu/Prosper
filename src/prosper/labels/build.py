@@ -6,10 +6,9 @@ and for anyone to inspect. The models do not read it back: each predictor
 labels the bars it loads, so a stale or missing file can never change a
 forecast.
 
-It used to hold one horizon, `--forward-days 1` by default, shifted by rows
-rather than by calendar span - so on hourly data "one day" was one hour - while
-the models trained on four horizons computed elsewhere. It now holds exactly
-those four, converted to bars of the file's own interval.
+It holds exactly the models' horizons, converted to bars of the file's own
+interval: shifting by rows rather than by calendar span would make "one day"
+one hour on hourly data.
 """
 
 from __future__ import annotations

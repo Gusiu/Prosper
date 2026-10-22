@@ -167,9 +167,9 @@ def download_monthly_zip(
     checksum_path.write_text(checksum_content, encoding="utf-8")
 
     # Verify checksum. An unreadable checksum is a failed verification, not a
-    # skipped one: this used to print a warning and keep the archive, so a
-    # truncated download paired with an error page in place of the CHECKSUM file
-    # went into the lake as if it had been checked.
+    # skipped one: warning and keeping the archive would let a truncated download,
+    # paired with an error page in place of the CHECKSUM file, into the lake as if
+    # it had been checked.
     if verify:
         expected_checksum = read_checksum_file(checksum_path)
         if not expected_checksum or not verify_checksum(zip_path, expected_checksum):

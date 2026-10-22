@@ -137,12 +137,12 @@ def test_per_horizon_budgets_override_the_global_one() -> None:
 
 
 def test_a_nearby_split_rescues_a_single_class_fit_half() -> None:
-    """A single-class older half used to cost the window its holdout entirely.
+    """A single-class older half must not cost the window its holdout.
 
     `calibration_split` divides by position and is blind to labels, so at the
     long horizon — where a year of start dates can share one sign — the older
     part often carries one class. The model cannot be fitted on that, and the
-    fallback (train on everything, drop the holdout) silently disabled both
+    fallback (train on everything, drop the holdout) silently disables both
     early stopping and calibration for the window.
     """
     from prosper.predict.calibration import usable_split
@@ -207,9 +207,8 @@ def test_an_already_valid_split_is_left_alone() -> None:
 def test_epoch_usage_is_reported_against_its_ceiling() -> None:
     """`--epochs` is a ceiling, so what was used is a result of the run.
 
-    It used to be discarded — `_train_gru` returned it and nobody read it — so
-    whether early stopping fired at all was invisible in the output and had to
-    be re-measured with a throwaway probe each time.
+    Reporting it shows whether early stopping fired at all, without a separate
+    probe.
     """
     from prosper.predict.defaults import summarise_epochs
 
@@ -236,11 +235,10 @@ def test_a_zero_ceiling_cannot_be_hit() -> None:
 
 
 def test_a_run_records_its_own_epoch_usage(tmp_path) -> None:
-    """The count is a *result* of the run, and it used to die with the process.
+    """The count is a *result* of the run, so it is written beside the predictions.
 
-    `_train_gru` returned it, `predict_gru` put it in a dict, the CLI printed two
-    other fields and the rest was gone — so "did early stopping fire?" needed a
-    throwaway probe every time. It is now written beside the predictions.
+    Left in the result dict, it would die with the process - the CLI prints two
+    other fields - and "did early stopping fire?" would need a probe every time.
     """
     from prosper.storage.predictions import write_run_summary
 

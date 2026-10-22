@@ -182,9 +182,9 @@ def test_the_window_scales_with_the_interval() -> None:
 # ── The pairing that must not go wrong ───────────────────────────────────────
 
 def test_bounds_pair_each_horizon_with_its_own_span() -> None:
-    """The window and the forward span used to be a loose number and a dict, and
-    pairing one horizon's window with another's span would train on labels the
-    model could not have known. They travel together now."""
+    """The window and the forward span travel together: pairing one horizon's
+    window with another's span would train on labels the model could not have
+    known."""
     windows = resolve_train_windows(None, "1d", DEFAULT_HORIZONS, history_bars=BTC_BARS)
     row = 3000
 

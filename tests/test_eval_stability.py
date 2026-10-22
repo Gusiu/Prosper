@@ -172,7 +172,7 @@ def test_a_thin_month_is_flagged_rather_than_dropped(tmp_path) -> None:
 
 
 def test_dates_are_full_iso_like_every_sibling_command(tmp_path) -> None:
-    """The old command took YYYY-MM here and YYYY-MM-DD for its twin."""
+    """Dates are YYYY-MM-DD here, as in every sibling command."""
     settings = _lake(tmp_path)
     report = eval_stability(
         SYMBOL, "2024-02-01", "2024-02-29", settings=settings, model_type="ml", interval="1d"

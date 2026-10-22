@@ -284,9 +284,9 @@ def test_sub_daily_predictions_score_against_their_own_bar(tmp_path) -> None:
 
 
 def test_divergences_do_not_depend_on_the_process_hash_seed() -> None:
-    """KL and JS used to sum over `set(p) | set(q)`, whose order follows the
-    per-process string hash. Re-evaluating the stored runs changed depth_js in
-    all 39 of them, in the last bit - so the evaluation was not reproducible."""
+    """KL and JS sum in a fixed label order. Over `set(p) | set(q)` the order
+    would follow the per-process string hash, and depth_js would change in the
+    last bit from one process to the next."""
     import os
     import subprocess
     import sys

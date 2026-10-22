@@ -3,18 +3,17 @@
 Two failures would be invisible in the output and fatal to the result, so they
 are pinned here rather than argued about.
 
-The first is **look-ahead across symbols**. Every predictor used to slice its
-training set by row index, which is exact inside one sorted frame and meaningless
-across several: row 400 of BTCUSDT is September 2018 and row 400 of SOLUSDT is
-September 2021. An index-based pooled window would have trained a 2021 forecast
-on bars that had not happened yet, and nothing downstream could tell — accuracy
-would simply have improved.
+The first is **look-ahead across symbols**. Slicing a training set by row index
+is exact inside one sorted frame and meaningless across several: row 400 of
+BTCUSDT is September 2018 and row 400 of SOLUSDT is September 2021. An
+index-based pooled window would train a 2021 forecast on bars that had not
+happened yet, and nothing downstream could tell - accuracy would simply improve.
 
-The second is **silent divergence**. The pooled path is the only path now, taken
+The second is **silent divergence**. The pooled path is the only path, taken
 even for a single symbol, precisely so there is one implementation of "which rows
-may this model see". This file pins that it agrees with the index arithmetic it
-replaced; `test_one_grader.py` exists because three copies of a rule drifted once
-already.
+may this model see". This file pins that it agrees with the index arithmetic on a
+single symbol; separate copies of such a rule drift apart, as `test_one_grader.py`
+guards elsewhere.
 """
 
 from __future__ import annotations
@@ -194,10 +193,10 @@ def test_the_slice_is_reproducible_when_symbols_share_a_timestamp() -> None:
 # ── Timestamps are the prediction key ───────────────────────────────────────
 
 def test_the_frame_keeps_the_zone_the_parquet_had() -> None:
-    """Found by a byte comparison, not by reasoning: routing timestamps through
-    `datetime64` dropped `+00:00` from every `open_time`, and predictions are
-    keyed by `open_time` (invariant 4). The run still looked perfectly healthy —
-    it simply no longer joined against anything written before it.
+    """Routing timestamps through `datetime64` drops `+00:00` from every
+    `open_time`, and predictions are keyed by `open_time` (invariant 4). Such a
+    run looks perfectly healthy - it simply does not join against anything
+    written with the zone.
     """
     frame = _frame("BTCUSDT", datetime(2020, 1, 1, tzinfo=UTC), 50, {"week": 7})
 

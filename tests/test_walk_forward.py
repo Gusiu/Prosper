@@ -1,8 +1,8 @@
 """The walk-forward loop, tested once instead of five times.
 
-Each predictor used to carry its own copy of the loop, so each rule of the
-protocol was only as good as the copy it had reached. These tests drive the
-shared loop with a stub model that records what it was asked.
+With a copy per predictor, each rule of the protocol would be only as good as
+the copy it had reached. These tests drive the shared loop with a stub model
+that records what it was asked.
 """
 
 from __future__ import annotations

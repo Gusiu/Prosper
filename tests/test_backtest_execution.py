@@ -157,12 +157,11 @@ def test_exposure_scales_with_conviction(tmp_path) -> None:
 def test_a_signal_too_small_to_pay_its_costs_is_not_traded(tmp_path) -> None:
     """The cost gate applies in the simulation, not only in the planner.
 
-    `run_backtest` used to call `map_to_recommendation` directly with the static
-    defaults and never computed an expected move, so it skipped this gate
-    entirely — and it also missed the quantile risk gates when those arrived.
-    The same bar could be `Accumulate` here and `Hold` in the recommendation
-    report the simulation was supposed to be trading. Both now go through
-    `SequenceGrader`.
+    Calling `map_to_recommendation` directly with the static defaults would skip
+    this gate and the quantile risk gates, since no expected move is computed
+    there: the same bar could be `Accumulate` here and `Hold` in the
+    recommendation report the simulation is supposed to be trading. Both go
+    through `SequenceGrader`.
 
     With DEPTH the probability-weighted move at edge 0.10 is 0.31% against the
     0.4% round-trip hurdle, so nothing should be bought.
@@ -195,8 +194,8 @@ def test_the_simulation_and_the_planner_agree_on_every_bar(tmp_path) -> None:
     )
 
     # The simulation trades one horizon; the plan covers them all, so the
-    # comparison has to name the same one rather than a literal that used to
-    # happen to be the default.
+    # comparison names the traded one rather than a literal that happens to
+    # match the default.
     simulated = {row["recommendation"] for row in result["chart_data"]}
     planned = {
         window["recommendation"]

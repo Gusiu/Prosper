@@ -100,7 +100,7 @@ def test_evaluation_detail_is_bounded_by_limit(tmp_path, monkeypatch) -> None:
     assert len(detail["worst_predictions"]) == 25
     assert detail["worst_predictions_total"] > 25
     assert len(detail["recommendations"]) <= 25
-    # The heavy nested quality set is no longer part of the response at all.
+    # The heavy nested quality set is not part of the response at all.
     assert "quality_rows" not in detail
 
 

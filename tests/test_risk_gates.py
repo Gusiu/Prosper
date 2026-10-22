@@ -109,10 +109,10 @@ def test_the_gates_stay_ordered_for_any_history() -> None:
 
 
 def test_a_calm_market_still_gets_a_binding_gate() -> None:
-    """The point of the change: the strongest grade stays earnable.
+    """The point of quantile gates: the strongest grade stays earnable.
 
-    Every one of these bars would have cleared the old 0.2 constant, so the
-    gate expressed no preference between them. Against its own distribution the
+    Every one of these bars would clear a fixed 0.2 cut-off, so such a gate
+    would express no preference between them. Against its own distribution the
     quieter half is still separated from the noisier half.
     """
     history = [0.05 + i * 0.001 for i in range(RISK_WARMUP_WINDOWS)]

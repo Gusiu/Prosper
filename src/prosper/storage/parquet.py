@@ -87,9 +87,7 @@ def candles_to_dataframe(
 def save_parquet(df: pl.DataFrame, output_path: Path) -> None:
     """Write *df* to one parquet file, creating its directory.
 
-    There used to be a `partition_by` branch here. Nothing called it, and it
-    passed a keyword this version of polars does not accept, so the first
-    caller would have met a TypeError. Partitioning is done by the path.
+    Partitioning is done by the path, so there is no `partition_by` option.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(output_path, compression="snappy")

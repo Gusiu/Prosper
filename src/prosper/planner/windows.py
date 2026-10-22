@@ -112,9 +112,9 @@ def calculate_risk_metric(
         Risk metric (higher = more risk)
     """
     # Which labels count as "large" is derived from the bin edges, not from a
-    # fixed set of names: naming them pinned the metric to one bin scheme, so
-    # extending the tail (34+ -> 34-55, 55-89, 89-144, 144+) would have
-    # silently dropped the whole tail for every run written under the old one.
+    # fixed set of names: naming them would pin the metric to one bin scheme,
+    # and a run written under another (34+ rather than 34-55, 55-89, 89-144,
+    # 144+) would silently lose its whole tail.
     long_large = sum(prob for label, prob in depth_long_bins.items() if is_large_move_bin(label))
     short_large = sum(prob for label, prob in depth_short_bins.items() if is_large_move_bin(label))
 
@@ -183,8 +183,8 @@ def map_to_recommendation(
     *cost_cleared* is the verdict of `clears_cost` on the expected move: a
     signal whose expected magnitude cannot pay for its own round trip is
     `Hold`, however confident the direction head is. It defaults to True so
-    that callers with no depth distribution to work from keep the old
-    behaviour rather than silently holding everything.
+    that callers with no depth distribution to work from are graded on edge
+    and risk alone rather than silently holding everything.
 
     *gates* are the three risk cut-offs, strongest first, from `risk_gates`.
     The edge thresholds stay fixed because `edge` already has a scale that does
@@ -198,12 +198,11 @@ def map_to_recommendation(
     - Accumulate / Reduce:      |edge| > 0.05, risk < gates[2]
     - Hold:                     |edge| <= 0.05, or conviction the risk does not support
 
-    The ordering matters. An earlier version listed the sell branches
-    weakest-first, so `Reduce` (edge < -0.05, risk < 0.4) shadowed both `Sell`
-    and `Strong Sell`: any risk low enough to qualify as a strong signal also
-    satisfied the weaker branch, which was checked first. `Strong Sell` was
-    unreachable for every (edge, risk) pair and the advertised seven-point scale
-    was really a five-point one.
+    The ordering matters. Listed weakest-first, `Reduce` (edge < -0.05,
+    risk < 0.4) would shadow both `Sell` and `Strong Sell`: any risk low enough
+    to qualify as a strong signal also satisfies the weaker branch, checked
+    first, so `Strong Sell` would be unreachable for every (edge, risk) pair and
+    the seven-point scale a five-point one.
 
     Args:
         edge: Edge value (P_long - P_short)

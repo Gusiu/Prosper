@@ -128,8 +128,8 @@ def test_chart_data_joins_features_labels_and_detects_gaps(tmp_path) -> None:
 
 
 def test_missing_labels_are_reported_for_every_interval(tmp_path) -> None:
-    """The lag check for non-1m intervals used to end the status chain, so a 1d
-    interval with no labels at all was reported complete."""
+    """The lag check for non-1m intervals must not end the status chain, or a
+    1d interval with no labels at all is reported complete."""
     settings = Settings(data_root=tmp_path)
     symbol = "TESTUSDT"
     for interval in ["1m", "1d"]:

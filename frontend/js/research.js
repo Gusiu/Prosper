@@ -84,7 +84,7 @@ export function bindResearchFlagInputs() {
 
 /**
  * Research flags as a structured object. The server turns these into CLI
- * flags; the browser no longer assembles command strings.
+ * flags; the browser never assembles command strings.
  */
 
 

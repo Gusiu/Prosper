@@ -16,9 +16,9 @@ let pollInterval = null;
 /**
  * Render the queue from the server's snapshot.
  *
- * The browser used to keep its own array, so a page reload lost every pending
- * job while the running one carried on — the two views disagreed. The server
- * is now the only place the queue exists.
+ * The server is the only place the queue exists. A copy kept in the browser
+ * would lose every pending job on a page reload while the running one carried
+ * on, and the two views would disagree.
  */
 export function renderQueue(snapshot) {
   const pending = snapshot?.pending ?? [];

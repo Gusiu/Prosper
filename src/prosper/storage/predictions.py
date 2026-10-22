@@ -140,23 +140,20 @@ def write_run_summary(
 ) -> Path:
     """Persist a run's own description beside its predictions.
 
-    Everything a predictor learns about its own execution used to die with the
-    process: the result dict went to the caller, the CLI printed two lines of it
-    and the rest was gone. `epochs_used` in particular is a *result* — the epoch
-    count is decided by early stopping, not by the flag — and it was invisible
-    the moment the command exited, so checking whether stopping fired at all
-    needed a throwaway instrumented probe every time.
+    Otherwise everything a predictor learns about its own execution would die
+    with the process: the result dict goes to the caller, the CLI prints two
+    lines of it and the rest is gone. `epochs_used` in particular is a *result* -
+    the epoch count is decided by early stopping, not by the flag - and checking
+    whether stopping fired would need an instrumented probe every time.
 
     Invariant 5 says every derived artifact names its source run; the same logic
     says a run should name its own configuration.
 
     The **seed and the deterministic flag are stamped here**, not by the callers,
     because a run that cannot say what produced it cannot be reproduced — and the
-    project's entire reproducibility claim rests on being able to re-run one. The
-    omission surfaced while comparing two seeds of the same configuration: the
-    artifacts were indistinguishable, and which seed made which had to be
-    recovered from a shell log. Stamping it in one place means no predictor can
-    forget it, which five separately-maintained result dicts had all managed to.
+    project's entire reproducibility claim rests on being able to re-run one.
+    Stamping it in one place means no predictor can forget it; without it, two
+    seeds of the same configuration would leave indistinguishable artifacts.
     """
     if settings is None:
         settings = get_settings()

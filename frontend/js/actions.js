@@ -2,10 +2,10 @@
  * One delegated click handler for the whole document.
  *
  * Markup declares intent with `data-action` (plus `data-*` parameters) instead
- * of `onclick="fn(...)"`. That matters for the rows the JS builds itself: those
- * used to interpolate a symbol straight into an attribute string, so any value
- * containing a quote would have broken — or injected — markup. It also means no
- * function has to be reachable as a global.
+ * of `onclick="fn(...)"`. That matters for the rows the JS builds itself:
+ * interpolating a symbol straight into an attribute string would let any value
+ * containing a quote break - or inject - markup. It also means no function has
+ * to be reachable as a global.
  */
 
 const handlers = new Map();

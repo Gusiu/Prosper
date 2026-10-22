@@ -95,11 +95,10 @@ def get_ai_predictions(
 ):
     """Return a run's predictions, optionally narrowed to one calendar month.
 
-    The response is capped. Asking for a whole run used to serialise every bar
-    — 5 MB for a 1d run and far more for a sub-daily one — and the docstring
-    telling callers to pass ``year``/``month`` was the only thing standing
-    between the browser and that payload. `truncated` says when the cap bit,
-    and the month narrowing is still the right way to page through a run.
+    The response is capped. A whole run means every bar - 5 MB for a 1d run
+    and far more for a sub-daily one - and asking callers to pass
+    ``year``/``month`` is no guard against that payload. `truncated` says when
+    the cap bit, and the month narrowing is the way to page through a run.
     """
     settings = get_settings()
     symbol = require_symbol(symbol)

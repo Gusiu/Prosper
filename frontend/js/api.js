@@ -1,9 +1,9 @@
 /**
  * Every HTTP call the dashboard makes.
  *
- * Endpoint paths used to be string literals scattered across ~2900 lines, so a
- * renamed route meant hunting through the UI. Keeping them here also makes the
- * server's surface readable in one screen.
+ * With every endpoint path in one module, a renamed route is changed in one
+ * place rather than hunted through the UI, and the server's surface is readable
+ * in one screen.
  */
 
 async function request(url, options) {

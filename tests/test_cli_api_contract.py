@@ -119,11 +119,11 @@ def _typer_default(command: str, option: str):
 
 
 def test_the_api_does_not_impose_an_epoch_count_the_caller_never_chose() -> None:
-    """This is why the dashboard trained 5 epochs where the CLI trained 20.
+    """Otherwise the dashboard trains 5 epochs where the CLI trains 20.
 
-    Typer's default applies only when the flag is absent, and the API used to
-    append `--epochs` on every call, so its own default always won. Two
-    definitions of one value; the API's silently overrode the other.
+    Typer's default applies only when the flag is absent, so an API appending
+    `--epochs` on every call would always win with its own default. Two
+    definitions of one value; the API's would silently override the other.
     """
     for model_type in ("gru", "tft"):
         argv = build_train_command(

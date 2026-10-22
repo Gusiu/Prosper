@@ -94,10 +94,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Prosper Analysis Platform UI", lifespan=lifespan)
 
 # No CORS middleware, on purpose. The dashboard is served by this app, so every
-# request it makes is same-origin and needs no permission. The middleware that
-# used to sit here granted `allow_origins=["*"]` with every method, which let
-# any page open in the same browser send DELETE and POST requests to the lake:
-# remove a symbol's data, delete runs, queue training jobs.
+# request it makes is same-origin and needs no permission. Granting
+# `allow_origins=["*"]` with every method would let any page open in the same
+# browser send DELETE and POST requests to the lake: remove a symbol's data,
+# delete runs, queue training jobs.
 #
 # Same-origin is not enough on its own for a server on localhost: DNS rebinding
 # points an attacker's domain at 127.0.0.1, and the browser then treats that

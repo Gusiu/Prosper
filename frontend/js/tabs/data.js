@@ -232,9 +232,9 @@ export function fixQuality(symbol) {
   const item = state.globalInventory.find((i) => i.symbol === symbol);
   if (!item) return alert("Symbol not found in inventory");
 
-  // The server derives the repair chain from the inventory. This used to be
-  // reconstructed here by regex-matching the human-readable quality message,
-  // which silently stopped working whenever that wording changed.
+  // The server derives the repair chain from the inventory. Reconstructing it
+  // here by regex-matching the human-readable quality message would silently
+  // stop working whenever that wording changed.
   submitTask(`Fix Quality [${symbol}]`, "/api/pipeline/repair", {
     symbol,
     flags: getResearchFlags(),

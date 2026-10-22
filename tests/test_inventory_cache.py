@@ -1,10 +1,9 @@
 """The inventory cache must notice a partition that disappeared.
 
-`_fingerprint` used to stat only the direct children of each root, and the
-tree is root/<interval>/symbol=X/year=Y/month=Z — so losing three months of 1d
-klines changed nothing it looked at. The cached inventory kept reporting
-"Complete" indefinitely, and `⟳ Refresh` (which does not force a rescan) could
-not clear it; only `🛡️ Verify Quality` saw reality.
+The tree is root/<interval>/symbol=X/year=Y/month=Z, so a `_fingerprint` that
+stats only the direct children of each root would not see three months of 1d
+klines disappear. The cached inventory would keep reporting "Complete", and
+`⟳ Refresh` (which does not force a rescan) could not clear it.
 """
 
 from __future__ import annotations

@@ -71,7 +71,7 @@ def test_an_uncleared_signal_becomes_hold_however_strong() -> None:
 
 
 def test_the_gate_defaults_open() -> None:
-    """Callers with no depth distribution keep the old behaviour."""
+    """Callers with no depth distribution are graded on edge and risk alone."""
     assert map_to_recommendation(0.9, 0.05) == "Strong Buy"
 
 

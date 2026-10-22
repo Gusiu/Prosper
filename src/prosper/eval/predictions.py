@@ -157,12 +157,12 @@ def probability_entropy(probs: dict[str, float]) -> float:
 def _union_in_order(p: dict[str, float], q: dict[str, float]) -> list[str]:
     """Labels of both distributions, P's order first.
 
-    These sums used to run over `set(p) | set(q)`, whose order follows Python's
-    per-process string hashing. Floating-point addition is not associative, so
-    the same inputs gave results differing in the last bit from one process to
-    the next: re-evaluating all 39 runs changed depth_js in every one of them,
-    by at most 2.2e-16. Small, but an evaluation that is not reproducible bit
-    for bit cannot be used to show that anything else is.
+    Iterating `set(p) | set(q)` instead would follow Python's per-process
+    string hashing. Floating-point addition is not associative, so the same
+    inputs would give results differing in the last bit from one process to the
+    next - measured, depth_js moved by up to 2.2e-16 in each of 39 re-evaluated
+    runs. Small, but an evaluation that is not reproducible bit for bit cannot
+    be used to show that anything else is.
     """
     return list(dict.fromkeys([*p, *q]))
 
@@ -424,8 +424,8 @@ def _recommendation_payload(
     simulation that traded it.
     """
     # Normalise over the bins the run itself used, not the current constant:
-    # runs written under the 8-bin scheme name a `34+` bin that no longer
-    # exists, and normalising them against today's labels would drop the whole
+    # runs written under the 8-bin scheme name a `34+` bin that today's scheme
+    # does not have, and normalising them against today's labels would drop the whole
     # tail — most of their probability mass — without raising anything.
     raw_long = horizon_pred.get("depth_long_bins", {}) or {}
     raw_short = horizon_pred.get("depth_short_bins", {}) or {}
@@ -454,11 +454,11 @@ def _recommendation_payload(
 def max_entropy(n_classes: int) -> float:
     """Entropy of a uniform guess over *n_classes* — the "knows nothing" point.
 
-    Every normalisation below is expressed against it. It used to be written as
-    `math.log(3.0)` in three places, which was right while direction had three
-    classes and silently wrong afterwards: a coin-flip forecast over two classes
-    has NLL ln 2 = 0.693, and dividing that by ln 3 = 1.099 credited pure
-    guessing with 37% of the points meant for skill.
+    Every normalisation below is expressed against it, not against a literal
+    such as `math.log(3.0)` that is right for one class count only: a coin-flip
+    forecast over two classes has NLL ln 2 = 0.693, and dividing that by
+    ln 3 = 1.099 would credit pure guessing with 37% of the points meant for
+    skill.
     """
     return math.log(max(2, n_classes))
 

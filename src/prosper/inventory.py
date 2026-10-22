@@ -237,10 +237,10 @@ class DataManager:
                         symbol, interval, base_partitions
                     )
                 ):
-                    # Lagging behind the 1m base. This used to be a bare
-                    # `elif interval != "1m"`, which ended the chain for every
-                    # other interval: missing features or labels were only ever
-                    # reported for 1m.
+                    # Lagging behind the 1m base. A condition, not a bare
+                    # `elif interval != "1m"`: that would end the chain for
+                    # every other interval, and missing features or labels
+                    # would only ever be reported for 1m.
                     status = "incomplete"
                     msg = f"Outdated data (missing {len(missing_partitions)} month(s) compared to 1m)"
                 elif not self._has_valid_features(f_path):

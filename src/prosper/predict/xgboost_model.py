@@ -70,7 +70,7 @@ class XGBoostForecaster(TabularForecaster):
         # XGBClassifier requires labels 0..k-1. A window where only one side
         # occurs, or where the classes are not contiguous, is remapped to a
         # dense range; `present_classes` maps the probabilities back. Without
-        # it, such a window used to fail and disable the horizon entirely.
+        # it, such a window would fail and disable the horizon entirely.
         present_classes = sorted(set(y_fit))
         clf = None
         calibrator = TemperatureCalibrator(1.0)

@@ -123,14 +123,14 @@ def get_symbol_metadata() -> dict[str, Any]:
 def get_training_defaults() -> dict[str, Any]:
     """Defaults the training form should pre-fill from.
 
-    The form used to carry `value="5"` in the HTML while the CLI defaulted to
-    20, so the same model trained from the dashboard ran a different
-    configuration. There is one definition now and the browser reads it.
+    A value typed into the HTML would be a second definition: a form carrying
+    `value="5"` while the CLI defaults to 20 trains the same model differently
+    from the dashboard. There is one definition and the browser reads it.
     """
     return {
-        # Names *and* spans: the dashboard used to write "≈52w (365d)" into
-        # markup, which was already wrong once the year became 364 days. A label
-        # that restates a value is a second definition of it.
+        # Names *and* spans, so the dashboard writes no label of its own: a
+        # label that restates a value is a second definition of it, and goes
+        # stale the moment the value changes.
         "horizons": [
             {
                 "name": h.name,

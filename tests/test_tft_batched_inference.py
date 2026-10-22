@@ -1,8 +1,8 @@
 """TFT inference is batched per retraining month, not rebuilt per bar.
 
-The old loop built a pandas frame, a TimeSeriesDataSet and a DataLoader with
-batch_size=1 for every bar and every horizon. That — not the model — is why a
-full run took hours.
+Building a pandas frame, a TimeSeriesDataSet and a DataLoader with
+batch_size=1 for every bar and every horizon would cost hours per run - far more
+than the model itself.
 """
 
 from __future__ import annotations

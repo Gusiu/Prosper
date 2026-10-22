@@ -1,10 +1,10 @@
 """Training defaults, defined once.
 
-The CLI and the API each used to carry their own copy. Typer's default only
-applies when a flag is absent, and `api/commands.py` appends `--epochs`
-unconditionally, so the API's value won every time: the same model trained
-from the dashboard ran 5 epochs where the CLI ran 20. Nothing was wrong with
-either number — the defect was that there were two of them.
+A copy in the CLI and another in the API would disagree as soon as either
+changed. Typer's default only applies when a flag is absent, so whichever side
+sends the flag wins: the same model trained from the dashboard would run 5
+epochs where the CLI runs 20. Neither number would be wrong; having two of them
+is the defect.
 
 Everything that needs a default reads it from here: `cli.py` as its Typer
 default, `api/models.py` as its field default, and the browser through
@@ -112,12 +112,10 @@ def summarise_epochs(
 
     `--epochs` is a ceiling and early stopping decides the rest, so the number
     of epochs a horizon actually trained for is a result of the run, not an
-    input to it. It used to be discarded: `_train_gru` returned it and nobody
-    read it, and TFT never looked at `trainer.current_epoch`. That made the
-    stopping decision — the thing the criterion was changed to fix — invisible
-    in the output, so checking whether it fired at all needed a throwaway probe
-    each time. `hit_ceiling` is the one to watch: a horizon that reaches its
-    budget in most windows is being limited by the budget, not by the signal.
+    input to it. Reporting it makes the stopping decision visible in the
+    output, so whether it fired needs no separate probe. `hit_ceiling` is the
+    one to watch: a horizon that reaches its budget in most windows is being
+    limited by the budget, not by the signal.
     """
     summary: dict[str, dict[str, float]] = {}
     for name, counts in used.items():
@@ -228,7 +226,7 @@ def parse_window_overrides(raw: str | None) -> dict[str, int]:
 # preference: it follows from the horizon and the data.
 DEFAULT_TRAIN_WINDOW_DAYS: int | None = None
 
-# The width every horizon used before the window was derived. Kept because
+# One fixed width for every horizon, the alternative to deriving the window.
 # `Settings.baseline_rolling_window_days` is a stored configuration value that
-# has to mean something concrete, and because tests pin the old behaviour.
+# has to mean something concrete, and tests pin the fixed-width behaviour.
 LEGACY_TRAIN_WINDOW_DAYS = 730

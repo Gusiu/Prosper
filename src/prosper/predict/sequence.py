@@ -83,8 +83,8 @@ class SequenceForecaster:
         self.normalised = self.normalise(self.features[max(0, first - span) : first])
         if self.normalised is None:
             # No history behind this bar: nothing to normalise on and nothing to
-            # train on, so every horizon of the month is untrained. TFT used to
-            # skip the bar here instead - it was missing from the output.
+            # train on, so every horizon of the month is untrained. Skipping the
+            # bar instead would leave it missing from the output.
             return
         for horizon in plan.horizons:
             if horizon.name in plan.selected:
@@ -153,9 +153,9 @@ def load_sequence(
 ) -> tuple[pl.DataFrame, list[str]] | dict[str, Any]:
     """One symbol's features in time order, and the columns a model trains on.
 
-    An include list, not an exclude list: the old form took every column in the
-    parquet bar a handful of names, which fed the model raw price levels - and
-    would have adopted each new relative column alongside its absolute twin.
+    An include list, not an exclude list: taking every column in the parquet
+    bar a handful of names would feed the model raw price levels - and adopt
+    each new relative column alongside its absolute twin.
     """
     path = get_features_parquet_path(symbol, interval, settings=settings)
     if not path.exists():

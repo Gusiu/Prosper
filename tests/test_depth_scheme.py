@@ -1,10 +1,10 @@
 """The depth-bin scheme has one definition, and artifacts name their own.
 
-Two failure modes are guarded here. First, the scheme used to be copy-pasted
-into five predictors, a Settings default and the SPA, so changing it would have
-silently desynchronised the models. Second, runs written before the tail was
-extended carry a `34+` bin; a reader that assumes the current labels drops that
-bin, and with it most of the long-horizon probability mass.
+Two failure modes are guarded here. First, a scheme copied into the predictors,
+a Settings default and the SPA would let one change silently desynchronise the
+models. Second, runs written under an earlier scheme carry a `34+` bin; a reader
+that assumes the current labels drops that bin, and with it most of the
+long-horizon probability mass.
 """
 
 from __future__ import annotations
@@ -58,8 +58,8 @@ def test_settings_take_their_bins_from_the_domain() -> None:
 def test_the_tail_reaches_144() -> None:
     """A one-year move on BTC has a median magnitude near 59%.
 
-    With the old 34+ top bin, 70% of long-horizon labels landed in it and the
-    depth head degenerated into a constant.
+    With 34+ as the top bin, 70% of long-horizon labels would land in it and
+    the depth head would degenerate into a constant.
     """
     assert DEPTH_BIN_LABELS[-1] == "144+"
     assert "34-55" in DEPTH_BIN_LABELS

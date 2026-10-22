@@ -99,9 +99,9 @@ def test_predict_ml_writes_interval_versioned_folder(prepared_lake) -> None:
 def test_every_horizon_is_actually_trained(prepared_lake) -> None:
     """No horizon may fall back to the untrained placeholder for the whole run.
 
-    This is the regression guard for the training-window collapse: with a
-    window narrower than the horizon, `medium` and `long` used to be 100%
-    placeholder while the run still looked successful.
+    This guards against the training-window collapse: with a window narrower
+    than the horizon, the longer horizons would be 100% placeholder while the
+    run still looked successful.
     """
     settings, symbol = prepared_lake
 

@@ -62,13 +62,13 @@ console = Console()
 def _fail(error: Exception) -> NoReturn:
     """Report a failed command and exit 1, keeping where it failed.
 
-    Every command used to catch Exception and print only its message, so an
-    unexpected failure became one line with no location - and the dashboard's
-    task log shows exactly these lines, so that was all anyone ever had. The
-    traceback goes to stderr in plain text, which survives any console encoding.
+    Printing only the message would turn an unexpected failure into one line
+    with no location - and the dashboard's task log shows exactly these lines,
+    so that would be all anyone had. The traceback goes to stderr in plain
+    text, which survives any console encoding.
 
-    A `typer.Exit` raised on purpose inside the `try` passes straight through;
-    it used to be caught here too and reported as "Error: 1".
+    A `typer.Exit` raised on purpose inside the `try` passes straight through
+    rather than being reported as "Error: 1".
     """
     if isinstance(error, typer.Exit):
         raise error

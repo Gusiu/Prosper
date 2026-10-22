@@ -1,8 +1,8 @@
 """The task queue lives on the server, not in the browser.
 
-It used to be a JavaScript array: reloading the page lost every pending job
-while the one already running carried on, so the UI and the server disagreed
-about what was scheduled.
+Kept as a JavaScript array, it would lose every pending job on a page reload
+while the one already running carried on, and the UI and the server would
+disagree about what is scheduled.
 """
 
 from __future__ import annotations

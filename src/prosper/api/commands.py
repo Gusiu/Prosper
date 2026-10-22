@@ -317,8 +317,8 @@ def build_repair_commands(
     """Derive the repair chain for a symbol from its inventory entry.
 
     Lives here rather than in the browser because it is a decision about the
-    data lake: the frontend used to reconstruct it by regex-matching the
-    human-readable quality message, which broke the moment that text changed.
+    data lake. Reconstructed in the frontend by regex-matching the
+    human-readable quality message, it would break the moment that text changed.
 
     Returns the commands plus a human-readable explanation of each step.
     """

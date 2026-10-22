@@ -138,9 +138,9 @@ def test_baseline_history_does_not_depend_on_the_requested_range(lake) -> None:
 
 
 def test_a_window_that_raises_is_counted_not_only_printed(lake, monkeypatch) -> None:
-    """A failed fit becomes untrained rows, which is right, and used to leave no
-    trace but a console line. A run with failing months then looked like a run
-    with a short history. The count now reaches run_summary.json."""
+    """A failed fit becomes untrained rows, which is right, and is counted in
+    run_summary.json: with only a console line to show for it, a run with failing
+    months would look like a run with a short history."""
     import xgboost as xgb
 
     def refuse(self, *args, **kwargs):

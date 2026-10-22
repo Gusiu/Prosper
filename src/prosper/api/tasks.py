@@ -3,9 +3,9 @@
 One worker by design: the pipeline steps mutate the same data lake, so running
 two at once would interleave writes to the same parquet partitions.
 
-The queue itself lives here rather than in the browser. It used to be a
-JavaScript array, so reloading the page lost every pending job while the one in
-flight kept running — the UI and the server disagreed about what was scheduled.
+The queue itself lives here rather than in the browser. Kept as a JavaScript
+array, it would lose every pending job on a page reload while the one in flight
+kept running, and the UI and the server would disagree about what is scheduled.
 """
 
 from __future__ import annotations

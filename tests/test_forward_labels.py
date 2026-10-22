@@ -1,9 +1,9 @@
 """One label definition, used by every model and by the label file.
 
-The same forward-return loop used to live in four predictors, and the label
-builder wrote a fifth version no model read: one horizon, shifted by rows, so on
-hourly data "one day" was one hour. These tests pin the shared function to the
-loop it replaced and hold the builder to the models' horizons.
+These tests pin the shared function to a per-bar reference loop and hold the
+label builder to the models' horizons, so the label file and the models cannot
+disagree - a builder shifting by rows would make "one day" one hour on hourly
+data.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ SYMBOL = "TESTUSDT"
 
 
 def _reference(closes, steps, bins):
-    """The loop that used to sit in gru.py and tft.py, verbatim."""
+    """A per-bar reference loop: the arithmetic the vectorised function must match."""
     n = len(closes)
     direction, depth = {}, {}
     for name, forward in steps.items():
@@ -82,7 +82,7 @@ def test_matches_the_loop_it_replaced(scheme) -> None:
 
 
 def test_nan_has_no_side() -> None:
-    """NaN fails both `== 0` and `> 0`, so it used to fall through to `short`."""
+    """NaN fails both `== 0` and `> 0`, so unchecked it falls through to `short`."""
     assert direction_from_return(math.nan) is None
     assert direction_from_return(0.0) is None
     assert direction_from_return(0.01) == "long"
@@ -131,7 +131,7 @@ def test_the_file_holds_every_horizon_the_models_train(tmp_path) -> None:
 
 
 def test_a_horizon_is_the_same_span_at_every_interval(tmp_path) -> None:
-    """At 1h the week label looks 168 bars ahead, not 7 - the old builder's bug."""
+    """At 1h the week label looks 168 bars ahead, not 7."""
     settings = Settings(data_root=tmp_path)
     _write_klines(settings, "1h", 24 * 40, timedelta(hours=1))
 
@@ -165,7 +165,7 @@ def test_the_chart_shows_the_traded_horizon(tmp_path) -> None:
 
 
 def test_a_one_bar_label_file_counts_as_outdated(tmp_path) -> None:
-    """The old builder's files are real parquet with the wrong content."""
+    """A one-bar label file is real parquet with the wrong content."""
     settings = Settings(data_root=tmp_path)
     manager = DataManager(settings=settings)
     path = get_labels_parquet_path(SYMBOL, "1d", settings=settings)

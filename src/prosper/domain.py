@@ -12,14 +12,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 # ── Direction constants ──────────────────────────────────────────────────────
-# Two classes, not three. `flat` used to absorb every move under 1%, which was
-# a *cost* threshold wearing a label's clothes: it destroyed the difference
-# between +0.2% and +0.9%, baked one venue's fees into the training data, and
-# degenerated with horizon (6.7% of short-horizon labels but 0.23% of
-# long-horizon ones, so the long head was really answering a two-class
-# question anyway). The cost hurdle now lives at the decision layer as
-# `Settings.planner_round_trip_cost`, and how far a move goes is the depth
-# head's job — its `0-1` bin holds exactly the rows `flat` used to.
+# Two classes, not three. A `flat` class absorbing every move under 1% would be
+# a *cost* threshold wearing a label's clothes: it destroys the difference
+# between +0.2% and +0.9%, bakes one venue's fees into the training data, and
+# degenerates with horizon (measured: 6.7% of short-horizon labels but 0.23% of
+# long-horizon ones, so the long head answers a two-class question anyway). The
+# cost hurdle lives at the decision layer as `Settings.planner_round_trip_cost`,
+# and how far a move goes is the depth head's job - its `0-1` bin holds the
+# small moves.
 DIRECTION_CLASSES: list[str] = ["short", "long"]
 DIR_TO_IDX: dict[str, int] = {c: i for i, c in enumerate(DIRECTION_CLASSES)}
 IDX_TO_DIR: dict[int, str] = {i: c for i, c in enumerate(DIRECTION_CLASSES)}
@@ -240,8 +240,8 @@ def direction_from_return(r: float | None) -> str | None:
     and the row is excluded rather than being silently assigned a side.
 
     Returns ``None`` when *r* is ``None`` or NaN too, for callers passing
-    nullables. NaN used to come out as ``short``: it fails ``== 0`` and ``> 0``
-    alike, so it fell through to the other side.
+    nullables. NaN needs the explicit check: it fails ``== 0`` and ``> 0``
+    alike, so it would fall through to ``short``.
     """
     if r is None or r != r or r == 0.0:
         return None
@@ -285,13 +285,12 @@ def assign_depth_bin(value_pct: float, bins: list[tuple[float, float | None]]) -
 # ── Depth-bin constants ──────────────────────────────────────────────────────
 # The bin edges follow the Fibonacci sequence. They run to 144+ because the
 # scale of a move grows with the horizon: on BTCUSDT a one-year move has a
-# median magnitude near 59%, so the old top bin (34+) swallowed 70% of the
-# long-horizon labels and the depth head degenerated into a constant. The
-# extended tail restores its resolution — measured on 2020-09..2026-06, the
-# effective number of bins used at the long horizon goes from 2.75 to 7.22.
-# It starts at 0 because there is no flat class to absorb the sub-1% moves any
-# more: the depth head now covers the whole magnitude axis, and `0-1` holds
-# exactly the rows that used to be labelled flat.
+# median magnitude near 59%, so a top bin at 34+ would swallow 70% of the
+# long-horizon labels and the depth head would degenerate into a constant. The
+# tail to 144+ keeps its resolution - measured on 2020-09..2026-06, the
+# effective number of bins used at the long horizon is 7.22 against 2.75 with a
+# 34+ top bin. It starts at 0 because there is no flat class to absorb the
+# sub-1% moves: the depth head covers the whole magnitude axis.
 DEFAULT_DEPTH_BINS_STR = "0-1,1-2,2-3,3-5,5-8,8-13,13-21,21-34,34-55,55-89,89-144,144+"
 
 # Runs produced before 2026-07-29 used this scheme. Their artifacts name their

@@ -35,12 +35,11 @@ class Settings(BaseSettings):
     def _derive_directories(self) -> "Settings":
         """Fill in the four sub-directories. Creating them is the writers' job.
 
-        This used to `mkdir` all five paths whenever a Settings object was built,
-        so reading the configuration changed the disk. Any command run with the
-        wrong `--root` or working directory left `raw/`, `processed/`, `reports/`
-        and `meta/` wherever it pointed - four such empty folders sat in the
-        repository root. Every writer already creates the directory it writes
-        into, so nothing needs them to exist in advance.
+        Creating them here would make reading the configuration change the disk:
+        any command run with the wrong `--root` or working directory would leave
+        `raw/`, `processed/`, `reports/` and `meta/` wherever it pointed. Every
+        writer creates the directory it writes into, so nothing needs them to
+        exist in advance.
         """
         defaults = {
             "raw_data_dir": self.data_root / "raw",

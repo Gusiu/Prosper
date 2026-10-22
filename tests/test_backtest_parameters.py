@@ -1,8 +1,9 @@
 """The execution assumptions are inputs, and the comparisons are not.
 
 Fees, slippage, the cost hurdle, the rebalance floor, the exposure targets and
-the trend benchmark's lookback used to be constants in the module or fields in
-Settings. That made the simulation a verdict when it should be an instrument.
+the trend benchmark's lookback are parameters, not constants in the module or
+fields in Settings: fixed, they would make the simulation a verdict when it
+should be an instrument.
 
 The risk in opening them is obvious: a knob-twiddling machine that produces a
 flattering number. What prevents it is that `nulls` travels with every result

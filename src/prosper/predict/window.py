@@ -43,13 +43,12 @@ MIN_TRAINING_ROWS = 730
 class TrainingWindows:
     """How far back each horizon trains and how far forward it looks.
 
-    The two used to be one number and one dict, because every horizon shared a
-    window. They cannot share one any more: a window wide enough to hold a few
+    Each horizon has its own window: a window wide enough to hold a few
     independent annual observations costs the weekly horizon most of the bars it
     would otherwise be scored on, and the weekly horizon has no such problem to
     fix. Keeping both spans on one object means a caller cannot pair the window
-    of one horizon with the forward span of another — which is the mistake that
-    would silently train on labels the model could not have known.
+    of one horizon with the forward span of another - the mistake that would
+    silently train on labels the model could not have known.
     """
 
     forward_steps: Mapping[str, int]

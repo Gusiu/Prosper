@@ -1,10 +1,10 @@
 /**
  * A minimal publish/subscribe bus.
  *
- * It exists to break dependency cycles: the queue used to import the three tab
- * modules just to refresh them when a task finished, and the models tab
- * imported the evaluation and backtest tabs to repopulate their run pickers.
- * Publishing an event instead keeps the dependency graph acyclic, so a module
+ * It exists to break dependency cycles: without it the queue would import the
+ * three tab modules just to refresh them when a task finished, and the models
+ * tab would import the evaluation and backtest tabs to repopulate their run
+ * pickers. Publishing an event keeps the dependency graph acyclic, so a module
  * only imports what it actually calls.
  */
 

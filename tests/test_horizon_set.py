@@ -72,7 +72,7 @@ def _independent_observations(window_days: int, forward_days: int) -> float:
 
 
 def test_a_quarter_carries_more_than_twice_a_half_year() -> None:
-    """The measured reason the half-year was replaced, not a preference."""
+    """The measured reason for a quarter rather than a half-year, not a preference."""
     quarter = _independent_observations(730, 91)
     half_year = _independent_observations(730, 182)
 

@@ -4,17 +4,14 @@ A label says what the market did over a horizon: the side of the forward return
 and the depth bin of its magnitude. Every model trains on it, evaluation scores
 against it, and the dashboard draws it.
 
-It used to exist five times. Each predictor carried its own copy of the same
-loop - pool.py, gru.py, tft.py and baseline.py - and `prosper labels build`
-wrote a fifth version that no model read: one horizon, `--forward-days 1`,
-shifted by rows rather than by calendar span, so on hourly data "one day" meant
-one hour. The copies agreed, because they shared `direction_from_return` and
-`assign_depth_bin`; nothing made them keep agreeing.
+Every predictor and `prosper labels build` call it, so the models and the
+label file cannot disagree about what a label is: separate copies of the loop
+could agree today, and nothing would make them keep agreeing.
 
-This version is vectorised so the label builder can afford it on 1m data, and
-it is exact rather than approximately equal to the loop it replaces: the
-arithmetic is the same IEEE operations applied element-wise, and the predictors
-are pinned byte for byte against the loop's output.
+It is vectorised so the label builder can afford it on 1m data, and it is exact
+rather than approximately equal to the per-bar loop: the arithmetic is the same
+IEEE operations applied element-wise, and the predictors are pinned byte for
+byte against the loop's output.
 """
 
 from __future__ import annotations

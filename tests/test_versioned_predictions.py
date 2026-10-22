@@ -202,9 +202,8 @@ def test_evaluate_model_predictions_builds_safe_command(monkeypatch) -> None:
 def test_deleting_a_run_removes_its_derived_artifacts(tmp_path, monkeypatch) -> None:
     """Invariant 5: an artifact names its source run, so it cannot outlive it.
 
-    A deleted run used to leave its backtest and recommendations on disk, and
-    any reader globbing those directories reported the dead run's numbers next
-    to current ones.
+    Left on disk, a deleted run's backtest and recommendations would be
+    reported by any reader globbing those directories, next to current ones.
     """
     settings = Settings(data_root=tmp_path)
     monkeypatch.setattr("prosper.api.routes.runs.get_settings", lambda: settings)

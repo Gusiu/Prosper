@@ -189,8 +189,8 @@ def get_ai_evaluation_detail(
 ) -> dict[str, Any]:
     """Summary, calibration and the worst rows of one evaluation run.
 
-    Deliberately bounded: an unfiltered response for a 1h run used to be ~71 MB
-    because every recommendation was serialised so the UI could render fifty.
+    Deliberately bounded: serialising every recommendation so the UI can render
+    fifty would make the response for a 1h run about 71 MB.
     """
     settings = get_settings()
     symbol = require_symbol(symbol)

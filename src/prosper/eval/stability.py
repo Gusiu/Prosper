@@ -1,12 +1,10 @@
 """Is a run's forecast quality stable over time, or was it good in one year?
 
-This replaces `eval walkforward`, which reported three things and only owned
-one of them. Its per-horizon logloss and Brier duplicated `eval predictions`,
-which already scores the whole run. Its PnL duplicated `eval backtest`, and did
-so incorrectly: it carried a second copy of `EXPOSURE_POLICY` that mapped
-`Hold` to 0.0 while the backtest leaves the previous exposure in place, so the
-two disagreed on every neutral bar. It also called itself walk-forward while
-retraining nothing — `train_months` was accepted and ignored.
+It reports one thing. Run-level logloss and Brier belong to `eval predictions`,
+which scores the whole run, and returns to `eval backtest`. A second copy of
+either here would drift from the original: a duplicated exposure policy that
+maps `Hold` to 0.0, while the backtest keeps the previous exposure, disagrees on
+every neutral bar.
 
 What only this module can answer is whether quality *holds up*. A single
 aggregate over six years hides the difference between a model that is
@@ -14,8 +12,8 @@ consistently mediocre and one that was excellent in 2021 and useless since,
 and the second is worth knowing before anything goes in a thesis. So the report
 is a per-month time series of proper scores per horizon, and nothing else.
 
-Because the recommendations are no longer needed, this reads only the run's own
-predictions and the realised closes — the planner does not have to have run.
+It needs no recommendations, so it reads only the run's own predictions and the
+realised closes - the planner does not have to have run.
 """
 
 from __future__ import annotations
@@ -64,8 +62,7 @@ def load_closes(symbol: str, interval: str, settings: Settings) -> pl.DataFrame:
     It must be the run's own interval, not 1d. Reading daily closes for an
     hourly run makes all 24 bars of a date resolve to one candle and measures
     the horizon from the daily close rather than from the bar the forecast was
-    made on — the defect invariant 4 exists to prevent, and one this module
-    inherited from `eval walkforward` before it was rewritten.
+    made on - the defect invariant 4 exists to prevent.
 
     The whole series is loaded rather than the requested months, because a
     forward return reaches past `end` by up to a year.
@@ -123,8 +120,7 @@ def eval_stability(
 ) -> dict[str, Any]:
     """Month-by-month forecast quality for one versioned prediction run.
 
-    *start* and *end* are ``YYYY-MM-DD``, as everywhere else in `eval`; the old
-    command took ``YYYY-MM`` here and ``YYYY-MM-DD`` for its sibling backtest.
+    *start* and *end* are ``YYYY-MM-DD``, as everywhere else in `eval`.
 
     Untrained horizons contribute nothing (invariant 3), and a bar whose
     realised forward return is exactly zero has no side to score.

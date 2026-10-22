@@ -41,11 +41,11 @@ def test_map_to_recommendation_valid_domain() -> None:
 
 
 def test_every_step_of_the_scale_is_reachable() -> None:
-    """`Strong Sell` used to be unreachable for every (edge, risk) pair.
+    """Every grade, `Strong Sell` included, is reachable for some (edge, risk).
 
-    The sell branches were ordered weakest-first, so `Reduce` shadowed both
-    `Sell` and `Strong Sell`: any risk low enough for a strong signal also
-    satisfied the weaker branch, which was tested first.
+    Ordered weakest-first, `Reduce` would shadow both `Sell` and `Strong Sell`:
+    any risk low enough for a strong signal also satisfies the weaker branch,
+    tested first.
     """
     reachable = {
         map_to_recommendation(edge / 100, risk / 100)

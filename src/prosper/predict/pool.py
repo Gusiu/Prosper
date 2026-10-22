@@ -64,7 +64,7 @@ class SymbolFrame:
     open_time: np.ndarray  # datetime64[us]
     # For writing: the timestamps exactly as the parquet holds them, zone and
     # all. Predictions are keyed by `open_time` (invariant 4), and a run whose
-    # keys lost their `+00:00` no longer joins against one that kept it — which
+    # keys lost their `+00:00` does not join against one that kept it - which
     # is a corrupted run, not a formatting quibble.
     timestamps: list[datetime]
     close: np.ndarray

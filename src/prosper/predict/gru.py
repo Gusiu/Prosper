@@ -217,9 +217,9 @@ def _robust_normalise(X_train: np.ndarray, X_all: np.ndarray):
 
     Returns ``None`` when there is nothing to fit on. That happens at the very
     first bar of a symbol whose history begins inside the requested range — the
-    causal window reaches back from bar 0 and finds nothing — and it used to
-    crash inside `np.percentile`, which indexes `arr[-1]` and cannot do so on an
-    empty array. A bar with no history behind it has no training rows either, so
+    causal window reaches back from bar 0 and finds nothing - and
+    `np.percentile` would crash on it, since it indexes `arr[-1]`. A bar with no
+    history behind it has no training rows either, so
     the honest outcome is an untrained bar (invariant 3), not an exception that
     loses the whole run.
     """

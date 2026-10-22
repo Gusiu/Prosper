@@ -33,10 +33,10 @@ class TrainRequest(BaseModel):
     interval: str = "1d"
     start: str
     end: str
-    # No default of its own. Sending a value the caller never chose is what
-    # made the dashboard train 5 epochs where the CLI trained 20: Typer's
-    # default only applies when the flag is absent, and the API used to append
-    # it unconditionally. `None` means "say nothing and let the CLI decide".
+    # No default of its own. Typer's default only applies when the flag is
+    # absent, so a value the caller never chose would override the CLI's - the
+    # dashboard would train 5 epochs where the CLI trains 20. `None` means "say
+    # nothing and let the CLI decide".
     epochs: int | None = None
     epochs_by_horizon: dict[str, int] = Field(default_factory=dict)
     # Same rule as the epochs above: empty means "say nothing". The CLI derives

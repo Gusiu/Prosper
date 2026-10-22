@@ -123,8 +123,8 @@ def test_no_command_offers_a_flag_that_does_nothing() -> None:
 
 
 def test_reading_the_configuration_does_not_touch_the_disk(tmp_path: Path) -> None:
-    """Building Settings used to create raw/, processed/, reports/ and meta/ under
-    whatever root it was given; four empty folders sat in the repository root."""
+    """Building Settings must not create raw/, processed/, reports/ and meta/
+    under whatever root it is given."""
     from prosper.config import Settings
 
     root = tmp_path / "somewhere"

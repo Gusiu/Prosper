@@ -124,10 +124,9 @@ ASSUMPTIONS = [
 def _assumptions(config: BacktestConfig, momentum_lookback: int, hurdle: float) -> list[str]:
     """The assumption list, stating the values actually used.
 
-    The benchmark line used to name "a 7-bar momentum rule" as a constant, so it
-    said 7 while the run used 30 — a value with two definitions, which is the
-    defect this project keeps finding. Everything adjustable is now read back
-    from what the simulation ran with.
+    A benchmark line naming "a 7-bar momentum rule" as a constant would say 7
+    while the run used 30 - a value with two definitions. Everything adjustable
+    is read back from what the simulation ran with.
     """
     grades = ", ".join(
         f"{grade} {100 * share:.0f}%" for grade, share in config.exposure_policy.items()
