@@ -2289,7 +2289,7 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
     _results_rank_stability(doc, runs)
 
     add_heading(doc, "10.3. Wyniki szczegółowe", 2)
-    add_figure(doc, "porownanie", "Trafność średnia każdej architektury na czterech horyzontach. Wąsy to odchylenie standardowe między przebiegami różniącymi się wyłącznie ziarnem, dla modeli gradientowych zerowe; przerywana linia oznacza poziom losowy. Nachodzenie wąsów na siebie i na linię 0,5 jest treścią wyniku.")
+    add_figure(doc, "porownanie", "Trafność średnia każdej architektury na czterech horyzontach. Wąsy to odchylenie standardowe między wszystkimi przebiegami danej architektury - na różnych instrumentach i pod różnymi ziarnami; przerywana linia oznacza poziom losowy. Nachodzenie wąsów na siebie i na linię 0,5 jest treścią wyniku.")
     for horizon in HORIZON_NAMES:
         rows = []
         for symbol in SYMBOLS:
@@ -2366,7 +2366,7 @@ def _results_baserate(doc: Document) -> None:
         return
 
     add_heading(doc, "10.4. Trafność wobec częstości klasy większościowej", 2)
-    add_figure(doc, "rozrzut", "Każdy przebieg jako osobny punkt, horyzont tygodniowy. Rozrzut wewnątrz GRU i TFT pochodzi wyłącznie ze zmiany ziarna inicjalizacji i jest porównywalny z odległościami między architekturami - dlatego ranking oparty na pojedynczym przebiegu nie ma podstaw. Punkty modeli gradientowych się pokrywają, ponieważ ziarno nie zmienia ich wyniku.")
+    add_figure(doc, "rozrzut", "Każdy przebieg jako osobny punkt, horyzont tygodniowy. W obrębie architektury punkty ułożono według instrumentu, a trzy ziarna jednego instrumentu leżą w jednej kolumnie - dla modeli gradientowych pokrywają się, ponieważ ziarno nie zmienia ich wyniku. Różnice między instrumentami i ziarnami są większe niż odległości między architekturami - dlatego ranking oparty na pojedynczym przebiegu nie ma podstaw.")
     add_body(
         doc,
         "Trafność 0,50 oznacza rzut monetą tylko wtedy, gdy obie klasy są jednakowo częste. "
