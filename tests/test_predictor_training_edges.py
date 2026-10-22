@@ -163,6 +163,53 @@ def test_a_window_that_raises_is_counted_not_only_printed(lake, monkeypatch) -> 
     assert all(not row[h]["trained"] for row in _run_rows(lake, "xgboost") for h in HORIZON_NAMES)
 
 
+@pytest.mark.slow
+def test_a_gru_window_that_raises_is_counted_and_the_run_goes_on(lake, monkeypatch) -> None:
+    """GRU let a training exception end the whole run, where TFT and XGBoost
+    write that window as untrained and count it. Only the window that raised
+    loses its rows: the same horizon trains again the next month."""
+    from prosper.predict import gru
+
+    failing = ("quarter", (2022, 6))
+    current: dict[str, tuple[str, tuple[int, int]]] = {}
+    reseed, train = gru.GRUForecaster.reseed, gru._train_gru
+
+    # `reseed` is called with the window's identity just before training, which
+    # `_train_gru` itself is never told.
+    def remember_window(self, horizon, month):
+        current["window"] = (horizon, month)
+        reseed(self, horizon, month)
+
+    def train_or_raise(*args, **kwargs):
+        if current["window"] == failing:
+            raise RuntimeError("simulated training failure")
+        return train(*args, **kwargs)
+
+    monkeypatch.setattr(gru.GRUForecaster, "reseed", remember_window)
+    monkeypatch.setattr(gru, "_train_gru", train_or_raise)
+    result = gru.predict_gru(
+        symbol=SYMBOL, start="2022-06-01", end="2022-07-31", settings=lake,
+        interval="1d", train_window_days=730, epochs=1, hidden_size=8,
+    )
+
+    failed = result["failed_windows"]
+    assert failed["count"] == 1
+    assert failed["by_horizon"] == {"quarter": 1}
+    assert "simulated training failure" in failed["first"][0]["error"]
+    # The 30 bars of June 2022 at the failing horizon, and none anywhere else.
+    assert result["untrained_horizons"] == {
+        name: 30 if name == "quarter" else 0 for name in HORIZON_NAMES
+    }
+
+    run_dir = next((lake.reports_predictions_dir / SYMBOL).glob("gru_1d_*"))
+    summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["failed_windows"]["count"] == 1
+    for row in _run_rows(lake, "gru"):
+        in_failed_window = row["date"].startswith("2022-06")
+        for horizon in HORIZON_NAMES:
+            assert row[horizon]["trained"] is not (in_failed_window and horizon == "quarter")
+
+
 def test_a_clean_run_reports_no_failures(lake) -> None:
     result = predict_xgboost(
         symbol=SYMBOL, start="2022-06-01", end="2022-06-30", settings=lake,

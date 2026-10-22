@@ -279,62 +279,68 @@ class GRUForecaster(SequenceForecaster):
         if len(valid) < self.seq_len + 5 or len(set(y_slice[valid])) <= 1:
             return None
 
-        sequences = SequenceDataset(X_slice, y_slice, self.seq_len)
-        # A bar whose forward return is exactly zero has no side, so no label
-        # (labels/forward.py). Its features are known, so it stays inside the
-        # input sequences; it only cannot be a target - CrossEntropyLoss rejects
-        # the -1 outright.
-        labelled = [k for k in range(len(sequences)) if y_slice[k + self.seq_len] >= 0]
-        ds: Any = sequences if len(labelled) == len(sequences) else Subset(sequences, labelled)
-        if len(ds) < 8:
-            return None
+        # A window that raises is written untrained and counted in
+        # run_summary.json, as TFT does, instead of ending the whole run.
+        try:
+            sequences = SequenceDataset(X_slice, y_slice, self.seq_len)
+            # A bar whose forward return is exactly zero has no side, so no label
+            # (labels/forward.py). Its features are known, so it stays inside the
+            # input sequences; it only cannot be a target - CrossEntropyLoss rejects
+            # the -1 outright.
+            labelled = [k for k in range(len(sequences)) if y_slice[k + self.seq_len] >= 0]
+            ds: Any = sequences if len(labelled) == len(sequences) else Subset(sequences, labelled)
+            if len(ds) < 8:
+                return None
 
-        # Hold out the newest sequences of the training region for the
-        # calibrator and the stopping rule. They still end before `train_end`,
-        # so their labels are realised - invariant 6 is untouched.
-        split, _ = calibration_split(0, len(ds))
-        fit_ds: Any = ds
-        cal_range: list[int] = []
-        if split < len(ds):
-            seq_labels = [int(ds[k][1]) for k in range(len(ds))]
-            if len(set(seq_labels[:split])) <= 1:
-                # Nothing to learn from a single-class fit half. Look for a
-                # nearby split that works before giving up: doing neither cost 5
-                # of the 13 affected windows their holdout, and with it early
-                # stopping and calibration.
-                alternative = usable_split(seq_labels, split)
-                split = len(ds) if alternative is None else alternative
+            # Hold out the newest sequences of the training region for the
+            # calibrator and the stopping rule. They still end before `train_end`,
+            # so their labels are realised - invariant 6 is untouched.
+            split, _ = calibration_split(0, len(ds))
+            fit_ds: Any = ds
+            cal_range: list[int] = []
             if split < len(ds):
-                fit_ds = Subset(ds, list(range(split)))
-                cal_range = list(range(split, len(ds)))
+                seq_labels = [int(ds[k][1]) for k in range(len(ds))]
+                if len(set(seq_labels[:split])) <= 1:
+                    # Nothing to learn from a single-class fit half. Look for a
+                    # nearby split that works before giving up: doing neither cost 5
+                    # of the 13 affected windows their holdout, and with it early
+                    # stopping and calibration.
+                    alternative = usable_split(seq_labels, split)
+                    split = len(ds) if alternative is None else alternative
+                if split < len(ds):
+                    fit_ds = Subset(ds, list(range(split)))
+                    cal_range = list(range(split, len(ds)))
 
-        self.reseed(horizon, month)
-        loader = DataLoader(fit_ds, batch_size=self.batch_size, shuffle=True, drop_last=False)
-        model = GRUClassifier(
-            self.features.shape[1], self.hidden_size, self.num_layers, self.dropout
-        ).to(self.device)
-        optimiser = torch.optim.Adam(model.parameters(), lr=self.lr)
-        self.epochs_used[horizon].append(
-            _train_gru(
-                model,
-                loader,
-                optimiser,
-                nn.CrossEntropyLoss(),
-                dataset=ds,
-                holdout=cal_range,
-                max_epochs=self.epoch_budget[horizon],
-                device=self.device,
+            self.reseed(horizon, month)
+            loader = DataLoader(fit_ds, batch_size=self.batch_size, shuffle=True, drop_last=False)
+            model = GRUClassifier(
+                self.features.shape[1], self.hidden_size, self.num_layers, self.dropout
+            ).to(self.device)
+            optimiser = torch.optim.Adam(model.parameters(), lr=self.lr)
+            self.epochs_used[horizon].append(
+                _train_gru(
+                    model,
+                    loader,
+                    optimiser,
+                    nn.CrossEntropyLoss(),
+                    dataset=ds,
+                    holdout=cal_range,
+                    max_epochs=self.epoch_budget[horizon],
+                    device=self.device,
+                )
             )
-        )
-        self.calibrators[horizon] = _fit_gru_calibrator(model, ds, cal_range, self.device)
-        # The GRU head only models direction; depth comes from the realised
-        # conditional distribution over the same window.
-        self.depths[horizon] = empirical_depth(
-            directions[train_start:train_end],
-            self.labels.depth[horizon][train_start:train_end],
-            self.depth_labels,
-        )
-        return model
+            self.calibrators[horizon] = _fit_gru_calibrator(model, ds, cal_range, self.device)
+            # The GRU head only models direction; depth comes from the realised
+            # conditional distribution over the same window.
+            self.depths[horizon] = empirical_depth(
+                directions[train_start:train_end],
+                self.labels.depth[horizon][train_start:train_end],
+                self.depth_labels,
+            )
+            return model
+        except Exception as e:
+            self.failures.record("training", horizon, str(month), e)
+            return None
 
     def probabilities(self, bar: int, horizon: str) -> np.ndarray | None:
         if bar < self.seq_len or self.normalised is None:
