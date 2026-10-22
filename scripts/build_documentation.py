@@ -133,6 +133,12 @@ def fmt(value: float | None, places: int = 3) -> str:
     return "—" if value is None else f"{value:.{places}f}"
 
 
+def pl(value: float, spec: str = ".3f") -> str:
+    """A number for Polish prose, with a decimal comma. Tables keep the point the
+    software prints, so a reader can match them against the artifacts."""
+    return format(value, spec).replace(".", ",")
+
+
 # ── document furniture ───────────────────────────────────────────────────────
 
 
@@ -335,8 +341,9 @@ def page_break(doc: Document) -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-def build() -> str:
+def build(path: str = "docs/Prosper_Dokumentacja_Techniczna.docx") -> str:
     runs = load_runs()
+    _check_thesis_against_data(runs)
     doc = Document()
 
     section = doc.sections[0]
@@ -372,6 +379,7 @@ def build() -> str:
     _chapter_12a_worked_example(doc)
     _chapter_12b_screenshots(doc)
     _chapter_13_limits(doc)
+    _chapter_14_summary(doc, runs)
     _chapter_14_bibliography(doc)
     _lists_of_tables_and_figures(doc)
     _appendix_tests(doc)
@@ -381,8 +389,7 @@ def build() -> str:
     _appendix_runs(doc, runs)
     _appendix_glossary(doc)
 
-    os.makedirs("docs", exist_ok=True)
-    path = "docs/Prosper_Dokumentacja_Techniczna.docx"
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     doc.save(path)
     return path
 
@@ -459,14 +466,85 @@ def rank_agreement(runs: dict) -> tuple[dict[str, list[str]], float]:
     return order, float(np.mean(correlations)) if correlations else float("nan")
 
 
+def seed_invariant(runs: dict) -> set[tuple[str, str]]:
+    """(symbol, model) cells whose runs under different seeds scored identically.
+
+    Both gradient-boosting models learn without subsampling, so a seed has
+    nothing to vary: their three runs are one measurement taken three times.
+    Read from the artifacts rather than assumed, so a model that starts
+    subsampling drops out of this set by itself.
+    """
+    return {
+        key for key, entries in runs.items()
+        if len(entries) > 1 and all(e["by_horizon"] == entries[0]["by_horizon"] for e in entries)
+    }
+
+
+def distinct_runs(runs: dict) -> dict:
+    """The runs with each seed-invariant cell collapsed to one measurement."""
+    repeated = seed_invariant(runs)
+    return {key: entries[:1] if key in repeated else entries for key, entries in runs.items()}
+
+
+def architecture_spread(runs: dict) -> dict[str, dict]:
+    """Per horizon: how far apart the architectures' mean accuracies lie, against
+    how far one architecture moves under another seed.
+
+    The seed spread is taken only from cells a seed changes. A deterministic
+    model contributes exactly zero, which would lower the noise floor and turn
+    ties between the learners into a ranking.
+    """
+    repeated = seed_invariant(runs)
+    spread: dict[str, dict] = {}
+    for horizon in HORIZON_NAMES:
+        means: dict[str, float] = {}
+        within: list[float] = []
+        for model in MODELS:
+            values: list[float] = []
+            for symbol in SYMBOLS:
+                accs = horizon_values(runs.get((symbol, model), []), horizon, "accuracy")
+                values.extend(accs)
+                if len(accs) > 1 and (symbol, model) not in repeated:
+                    within.append(float(np.std(accs, ddof=1)))
+            if values:
+                means[model] = float(np.mean(values))
+        learners = [v for m, v in means.items() if m != "baseline"]
+        spread[horizon] = {
+            "means": means,
+            "range": max(means.values()) - min(means.values()) if len(means) > 1 else None,
+            "range_learners": max(learners) - min(learners) if len(learners) > 1 else None,
+            "noise": float(np.mean(within)) if within else None,
+        }
+    return spread
+
+
+def learners_beyond_noise(spread: dict[str, dict]) -> list[str]:
+    """Horizons on which the learning architectures lie further apart than a seed moves them."""
+    return [
+        horizon for horizon, cell in spread.items()
+        if cell["noise"] is not None and cell["range_learners"] is not None
+        and cell["range_learners"] > cell["noise"]
+    ]
+
+
 def study_facts(runs: dict) -> dict:
-    """The few numbers the abstracts quote, all read from the artifacts."""
+    """The few numbers the abstracts and the summary quote, all read from the artifacts.
+
+    Significance is counted over distinct measurements: the three identical runs
+    of a seed-invariant model count once.
+    """
     symbols = sorted({symbol for symbol, _ in runs})
     total = sum(len(v) for v in runs.values())
-    facts: dict = {"symbols": len(symbols), "runs": total, "by_horizon": {}}
+    distinct = distinct_runs(runs)
+    facts: dict = {
+        "symbols": len(symbols), "runs": total,
+        "distinct": sum(len(v) for v in distinct.values()),
+        "seed_invariant": sorted({model for _, model in seed_invariant(runs)}),
+        "by_horizon": {},
+    }
     for horizon in HORIZON_NAMES:
         accuracies, above, below, estimable = [], 0, 0, 0
-        for entries in runs.values():
+        for entries in distinct.values():
             for run in entries:
                 cell = run["by_horizon"].get(horizon) or {}
                 if cell.get("accuracy") is None:
@@ -485,6 +563,8 @@ def study_facts(runs: dict) -> dict:
             "above": above, "below": below, "estimable": estimable,
         }
     facts["rank_correlation"] = rank_agreement(runs)[1]
+    facts["spread"] = architecture_spread(runs)
+    facts["beyond_noise"] = learners_beyond_noise(facts["spread"])
     return facts
 
 
@@ -496,27 +576,40 @@ def abstract_texts(runs: dict) -> tuple[list[str], list[str]]:
 
     powered_above = week.get("above", 0) + month.get("above", 0)
     powered = week.get("estimable", 0) + month.get("estimable", 0)
+    # One side of a two-sided 95% interval: what chance alone puts above it.
+    expected = round(powered * 0.025)
+    by_chance = powered_above <= 1.5 * expected + 1
     rho = f["rank_correlation"]
+    horizons = len(f["spread"])
+    within = horizons - len(f["beyond_noise"])
+    deterministic = set(f["seed_invariant"]) == {"ml", "xgboost"}
 
     polish = [
         "Praca dotyczy pytania, w jakim stopniu architektury uczenia maszynowego różnego "
         "rodzaju potrafią przewidzieć kierunek zmiany ceny aktywa wyłącznie na podstawie "
         "historii jego notowań. W ramach pracy zaprojektowano i zbudowano platformę Prosper, "
         "obejmującą pozyskiwanie danych giełdy Binance, kontrolę ich jakości, wyznaczanie cech "
-        "i etykiet, trening pięciu architektur - od modelu odniesienia, przez regresję "
-        "logistyczną i wzmacnianie gradientowe, po sieć rekurencyjną GRU i Temporal Fusion "
-        "Transformer - we wspólnym protokole kroczącym, ocenę regułami oceny właściwej z "
+        "i etykiet, trening pięciu architektur - od modelu odniesienia, przez dwie implementacje "
+        "wzmacniania gradientowego (scikit-learn i XGBoost), po sieć rekurencyjną GRU i Temporal "
+        "Fusion Transformer - we wspólnym protokole kroczącym, ocenę regułami oceny właściwej z "
         "przedziałami ufności uwzględniającymi nakładanie się etykiet oraz symulację handlową "
         "z czterema hipotezami zerowymi. System udostępnia interfejs wiersza poleceń i panel "
         "przeglądarkowy.",
         f"Badanie objęło {f['runs']} przebiegów na {f['symbols']} instrumentach, w czterech "
-        "horyzontach od tygodnia do roku, każdą konfigurację pod trzema ziarnami "
-        f"inicjalizacji. Na horyzontach tygodniowym i miesięcznym, jedynych o wystarczającej "
-        f"mocy statystycznej, trafność istotnie wyższą od losowej osiągnęło {powered_above} z "
-        f"{powered} przebiegów. Na horyzoncie rocznym liczba obserwacji niezależnych nie "
-        "pozwala na żaden rozstrzygający pomiar. Ranking architektur zmienia się z horyzontem "
-        f"(średnia korelacja rang {rho:+.2f}), więc różnice zmierzone dla jednego horyzontu "
-        "nie przenoszą się na inny. Wynik jest zgodny ze słabą formą hipotezy efektywności "
+        "horyzontach od tygodnia do roku, każdą konfigurację pod trzema ziarnami inicjalizacji"
+        + (". Oba modele gradientowe uczą się deterministycznie, więc różnych pomiarów jest "
+           f"{f['distinct']}. " if deterministic else f"; różnych pomiarów jest {f['distinct']}. ")
+        + "Na horyzontach tygodniowym i miesięcznym, jedynych o wystarczającej mocy "
+        f"statystycznej, trafność istotnie wyższą od losowej dało {powered_above} z {powered} "
+        "pomiarów - "
+        + ("nie więcej, niż przy braku jakiejkolwiek przewagi daje sam przypadek"
+           if by_chance else "więcej, niż przy braku przewagi dałby sam przypadek")
+        + f" (oczekiwanie: około {expected}). Na horyzoncie rocznym liczba obserwacji "
+        "niezależnych nie pozwala na żaden rozstrzygający pomiar. Różnice między "
+        "architekturami uczącymi się mieszczą się w rozrzucie wynikającym z losowej "
+        f"inicjalizacji na {within} z {horizons} horyzontów, a ich ranking zmienia się z "
+        f"horyzontem (średnia korelacja rang {pl(rho, '+.2f')}), więc nie są właściwością "
+        "architektury. Wynik jest zgodny ze słabą formą hipotezy efektywności "
         "rynku i stanowi górne ograniczenie przewagi możliwej do uzyskania z samych notowań. "
         "Pozytywnym wynikiem inżynierskim jest kalibracja: system poprawnie raportuje własną "
         "niepewność.",
@@ -526,19 +619,28 @@ def abstract_texts(runs: dict) -> tuple[list[str], list[str]]:
         "forecast the direction of an asset's price from its quotation history alone. It "
         "presents Prosper, a platform designed and built for the purpose: it acquires Binance "
         "market data and checks its quality, derives features and labels, trains five "
-        "architectures - a frequency baseline, logistic regression, gradient boosting, a GRU "
-        "recurrent network and a Temporal Fusion Transformer - under one walk-forward "
+        "architectures - a frequency baseline, gradient-boosted trees from scikit-learn and "
+        "from XGBoost, a GRU recurrent network and a Temporal Fusion Transformer - under one "
+        "walk-forward "
         "protocol, evaluates them with proper scoring rules and confidence intervals that "
         "account for overlapping labels, and simulates trading against four null hypotheses. "
         "It is operated from a command line and a browser dashboard.",
         f"The study comprises {f['runs']} runs on {f['symbols']} instruments, over four "
-        "horizons from a week to a year, each configuration under three initialisation "
-        "seeds. On the weekly and monthly horizons, the only ones with enough statistical "
-        f"power, {powered_above} of {powered} runs reached an accuracy significantly above "
-        "chance. At the yearly horizon the number of independent observations allows no "
-        "conclusive measurement. The ranking of architectures changes with the horizon "
-        f"(mean rank correlation {rho:+.2f}), so a difference measured on one horizon does "
-        "not carry over to another. The result is consistent with the weak form of the "
+        "horizons from a week to a year, each configuration under three initialisation seeds"
+        + (". Both gradient-boosting models learn deterministically, which leaves "
+           f"{f['distinct']} distinct measurements. " if deterministic
+           else f"; {f['distinct']} of the measurements are distinct. ")
+        + "On the weekly and monthly horizons, the only ones with enough statistical power, "
+        f"{powered_above} of {powered} measurements reached an accuracy significantly above "
+        "chance - "
+        + ("no more than chance alone produces without any edge"
+           if by_chance else "more than chance alone would produce")
+        + f" (about {expected} expected). At the yearly horizon the number of independent "
+        "observations allows no conclusive measurement. The differences between the learning "
+        f"architectures stay within the spread of random initialisation on {within} of "
+        f"{horizons} horizons, and their ranking changes with the horizon (mean rank "
+        f"correlation {rho:+.2f}), so they are not a property of the architecture. The result "
+        "is consistent with the weak form of the "
         "efficient market hypothesis and bounds the edge obtainable from prices alone. "
         "Calibration is a positive engineering result: the system reports its own "
         "uncertainty correctly.",
@@ -618,23 +720,24 @@ def _chapter_1_introduction(doc: Document) -> None:
     add_quote(
         doc,
         "Żadna z badanych architektur uczenia maszynowego nie osiąga w prognozie kierunku ceny "
-        "z samej historii notowań trafności na poziomie losowym, a wszystkie wypadają poniżej "
-        "reguły opartej na częstości klasy większościowej. Różnice między architekturami "
-        "wewnątrz jednego horyzontu przekraczają rozrzut wynikający z losowej inicjalizacji, "
-        "lecz ich porządek nie utrzymuje się przy zmianie horyzontu, nie odzwierciedlają więc "
-        "trwałej właściwości architektury. Orzeczenie tego wymaga warstwy weryfikacji zdolnej "
-        "odróżnić brak różnicy od niedostatecznej dokładności pomiaru.",
+        "z samej historii notowań trafności istotnie wyższej od losowej, a wszystkie wypadają "
+        "poniżej reguły opartej na częstości klasy większościowej. Różnice między "
+        "architekturami uczącymi się nie wykraczają wyraźnie poza rozrzut wynikający z losowej "
+        "inicjalizacji, a ich porządek zmienia się wraz z horyzontem, nie odzwierciedlają więc "
+        "właściwości architektury. Orzeczenie tego wymaga warstwy weryfikacji zdolnej odróżnić "
+        "brak różnicy od niedostatecznej dokładności pomiaru.",
     )
     add_body(
         doc,
         "Teza rozstrzyga trzy rzeczy naraz i warto je rozdzielić. Pierwsza dotyczy poziomu: "
         "żadna architektura nie przekracza progu losowego, a punktem odniesienia nie jest "
         "0,500, lecz częstość klasy liczniejszej, ponieważ w badanym okresie klasy nie są "
-        "zrównoważone. Druga dotyczy różnic: są one mierzalne, to znaczy większe niż szum "
-        "inicjalizacji - poprzednia wersja tezy twierdziła inaczej i została skorygowana po "
-        "zakończeniu pełnego przeliczenia. Trzecia dotyczy trwałości tych różnic: architektura "
-        "najlepsza na jednym horyzoncie bywa najgorsza na innym, więc różnica opisuje parę "
-        "(architektura, horyzont), a nie samą architekturę.",
+        "zrównoważone. Druga dotyczy różnic: między architekturami uczącymi się są one tego "
+        "samego rzędu co szum samej inicjalizacji, więc ranking tych architektur nie ma "
+        "podstaw; wyraźnie odróżnia się jedynie model odniesienia, słabszy od nich na "
+        "horyzontach dłuższych niż tydzień. Trzecia dotyczy trwałości: architektura najlepsza "
+        "na jednym horyzoncie bywa najgorsza na innym - czego należy oczekiwać, gdy różnice "
+        "mieszczą się w szumie.",
     )
 
     add_body(
@@ -687,13 +790,16 @@ def _chapter_1_introduction(doc: Document) -> None:
             "Żadna z pięciu badanych architektur nie osiąga trafności kierunkowej istotnie "
             "większej od losowej na horyzoncie o wystarczającej mocy statystycznej. Jest to "
             "wynik ograniczony od góry, a nie twierdzenie o niemożliwości prognozowania.",
-            "Różnice między architekturami wewnątrz jednego horyzontu są mierzalne - "
-            "przekraczają rozrzut wynikający z ziarna inicjalizacji - lecz ranking architektur "
-            "zmienia się wraz z horyzontem, przy korelacji rang bliskiej zeru. Wybór "
-            "architektury na podstawie jednego horyzontu nie przenosi się na inny.",
+            "Różnice między architekturami uczącymi się są tego samego rzędu co rozrzut "
+            "wynikający z ziarna inicjalizacji, a ranking architektur zmienia się wraz z "
+            "horyzontem, przy korelacji rang bliskiej zeru. Wybór architektury na podstawie tych "
+            "wyników nie ma podstaw; wyraźnie odróżnia się jedynie model odniesienia, słabszy od "
+            "pozostałych na horyzontach dłuższych niż tydzień.",
             "Trafność pojedynczego przebiegu obarczona jest szumem inicjalizacji, którego "
             "przedział ufności liczony wewnątrz tego przebiegu nie obejmuje. Każdą "
-            "konfigurację uruchomiono zatem trzykrotnie, pod różnymi ziarnami.",
+            "konfigurację uruchomiono zatem trzykrotnie, pod różnymi ziarnami. Dla obu modeli "
+            "gradientowych ziarno nie zmienia wyniku - uczą się bez podpróbkowania - więc szum "
+            "inicjalizacji mierzą wyłącznie GRU i TFT.",
             "Kalibracja prognoz jest osiągalna tam, gdzie trafność nie jest: system poprawnie "
             "raportuje własną niepewność, co stanowi osobny, pozytywny wynik inżynierski.",
             "Wiążącym ograniczeniem jest liczba niezależnych obserwacji, nie pojemność modelu. "
@@ -846,7 +952,7 @@ def _chapter_2_requirements(doc: Document) -> None:
             ["WF-08",
              "Udostępnienie co najmniej pięciu architektur o różnym sposobie wprowadzenia "
              "zależności czasowej, porównywalnych w ramach jednego protokołu.",
-             "model odniesienia, regresja logistyczna, XGBoost, GRU, TFT",
+             "model odniesienia, wzmacnianie gradientowe scikit-learn, XGBoost, GRU, TFT",
              _verified_by("test_predict_interval_integration.py",
                           "test_tft_class_order.py")],
             ["WF-09",
@@ -1233,7 +1339,8 @@ def _acceptance_criteria(doc: Document) -> None:
              "spełnione"],
             ["Powtórzenie przebiegu pod tym samym ziarnem daje wynik identyczny co do bajtu.",
              "porównanie plików wynikowych dwóch uruchomień",
-             "spełnione dla wszystkich architektur, na procesorze CPU"],
+             "spełnione dla wszystkich architektur, na procesorze CPU, przy tej samej "
+             "liczbie wątków"],
             ["Każdy raportowany wynik da się odtworzyć z artefaktu na dysku bez odwołania do "
              "notatek.",
              "run_summary.json zawiera model, interwał, ziarno i tryb",
@@ -1245,7 +1352,7 @@ def _acceptance_criteria(doc: Document) -> None:
             ["Każda architektura uruchomiona pod co najmniej trzema ziarnami, aby rozrzut "
              "inicjalizacji był widoczny.",
              "liczba przebiegów na komórkę w załączniku E",
-             "spełnione"],
+             "spełnione; dla obu modeli gradientowych ziarno nie zmienia wyniku (rozdział 10)"],
             ["Cały potok obsługiwalny zarówno z wiersza poleceń, jak i z przeglądarki.",
              f"{commands} poleceń CLI; komplet tras HTTP w załączniku C",
              "spełnione"],
@@ -1260,7 +1367,8 @@ def _acceptance_criteria(doc: Document) -> None:
         doc, "Tabela",
         "Kryteria akceptacji wraz ze stanem na dzień wygenerowania dokumentu. Odtwarzalność "
         "co do bajtu zweryfikowano dla każdej architektury, w tym obu sieci neuronowych, na "
-        "procesorze CPU, na którym policzono wszystkie wyniki (rozdział 9.6). Na procesorze "
+        "procesorze CPU, na którym policzono wszystkie wyniki, przy stałej liczbie wątków "
+        "(rozdział 9.6). Na procesorze "
         "graficznym nie była badana: tamtejsze implementacje części operacji nie są "
         "deterministyczne bez dodatkowych ustawień.",
     )
@@ -2062,7 +2170,20 @@ def _chapter_9_methodology(doc: Document) -> None:
     add_body(
         doc,
         "Odtwarzalność zweryfikowano pomiarowo: powtórzenie tej samej konfiguracji daje plik "
-        "predykcji identyczny co do bajtu dla każdego modelu korzystającego z losowości.",
+        "predykcji identyczny co do bajtu dla każdego modelu korzystającego z losowości - pod "
+        "warunkiem tej samej liczby wątków obliczeniowych. Sieci GRU i TFT policzone na ośmiu "
+        "i na czterech wątkach dają wyniki różne, ponieważ równoległe redukcje sumują składniki "
+        "w innej kolejności: w GRU różnice dotyczą ostatnich bitów, w TFT kierunek prognozy "
+        "zgadza się w 98-99% świec, a prawdopodobieństwa na dłuższych horyzontach różnią się "
+        "nawet o 0,88. Modele gradientowe i model odniesienia tej zależności nie wykazują. "
+        "Wszystkie przebiegi badania policzono zatem na czterech wątkach, a ich liczba "
+        "zapisywana jest w podsumowaniu każdego przebiegu.",
+    )
+    add_body(
+        doc,
+        "Ziarno nie zmienia natomiast wyniku obu modeli gradientowych: uczą się bez "
+        "podpróbkowania wierszy i cech, więc ich przebiegi pod trzema ziarnami są identyczne "
+        "co do bajtu. Szum inicjalizacji mierzą w badaniu wyłącznie GRU i TFT (rozdział 10).",
     )
     page_break(doc)
 
@@ -2078,10 +2199,19 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
         doc,
         f"Podstawą tabel jest {total} przebiegów odczytanych z artefaktów projektu"
         + (f", pod ziarnami: {', '.join(str(s) for s in seeds)}." if seeds else ".")
-        + " Każdą konfigurację uruchomiono wielokrotnie, ponieważ pojedynczy przebieg niesie "
-        "szum inicjalizacji, którego przedział ufności liczony wewnątrz tego przebiegu nie "
-        "obejmuje.",
+        + " Wszystkie policzono na czterech wątkach procesora (rozdział 9.6). Każdą konfigurację "
+        "uruchomiono wielokrotnie, ponieważ pojedynczy przebieg niesie szum inicjalizacji, "
+        "którego przedział ufności liczony wewnątrz tego przebiegu nie obejmuje.",
     )
+    invariant = sorted({model for _, model in seed_invariant(runs)})
+    if invariant:
+        add_body(
+            doc,
+            f"Dla architektur {_listing(invariant)} trzy ziarna dają na każdym symbolu wynik "
+            "identyczny co do bajtu: uczą się deterministycznie, bez podpróbkowania wierszy i "
+            f"cech. Różnych pomiarów jest zatem {sum(len(v) for v in distinct_runs(runs).values())}"
+            ", a rozrzut inicjalizacji wyznaczają wyłącznie pozostałe architektury.",
+        )
 
     if not runs:
         add_body(
@@ -2099,63 +2229,67 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
         "Tabele poniżej odpowiadają wprost na pytanie badawcze. Wielkością rozstrzygającą jest "
         "porównanie rozstępu między architekturami z rozrzutem tej samej architektury pod "
         "różnymi ziarnami. Jeżeli rozstęp nie przekracza rozrzutu, ranking architektur nie ma "
-        "podstaw.",
+        "podstaw. Rozrzut liczony jest wyłącznie z architektur, których wynik ziarno zmienia: "
+        "modele deterministyczne wniosłyby do średniej zera i zaniżyły poziom szumu, zamieniając "
+        "remis w ranking. Rozstęp podawany jest dwukrotnie - dla wszystkich architektur i dla "
+        "samych uczących się - ponieważ model odniesienia nie uczy się i na dłuższych "
+        "horyzontach odstaje od reszty.",
     )
 
+    spread = architecture_spread(runs)
+    distinct = distinct_runs(runs)
     for horizon in HORIZON_NAMES:
-        per_model: dict[str, list[float]] = {}
-        within: list[float] = []
-        for model in MODELS:
-            values: list[float] = []
-            for symbol in SYMBOLS:
-                accs = horizon_values(runs.get((symbol, model), []), horizon, "accuracy")
-                if not accs:
-                    continue
-                values.extend(accs)
-                if len(accs) > 1:
-                    within.append(float(np.std(accs, ddof=1)))
-            if values:
-                per_model[model] = values
-        if len(per_model) < 2:
+        cell = spread[horizon]
+        means = cell["means"]
+        if len(means) < 2:
             continue
-
-        means = {m: float(np.mean(v)) for m, v in per_model.items()}
         order = sorted(means, key=lambda m: -means[m])
-        spread = max(means.values()) - min(means.values())
-        noise = float(np.mean(within)) if within else None
+        labels = {}
+        for model in order:
+            taken = sum(len(horizon_values(runs.get((symbol, model), []), horizon, "accuracy"))
+                        for symbol in SYMBOLS)
+            different = sum(
+                len(horizon_values(distinct.get((symbol, model), []), horizon, "accuracy"))
+                for symbol in SYMBOLS
+            )
+            labels[model] = str(taken) if different == taken else f"{taken} ({different} różnych)"
 
         add_body(doc, f"Horyzont „{horizon}”:")
         add_table(
             doc,
             ["Poz.", "Architektura", "Przebiegów", "Trafność średnia"],
-            [[str(rank), model, str(len(per_model[model])), fmt(means[model])]
+            [[str(rank), model, labels[model], fmt(means[model])]
              for rank, model in enumerate(order, start=1)],
-            [1.6, 5.0, 2.6, 4.0],
+            [1.6, 4.6, 3.6, 3.4],
             font=9,
         )
-        if noise is not None:
-            verdict = (
-                "rozstęp mieści się w rozrzucie ziarna - ranking architektur nie ma podstaw"
-                if spread <= noise
-                else "rozstęp przekracza rozrzut ziarna"
-            )
+        noise, every, learners = cell["noise"], cell["range"], cell["range_learners"]
+        if noise is None:
             add_caption(
                 doc, "Tabela",
-                f"Horyzont „{horizon}”. Rozstęp między architekturą najlepszą a najgorszą: "
-                f"{spread:.3f}. Typowy rozrzut tej samej architektury pod innym ziarnem: "
-                f"{noise:.3f}. Wniosek: {verdict}.",
-            )
-        else:
-            add_caption(
-                doc, "Tabela",
-                f"Horyzont „{horizon}”. Rozstęp: {spread:.3f}. Brak powtórzeń pod różnymi "
+                f"Horyzont „{horizon}”. Rozstęp: {pl(every)}. Brak powtórzeń pod różnymi "
                 "ziarnami - rozrzutu inicjalizacji nie zmierzono.",
             )
+            continue
+        if learners <= noise:
+            verdict = ("architektury uczące się mieszczą się w rozrzucie ziarna, więc ich "
+                       "ranking nie ma podstaw")
+            if every > noise:
+                verdict += "; rozstęp całego zestawienia wynika z modelu odniesienia"
+        else:
+            verdict = ("rozstęp architektur uczących się przekracza rozrzut ziarna "
+                       + ("nieznacznie" if learners < 1.5 * noise else "wyraźnie"))
+        add_caption(
+            doc, "Tabela",
+            f"Horyzont „{horizon}”. Rozstęp średnich: {pl(every)} dla wszystkich architektur, "
+            f"{pl(learners)} dla uczących się. Rozrzut tej samej architektury pod innym "
+            f"ziarnem: {pl(noise)}. Wniosek: {verdict}.",
+        )
 
     _results_rank_stability(doc, runs)
 
     add_heading(doc, "10.3. Wyniki szczegółowe", 2)
-    add_figure(doc, "porownanie", "Trafność średnia każdej architektury na czterech horyzontach. Wąsy to odchylenie standardowe między przebiegami różniącymi się wyłącznie ziarnem; przerywana linia oznacza poziom losowy. Nachodzenie wąsów na siebie i na linię 0,5 jest treścią wyniku.")
+    add_figure(doc, "porownanie", "Trafność średnia każdej architektury na czterech horyzontach. Wąsy to odchylenie standardowe między przebiegami różniącymi się wyłącznie ziarnem, dla modeli gradientowych zerowe; przerywana linia oznacza poziom losowy. Nachodzenie wąsów na siebie i na linię 0,5 jest treścią wyniku.")
     for horizon in HORIZON_NAMES:
         rows = []
         for symbol in SYMBOLS:
@@ -2232,7 +2366,7 @@ def _results_baserate(doc: Document) -> None:
         return
 
     add_heading(doc, "10.4. Trafność wobec częstości klasy większościowej", 2)
-    add_figure(doc, "rozrzut", "Każdy przebieg jako osobny punkt, horyzont tygodniowy. Rozrzut wewnątrz jednej architektury pochodzi wyłącznie ze zmiany ziarna inicjalizacji i jest porównywalny z odległościami między architekturami - dlatego ranking oparty na pojedynczym przebiegu nie ma podstaw.")
+    add_figure(doc, "rozrzut", "Każdy przebieg jako osobny punkt, horyzont tygodniowy. Rozrzut wewnątrz GRU i TFT pochodzi wyłącznie ze zmiany ziarna inicjalizacji i jest porównywalny z odległościami między architekturami - dlatego ranking oparty na pojedynczym przebiegu nie ma podstaw. Punkty modeli gradientowych się pokrywają, ponieważ ziarno nie zmienia ich wyniku.")
     add_body(
         doc,
         "Trafność 0,50 oznacza rzut monetą tylko wtedy, gdy obie klasy są jednakowo częste. "
@@ -2375,7 +2509,7 @@ def _results_backtest(doc: Document) -> None:
     add_caption(
         doc, "Tabela",
         f"Symulacja na horyzoncie tygodniowym, uśredniona po ziarnach. Mediana percentyla "
-        f"wobec własnych przesunięć wynosi {median:.1f} \u2014 poniżej przypadkowych 50, co "
+        f"wobec własnych przesunięć wynosi {pl(median, '.1f')} \u2014 poniżej przypadkowych 50, co "
         "oznacza, że rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie "
         "arbitralne. Kolumny \u201evs\u201d podają różnicę stopy zwrotu w punktach "
         "procentowych wobec danego punktu odniesienia; wartości ujemne oznaczają przegraną.",
@@ -2499,6 +2633,34 @@ def _results_stability(doc: Document) -> None:
 
 # ── 11 ───────────────────────────────────────────────────────────────────────
 
+# One row per defect in chapter 11; the summary counts them from here.
+DEFECTS = [
+    ["Odczyt klas kierunku po pozycji przy enkoderze sortującym etykiety alfabetycznie",
+     "trafność równa 1 − trafność; przy wyniku bliskim losowego nieodróżnialne od szumu",
+     "test na szeregu syntetycznym o znanej odpowiedzi"],
+    ["Okno treningowe węższe od horyzontu",
+     "stały rozkład jednostajny punktowany jako prognoza przez wiele miesięcy",
+     "kontrola szerokości okna przed uruchomieniem"],
+    ["Wspólny, nieweryfikowany katalog predykcji",
+     "wyniki ostatnio uruchomionego modelu przypisywane wszystkim pozostałym",
+     "wprowadzenie wersjonowania przebiegów"],
+    ["Jednorodne rozkłady głębokości w trzech modelach",
+     "najwyższa rekomendacja nieosiągalna dla części modeli",
+     "porównanie rozkładów między modelami"],
+    ["Wspólny strumień inicjalizacji dla wszystkich symboli",
+     "cztery symbole wykazujące przewagę jednocześnie; istotność p = 0,0015 dla "
+     "zjawiska nieistniejącego",
+     "powtórzenie pod innym ziarnem oraz kontrola na szeregu losowym"],
+    ["Puste okno normalizacji dla symbolu notowanego od daty wewnątrz zakresu",
+     "przerwanie przebiegu wyjątkiem zamiast oznaczenia świecy jako nietrenowanej",
+     "przeliczenie obejmujące symbol o krótszej historii"],
+    ["Świeca o zerowym zwrocie usunięta z ramki treningowej TFT, a w GRU użyta jako cel",
+     "TFT: okna z taką świecą zapisywane jako nietrenowane, w dziewięciu przebiegach na "
+     "sześciu symbolach; GRU: przerwanie przebiegu",
+     "rozszerzenie badania z trzech na dziewięć instrumentów"],
+]
+
+
 def _chapter_11_verification(doc: Document) -> None:
     add_heading(doc, "11. Weryfikacja poprawności implementacji", 1)
     add_body(
@@ -2509,32 +2671,8 @@ def _chapter_11_verification(doc: Document) -> None:
         "prognozy - porównanie architektur przeprowadzone bez warstwy weryfikacji porównywałoby "
         "zatem artefakty.",
     )
-    add_table(
-        doc,
-        ["Defekt", "Objaw bez weryfikacji", "Wykryty przez"],
-        [
-            ["Odczyt klas kierunku po pozycji przy enkoderze sortującym etykiety alfabetycznie",
-             "trafność równa 1 − trafność; przy wyniku bliskim losowego nieodróżnialne od szumu",
-             "test na szeregu syntetycznym o znanej odpowiedzi"],
-            ["Okno treningowe węższe od horyzontu",
-             "stały rozkład jednostajny punktowany jako prognoza przez wiele miesięcy",
-             "kontrola szerokości okna przed uruchomieniem"],
-            ["Wspólny, nieweryfikowany katalog predykcji",
-             "wyniki ostatnio uruchomionego modelu przypisywane wszystkim pozostałym",
-             "wprowadzenie wersjonowania przebiegów"],
-            ["Jednorodne rozkłady głębokości w trzech modelach",
-             "najwyższa rekomendacja nieosiągalna dla części modeli",
-             "porównanie rozkładów między modelami"],
-            ["Wspólny strumień inicjalizacji dla wszystkich symboli",
-             "cztery symbole wykazujące przewagę jednocześnie; istotność p = 0,0015 dla "
-             "zjawiska nieistniejącego",
-             "powtórzenie pod innym ziarnem oraz kontrola na szeregu losowym"],
-            ["Puste okno normalizacji dla symbolu notowanego od daty wewnątrz zakresu",
-             "przerwanie przebiegu wyjątkiem zamiast oznaczenia świecy jako nietrenowanej",
-             "przeliczenie obejmujące symbol o krótszej historii"],
-        ],
-        [4.6, 6.2, 5.2],
-    )
+    add_table(doc, ["Defekt", "Objaw bez weryfikacji", "Wykryty przez"], DEFECTS,
+              [4.6, 6.2, 5.2])
     add_caption(doc, "Tabela", "Defekty wykryte w trakcie budowy systemu.")
 
     add_heading(doc, "11.1. Zamiana klas kierunku w modelu TFT", 2)
@@ -2638,7 +2776,39 @@ def _chapter_11_verification(doc: Document) -> None:
         "nietrenowanej; przerwanie całego przebiegu było defektem.",
     )
 
-    add_heading(doc, "11.7. Zakres pakietu testów", 2)
+    add_heading(doc, "11.7. Świece bez etykiety w modelach sekwencyjnych", 2)
+    add_body(
+        doc,
+        "Zwrot zerowy nie ma strony, więc świeca, po której cena po upływie horyzontu wraca "
+        "dokładnie do poziomu wyjściowego, nie ma etykiety (rozdział 7). Jej cechy są jednak "
+        "znane, a sąsiednie świece pozostają kolejnymi krokami szeregu. TFT budował ramkę "
+        "treningową wyłącznie ze świec etykietowanych, przez co w osi czasu powstawała luka, "
+        "której biblioteka pytorch-forecasting nie dopuszcza: okno douczania zawierające taką "
+        "świecę zgłaszało wyjątek i było zapisywane jako nietrenowane. Przebieg kończył się "
+        "poprawnie, a trafność pozostałych okien się nie zmieniała - jedynym śladem był licznik "
+        "okien z wyjątkiem w podsumowaniu przebiegu. Na ADAUSDT horyzont tygodniowy nie nauczył "
+        "się w żadnym z 78 miesięcy.",
+    )
+    add_body(
+        doc,
+        "Ta sama przyczyna miała w GRU postać jawną: świeca bez etykiety trafiała do zbioru "
+        "treningowego jako cel o wartości -1, którą funkcja straty odrzuca, kończąc cały "
+        "przebieg. Zwrot dokładnie zerowy jest rzadki - wymaga, aby cena zamknięcia po upływie "
+        "horyzontu trafiła dokładnie w poprzednią wartość. BTCUSDT, ETHUSDT i SOLUSDT nie mają "
+        "w całej historii notowań ani jednej takiej świecy, pozostałe instrumenty od jednej do "
+        "ośmiu, "
+        "dlatego defekt ujawnił się dopiero po rozszerzeniu badania o sześć kolejnych "
+        "instrumentów.",
+    )
+    add_body(
+        doc,
+        "Obecnie świeca bez etykiety pozostaje w sekwencji wejściowej obu modeli i jest "
+        "pomijana wyłącznie jako cel uczenia. Okno bez takiej świecy przechodzi dokładnie tę "
+        "samą ścieżkę co wcześniej, co potwierdzono porównaniem bajtowym, a przebiegi dotknięte "
+        "defektem policzono ponownie.",
+    )
+
+    add_heading(doc, "11.8. Zakres pakietu testów", 2)
     modules = test_inventory()
     cases = sum(len(m.cases) for m in modules)
     add_body(
@@ -2788,25 +2958,83 @@ def _chapter_13_limits(doc: Document) -> None:
     )
     add_caption(doc, "Tabela", "Kierunki dalszych prac w kolejności oczekiwanej wartości.")
 
+    page_break(doc)
+
+
+HORIZON_LOCATIVE = {"week": "tygodniowym", "month": "miesięcznym", "quarter": "kwartalnym",
+                    "year": "rocznym"}
+MODEL_LABEL = {"baseline": "model odniesienia", "ml": "scikit-learn", "xgboost": "XGBoost",
+               "gru": "GRU", "tft": "TFT"}
+COUNT_WORDS = {5: "pięć", 6: "sześć", 7: "siedem", 8: "osiem", 9: "dziewięć", 10: "dziesięć"}
+
+
+def _listing(words: list[str]) -> str:
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " i " + words[-1]
+
+
+def _rank_turnover(runs: dict) -> str:
+    """One architecture that is last among the learners somewhere and first elsewhere."""
+    spread = architecture_spread(runs)
+    places: dict[str, dict[str, int]] = {}
+    learners = [m for m in MODELS if m != "baseline"]
+    for horizon, cell in spread.items():
+        order = sorted((m for m in cell["means"] if m != "baseline"),
+                       key=lambda m: -cell["means"][m])
+        if len(order) != len(learners):
+            continue
+        for place, model in enumerate(order, start=1):
+            places.setdefault(model, {})[horizon] = place
+    candidates = [
+        (sum(p == len(learners) for p in got.values()), model)
+        for model, got in places.items()
+        if 1 in got.values() and len(learners) in got.values()
+    ]
+    if not candidates:
+        return ""
+    model = max(candidates)[1]
+    last = [HORIZON_LOCATIVE[h] for h, p in places[model].items() if p == len(learners)]
+    first = [HORIZON_LOCATIVE[h] for h, p in places[model].items() if p == 1]
+    return (f": architektura {MODEL_LABEL[model]}, ostatnia wśród uczących się na horyzoncie "
+            f"{_listing(last)}, jest pierwsza na {_listing(first)}")
+
+
+def _chapter_14_summary(doc: Document, runs: dict) -> None:
     add_heading(doc, "14. Podsumowanie", 1)
+    if not runs:
+        add_body(doc, "Podsumowanie wymaga ocenionych przebiegów.", italic=True)
+        page_break(doc)
+        return
+    f = study_facts(runs)
+    deterministic = set(f["seed_invariant"]) == {"ml", "xgboost"}
+    if len(f["beyond_noise"]) <= 1:
+        differences = ("Różnice między architekturami uczącymi się są tego samego rzędu co szum "
+                       "inicjalizacji, a ich porządek zmienia się wraz z horyzontem")
+    else:
+        differences = (f"Różnice między architekturami uczącymi się przekraczają szum "
+                       f"inicjalizacji na {len(f['beyond_noise'])} horyzontach, lecz ich porządek "
+                       "zmienia się wraz z horyzontem")
     add_body(
         doc,
         "Porównano pięć rodzin architektur uczenia maszynowego w zadaniu prognozy kierunku "
-        "zmiany ceny na podstawie wyłącznie historii notowań, w 39 przebiegach obejmujących "
-        "trzy instrumenty i trzy ziarna inicjalizacji. Żadna architektura nie osiąga trafności "
-        "na poziomie losowym, a wszystkie wypadają poniżej reguły opartej na częstości klasy "
-        "liczniejszej. Różnice między nimi wewnątrz jednego horyzontu są mierzalne, ale ich "
-        "porządek zmienia się wraz z horyzontem: architektura najlepsza na horyzoncie "
-        "kwartalnym jest najgorsza na tygodniowym i miesięcznym. Ranking architektur nie jest "
-        "zatem właściwością architektury.",
+        "zmiany ceny na podstawie wyłącznie historii notowań, w "
+        f"{f['runs']} przebiegach obejmujących {f['symbols']} instrumentów i trzy ziarna "
+        "inicjalizacji"
+        + (f" - {f['distinct']} różnych pomiarów, ponieważ oba modele gradientowe uczą się "
+           "deterministycznie" if deterministic else "")
+        + ". Żadna architektura nie osiąga trafności istotnie wyższej od losowej, a wszystkie "
+        "wypadają poniżej reguły opartej na częstości klasy liczniejszej. "
+        + differences + _rank_turnover(runs)
+        + ". Ranking architektur nie jest zatem właściwością architektury.",
     )
+    defects = COUNT_WORDS.get(len(DEFECTS), str(len(DEFECTS)))
     add_body(
         doc,
         "Jest to wynik zgodny ze słabą formą hipotezy efektywności rynku, uzyskany na rynku "
         "wybranym tak, aby mierzyć zachowanie modelu, a nie artefakty systemu obrotu. "
         "Rozstrzygnięcie tego pytania było możliwe wyłącznie dzięki warstwie weryfikacji, której "
-        "skuteczność dokumentuje sześć wykrytych defektów - z których każdy produkował wynik "
-        "pozornie pozytywny, a jeden przeszedł replikację poza próbą, zanim został obalony.",
+        f"skuteczność dokumentuje {defects} wykrytych defektów (rozdział 11) - wśród nich jeden, "
+        "który wyprodukował wynik pozornie pozytywny i przeszedł replikację poza próbą, zanim "
+        "został obalony.",
     )
     add_body(
         doc,
@@ -2815,6 +3043,23 @@ def _chapter_13_limits(doc: Document) -> None:
         "wie, jest użyteczna; prognoza pewna siebie i błędna nie jest.",
     )
     page_break(doc)
+
+
+def _check_thesis_against_data(runs: dict) -> None:
+    """Warn when the hand-written thesis (1.3, 1.5) no longer matches the artifacts."""
+    if not runs:
+        return
+    f = study_facts(runs)
+    week, month = f["by_horizon"].get("week", {}), f["by_horizon"].get("month", {})
+    above = week.get("above", 0) + month.get("above", 0)
+    expected = round((week.get("estimable", 0) + month.get("estimable", 0)) * 0.025)
+    problems = []
+    if above > 1.5 * expected + 1:
+        problems.append(f"{above} measurements above chance where about {expected} are expected")
+    if len(f["beyond_noise"]) > 1:
+        problems.append(f"the learners exceed the seed spread on {f['beyond_noise']}")
+    for problem in problems:
+        print(f"WARNING: thesis 1.3 / 1.5 no longer matches the data: {problem}")
 
 
 def _chapter_14_bibliography(doc: Document) -> None:
@@ -3346,6 +3591,17 @@ def _chapter_12b_screenshots(doc: Document) -> None:
         add_caption(doc, "Rysunek", caption)
 
 
+def _both_ends_sentence(positions: dict[str, list[int]], places: int) -> str:
+    """Which architectures are both first and last, depending on the horizon."""
+    both = [m for m, p in positions.items() if min(p) == 1 and max(p) == places]
+    if not both:
+        return "Żadna architektura nie zajmuje zarówno pierwszego, jak i ostatniego miejsca."
+    count = {1: "Jedna architektura zajmuje", 2: "Dwie architektury zajmują",
+             3: "Trzy architektury zajmują"}.get(len(both), f"{len(both)} architektur zajmuje")
+    return (f"{count} zarówno pierwsze, jak i ostatnie miejsce, zależnie od horyzontu "
+            f"({', '.join(both)}).")
+
+
 def _results_rank_stability(doc: Document, runs: dict) -> None:
     """Does the ordering of architectures survive a change of horizon?
 
@@ -3374,12 +3630,18 @@ def _results_rank_stability(doc: Document, runs: dict) -> None:
     }
 
     add_heading(doc, "10.2. Czy ranking architektur jest trwały?", 2)
-    add_body(
-        doc,
-        "Rozstęp między architekturami przekracza rozrzut ziarna, różnice są więc mierzalne. "
-        "Pozostaje pytanie, czy opisują architekturę, czy parę architektura-horyzont. "
-        "Odpowiedzią jest kolejność miejsc.",
-    )
+    beyond = learners_beyond_noise(architecture_spread(runs))
+    if len(beyond) <= 1:
+        where = (f" na wszystkich horyzontach poza „{beyond[0]}”, gdzie przekracza go niewiele"
+                 if beyond else " na każdym horyzoncie")
+        intro = (f"Rozstęp między architekturami uczącymi się mieści się w rozrzucie ziarna{where}. "
+                 "Jeżeli różnice są szumem, ich porządek powinien zmieniać się wraz z horyzontem. "
+                 "Sprawdzeniem jest kolejność miejsc.")
+    else:
+        intro = (f"Rozstęp między architekturami uczącymi się przekracza rozrzut ziarna na "
+                 f"{len(beyond)} horyzontach. Pozostaje pytanie, czy opisuje architekturę, czy parę "
+                 "architektura-horyzont. Odpowiedzią jest kolejność miejsc.")
+    add_body(doc, intro)
     add_table(
         doc,
         ["Horyzont", "1. miejsce", "2. miejsce", "3. miejsce", "4. miejsce"],
@@ -3410,10 +3672,11 @@ def _results_rank_stability(doc: Document, runs: dict) -> None:
     )
     add_caption(
         doc, "Tabela",
-        f"Średnia korelacja rang między horyzontami wynosi {average:+.2f}, gdzie +1 oznaczałoby "
-        "ten sam ranking wszędzie, a 0 ranking niezwiązany. Dwie architektury zajmują zarówno "
-        "pierwsze, jak i ostatnie miejsce, zależnie od horyzontu. Różnica mierzona w jednym "
-        "horyzoncie nie przenosi się zatem na inny i nie stanowi podstawy do wyboru architektury.",
+        f"Średnia korelacja rang między horyzontami wynosi {pl(average, '+.2f')}, gdzie +1 "
+        "oznaczałoby ten sam ranking wszędzie, a 0 ranking niezwiązany. "
+        + _both_ends_sentence(positions, len(learners))
+        + " Różnica mierzona w jednym horyzoncie nie przenosi się zatem na inny i nie stanowi "
+        "podstawy do wyboru architektury.",
     )
 
 
