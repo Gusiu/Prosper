@@ -182,3 +182,15 @@ def test_the_browser_only_sends_what_was_changed() -> None:
 
     assert "Math.abs(share - grade.default) > 1e-9" in js
     assert "if (value !== null && value !== \"\") params.set" in js
+
+
+def test_the_assumptions_panel_is_laid_out_and_sized_by_its_content() -> None:
+    """Its fields sit in `.evaluation-controls`, which needs a rule of its own -
+    without one every label takes the full width and the list runs past the card.
+    The panel also must not inherit the fixed module height of `.ops-card`: that
+    leaves an empty box when it is closed and clips the fields when it is open."""
+    import re
+
+    css = (FRONTEND / "style.css").read_text(encoding="utf-8")
+    assert re.search(r"\.evaluation-controls\s*\{[^}]*display:\s*flex", css)
+    assert re.search(r"#backtest-assumptions\s*\{[^}]*height:\s*auto", css)

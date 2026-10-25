@@ -510,7 +510,8 @@ export function renderPredictionCalendar() {
   titleH.style.color = "var(--accent-glow)";
   titleH.style.marginLeft = "8px";
   const d = new Date(year, month, 1);
-  titleH.innerText = d.toLocaleString(undefined, {
+  // The interface language, not the viewer's: the weekday headers are English.
+  titleH.innerText = d.toLocaleString("en-US", {
     month: "long",
     year: "numeric",
   });

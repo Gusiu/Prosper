@@ -285,3 +285,28 @@ def test_the_prediction_calendar_names_the_horizon_it_shows() -> None:
     cell = next(line for line in models_js.splitlines() if "mini.innerText" in line)
     assert "${shortest}" in cell
     assert not re.search(r"\b\d+[dwmy]\b", cell)
+
+
+def test_a_card_with_an_open_section_grows_with_it() -> None:
+    """`.ops-card` has a fixed height so a row of modules lines up. The training
+    form's collapsible sections add rows when opened, and at a fixed height they
+    spill past the card's border over whatever lies below."""
+    import re
+    from pathlib import Path
+
+    css = (Path(__file__).resolve().parents[1] / "frontend" / "style.css").read_text(
+        encoding="utf-8"
+    )
+    assert re.search(r"\.ops-card:has\(details\[open\]\)\s*\{[^}]*height:\s*auto", css)
+
+
+def test_the_calendar_title_is_in_the_interface_language() -> None:
+    """The interface is English; a month name formatted in the viewer's locale
+    puts "czerwiec 2026" above English weekday headers."""
+    from pathlib import Path
+
+    models_js = (
+        Path(__file__).resolve().parents[1] / "frontend" / "js" / "tabs" / "models.js"
+    ).read_text(encoding="utf-8")
+    assert "toLocaleString(undefined" not in models_js
+    assert 'toLocaleString("en-US"' in models_js
