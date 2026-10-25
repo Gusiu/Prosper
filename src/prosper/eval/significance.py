@@ -9,8 +9,7 @@ observations, they are one observation seen twice.
 That makes the usual error bar meaningless. A run scoring 0.565 over 2040 rows
 looks like it has 2040 observations behind it; at the 28-day horizon it has
 closer to 73, and at the annual horizon a 1249-row figure rests on about three.
-Without saying so, "0.565" and "0.500" cannot be compared at all — which is
-what every table in this project did until now.
+Without saying so, "0.565" and "0.500" cannot be compared at all.
 
 The moving-block bootstrap resamples *blocks* of consecutive rows rather than
 individual rows, so each resample preserves the local correlation the overlap
@@ -37,16 +36,14 @@ from prosper.domain import effective_samples
 DEFAULT_RESAMPLES = 2000
 
 # Below this many non-overlapping blocks the resampling cannot reproduce the
-# statistic it is describing. This started as the training-window floor of 3 and
-# was raised on evidence: at 3.1 blocks, two of fifty-five intervals came out
-# *excluding their own point estimate* — 0.339 with an interval of
-# [0.066, 0.335] — because four blocks drawn and truncated to the original length
+# statistic it is describing. At 3.1 blocks, two of fifty-five intervals came
+# out *excluding their own point estimate* - 0.339 with an interval of
+# [0.066, 0.335] - because four blocks drawn and truncated to the original length
 # cannot represent a series that holds only three.
 #
 # It is deliberately not the same number as `MIN_INDEPENDENT_OBSERVATIONS`. That
 # one asks "can a model be fitted here at all", which needs very little; this
 # asks "is an interval around the answer stable", which needs an order more.
-# Sharing one constant was tidiness, and the measurement says they differ.
 MIN_BLOCKS = 10
 
 
@@ -80,10 +77,9 @@ class Interval:
     def versus(self, reference: float) -> str | None:
         """``"above"``, ``"below"`` or ``"indistinguishable"`` from *reference*.
 
-        `excludes` is two-sided, and the flag written from it was called
-        `accuracy_beats_chance` - `true` for a run reliably *worse* than a coin
-        flip too. Counting that flag once reported eight quarter-horizon runs
-        above chance where the true count was none. This says which side.
+        `excludes` is two-sided: it is `True` for a run reliably *worse* than a
+        coin flip as much as for one reliably better. Anything that counts runs
+        "above chance" needs the side, and this is where it is read.
         """
         if self.low is None or self.high is None:
             return None
@@ -124,6 +120,72 @@ def block_bootstrap(
     Blocks start at any position, not on a fixed grid: a fixed grid would let the
     interval depend on where the series happens to begin.
     """
+    return _bootstrap(rows, block_size, statistic, resamples, alpha, seed)[0]
+
+
+def bootstrap_p_value(
+    rows: np.ndarray | Sequence[float],
+    block_size: int,
+    reference: float,
+    statistic: Callable[[np.ndarray], float] | None = None,
+    *,
+    resamples: int = DEFAULT_RESAMPLES,
+    seed: int = 0,
+) -> float | None:
+    """Two-sided p-value for "the statistic equals *reference*".
+
+    Read off the resampling `block_bootstrap` draws for the same arguments: the
+    share of resampled estimates on the far side of *reference*, doubled. That
+    is the test the percentile interval inverts (Efron and Tibshirani 1993,
+    15.4), so p falls below alpha where the 1 - alpha interval excludes the
+    reference, up to the interpolation of the quantile. More resamples under
+    the same seed begin with the same draws, so they refine this value rather
+    than replace it.
+
+    The far side is counted as (k + 1) / (resamples + 1): a resampling that
+    never crossed the reference shows only that p lies below its resolution,
+    not that it is zero.
+
+    `None` wherever the interval is refused - a resampling that cannot bracket
+    the estimate cannot place the reference against it either.
+    """
+    interval, estimates = _bootstrap(rows, block_size, statistic, resamples, 0.05, seed)
+    if estimates is None or not interval.estimable:
+        return None
+    far = min(int(np.sum(estimates <= reference)), int(np.sum(estimates >= reference)))
+    return min(1.0, 2.0 * (far + 1) / (resamples + 1))
+
+
+def benjamini_hochberg(p_values: Sequence[float]) -> list[float]:
+    """Benjamini-Hochberg q-values, in the order the p-values were given.
+
+    A q-value is the smallest false discovery rate at which its measurement
+    would be called significant: the k-th smallest p-value scaled by m / k, then
+    made monotone from the largest down so that a smaller p never gets a larger
+    q. The procedure assumes independent or positively dependent tests
+    (Benjamini and Yekutieli 2001); runs on one market are the second kind.
+    """
+    m = len(p_values)
+    order = sorted(range(m), key=lambda i: p_values[i])
+    q = [0.0] * m
+    running = 1.0
+    for rank in range(m, 0, -1):
+        index = order[rank - 1]
+        running = min(running, p_values[index] * m / rank)
+        q[index] = running
+    return q
+
+
+def _bootstrap(
+    rows: np.ndarray | Sequence[float],
+    block_size: int,
+    statistic: Callable[[np.ndarray], float] | None,
+    resamples: int,
+    alpha: float,
+    seed: int,
+) -> tuple[Interval, np.ndarray | None]:
+    """The interval and the resampled estimates it was read from (`None` when
+    the series is refused before any resampling)."""
     data = np.asarray(rows)
     if data.ndim == 0:
         data = data.reshape(1)
@@ -135,13 +197,13 @@ def block_bootstrap(
     point = compute(data) if n else math.nan
 
     if n == 0:
-        return Interval(math.nan, None, None, length, 0.0, 0, resamples, "no scored rows")
+        return Interval(math.nan, None, None, length, 0.0, 0, resamples, "no scored rows"), None
     if blocks < MIN_BLOCKS:
         return Interval(
             point, None, None, length, blocks, n, resamples,
             f"only {blocks:.1f} independent blocks; an interval here would be "
             f"an artefact of resampling one observation",
-        )
+        ), None
 
     rng = np.random.default_rng(seed)
     # Enough whole blocks to cover n, then truncate, so every resample has the
@@ -164,8 +226,8 @@ def block_bootstrap(
             point, None, None, length, blocks, n, resamples,
             f"the resampled interval [{low:.3f}, {high:.3f}] does not contain the "
             f"estimate {point:.3f}; {blocks:.1f} blocks is too coarse to describe it",
-        )
-    return Interval(point, float(low), float(high), length, blocks, n, resamples)
+        ), estimates
+    return Interval(point, float(low), float(high), length, blocks, n, resamples), estimates
 
 
 def accuracy_interval(correct: Sequence[bool], block_size: int, **kwargs: Any) -> Interval:

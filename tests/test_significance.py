@@ -23,7 +23,9 @@ from prosper.domain import DEFAULT_HORIZONS
 from prosper.eval.significance import (
     MIN_BLOCKS,
     accuracy_interval,
+    benjamini_hochberg,
     block_bootstrap,
+    bootstrap_p_value,
     calibration_error_interval,
     effective_samples,
     mean_interval,
@@ -203,6 +205,95 @@ def test_a_miscalibrated_forecast_has_an_interval_away_from_zero() -> None:
     assert interval.excludes(0.0) is True
 
 
+# ── A p-value read off the same resampling ───────────────────────────────────
+
+def _biased(n: int, rate: float, seed: int) -> np.ndarray:
+    return (np.random.default_rng(seed).random(n) < rate).astype(float)
+
+
+def test_the_p_value_agrees_with_the_interval_about_chance() -> None:
+    """Small where the interval leaves 0.5 out, on either side, and not where it
+    holds it."""
+    for rate, separated in ((0.56, True), (0.44, True), (0.5, False)):
+        values = _biased(3000, rate, seed=6)
+        interval = accuracy_interval(values.astype(bool), block_size=7, seed=0)
+        p = bootstrap_p_value(values, 7, 0.5, seed=0)
+        assert interval.excludes(0.5) is separated
+        assert (p < 0.05) is separated, (rate, p)
+
+
+def test_at_either_end_of_the_interval_the_p_value_is_alpha() -> None:
+    """The p-value is the 95% interval inverted, so a reference placed on one of
+    its ends comes out at about 0.05."""
+    values = _persistent_series(3000, 20, seed=3)
+    interval = block_bootstrap(values, block_size=20, seed=0)
+    for bound in (interval.low, interval.high):
+        assert bootstrap_p_value(values, 20, bound, seed=0) == pytest.approx(0.05, abs=0.005)
+
+
+def test_the_p_value_is_read_off_the_intervals_own_resampling() -> None:
+    """Same draws as the interval it is reported next to, and a longer resampling
+    under the same seed only adds draws after them."""
+    seen: dict[str, list[float]] = {"interval": [], "p": [], "longer": []}
+
+    def recorder(name: str):
+        def statistic(block: np.ndarray) -> float:
+            seen[name].append(float(block.sum()))
+            return float(np.mean(block))
+        return statistic
+
+    values = _persistent_series(500, 10, seed=4)
+    block_bootstrap(values, 10, recorder("interval"), resamples=200, seed=3)
+    bootstrap_p_value(values, 10, 0.5, recorder("p"), resamples=200, seed=3)
+    bootstrap_p_value(values, 10, 0.5, recorder("longer"), resamples=400, seed=3)
+
+    assert seen["p"] == seen["interval"]
+    assert seen["longer"][: len(seen["interval"])] == seen["interval"]
+
+
+def test_a_resampling_that_never_crosses_the_reference_is_not_p_zero() -> None:
+    """It shows only that p lies below the resolution of the resampling."""
+    always_right = np.ones(1000)
+    assert bootstrap_p_value(always_right, 10, 0.5, resamples=999, seed=0) == pytest.approx(0.002)
+
+
+def test_the_estimate_itself_is_no_departure() -> None:
+    values = _persistent_series(3000, 20, seed=8)
+    point = float(values.mean())
+    assert bootstrap_p_value(values, 20, point, seed=0) > 0.8
+
+
+def test_q_values_scale_each_p_by_its_rank_and_stay_monotone() -> None:
+    """Worked by hand: sorted 0.005, 0.01, 0.03, 0.04 scale to 0.02, 0.02, 0.04,
+    0.04, and come back in the order given."""
+    q = benjamini_hochberg([0.01, 0.04, 0.03, 0.005])
+    assert q == pytest.approx([0.02, 0.04, 0.04, 0.02])
+
+
+def test_a_smaller_p_never_gets_a_larger_q() -> None:
+    """Without the pass from the largest down, 0.011 at rank 2 would scale to
+    0.022 and outrank 0.012 at rank 3, which scales to 0.016."""
+    p = [0.011, 0.012, 0.009, 0.5]
+    q = benjamini_hochberg(p)
+    by_p = [q[i] for i in sorted(range(len(p)), key=lambda i: p[i])]
+    assert by_p == sorted(by_p)
+    assert all(qi >= pi for pi, qi in zip(p, q))
+    assert max(q) <= 1.0
+
+
+def test_with_one_test_the_q_value_is_the_p_value() -> None:
+    assert benjamini_hochberg([0.03]) == [0.03]
+    assert benjamini_hochberg([]) == []
+
+
+def test_a_refused_interval_has_no_p_value() -> None:
+    """Too few blocks, and a resampling that cannot bracket its own estimate."""
+    assert bootstrap_p_value(_persistent_series(400, 364), 364, 0.5, seed=0) is None
+    lopsided = np.concatenate([np.ones(300), np.zeros(60)])
+    assert bootstrap_p_value(lopsided, 120, 0.5, seed=0) is None
+    assert bootstrap_p_value(np.array([]), 28, 0.5, seed=0) is None
+
+
 # ── Wired into the evaluation ────────────────────────────────────────────────
 
 def test_the_evaluation_reports_an_interval_for_every_horizon() -> None:
@@ -319,8 +410,8 @@ def test_a_well_sampled_interval_always_brackets_its_estimate() -> None:
 
 
 def test_the_verdict_says_which_side_of_chance() -> None:
-    """`excludes` is two-sided; the flag once written from it read "beats chance"
-    for a run whose whole interval sat below 0.5."""
+    """`excludes` is two-sided: it is true for a run whose whole interval sits
+    below 0.5, which no count of runs "above chance" may read as skill."""
     from prosper.eval.significance import Interval
 
     def interval(low, high):
