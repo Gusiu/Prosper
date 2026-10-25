@@ -49,6 +49,26 @@ export function populateEvaluationModelSelect(models) {
 }
 
 
+// Points the run selector at *summary*'s run, when the selector lists it.
+function selectEvaluationRun(summary) {
+  const select = document.getElementById("prediction-eval-run");
+  if (!select) return;
+  const option = [...select.options].find((candidate) => {
+    try {
+      const run = JSON.parse(candidate.value);
+      return (
+        run.symbol === summary.symbol &&
+        run.model_type === summary.model_type &&
+        run.timestamp === summary.timestamp
+      );
+    } catch (e) {
+      return false;
+    }
+  });
+  if (option) select.value = option.value;
+}
+
+
 export function getSelectedEvaluationRun() {
   const select = document.getElementById("prediction-eval-run");
   if (!select || !select.value) return null;
@@ -129,7 +149,12 @@ export function renderEvaluationRanking() {
     const button = document.createElement("button");
     button.className = "action-btn";
     button.textContent = "Details";
-    button.addEventListener("click", () => openEvaluationDetails(item));
+    // A run opened by hand becomes the run the buttons act on. The one opened on
+    // load does not, so the selector keeps offering the newest run there.
+    button.addEventListener("click", () => {
+      selectEvaluationRun(item);
+      openEvaluationDetails(item);
+    });
     tr.querySelector("td:last-child").appendChild(button);
     tbody.appendChild(tr);
   });

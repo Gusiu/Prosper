@@ -310,3 +310,20 @@ def test_the_calendar_title_is_in_the_interface_language() -> None:
     ).read_text(encoding="utf-8")
     assert "toLocaleString(undefined" not in models_js
     assert 'toLocaleString("en-US"' in models_js
+
+
+def test_opening_a_runs_details_selects_that_run() -> None:
+    """The cards show the run opened from the ranking, while "Evaluate Run" and
+    the stability chart act on the run selector beside them - so a click on
+    "Details" has to move the selector to the run the cards will show."""
+    from pathlib import Path
+
+    evaluation_js = (
+        Path(__file__).resolve().parents[1] / "frontend" / "js" / "tabs" / "evaluation.js"
+    ).read_text(encoding="utf-8")
+    ranking = evaluation_js.split("function renderEvaluationRanking", 1)[1].split("\n}\n", 1)[0]
+    click = ranking.split('addEventListener("click"', 1)[1]
+    assert "selectEvaluationRun(item)" in click.split("openEvaluationDetails(item)", 1)[0]
+    helper = evaluation_js.split("function selectEvaluationRun", 1)[1].split("\n}\n", 1)[0]
+    assert '"prediction-eval-run"' in helper
+    assert "select.value = " in helper
