@@ -615,12 +615,11 @@ export function renderPredictionCalendar() {
 
         const rowData = rowsByDate.get(dateStr);
         if (rowData) {
-          // One horizon, not a maximum across three. Taking max(P_long) and
-          // max(P_short) separately pulled the two numbers from different
-          // horizons, so the pair never summed to 100 and a day could be
-          // coloured bullish while another horizon read 99% short. The cell is
-          // one day wide, so the shortest horizon is the one it can speak for;
-          // the popover still shows all three.
+          // One horizon, not a maximum across them: max(P_long) and
+          // max(P_short) taken separately would come from different horizons,
+          // never sum to 100, and could colour a day bullish while another
+          // horizon reads 99% short. The cell is one day wide, so the shortest
+          // horizon is the one it can speak for; the popover shows them all.
           // The first spec is the shortest horizon; taking it by name rather
           // than by literal keeps this working when the set changes.
           const shortest = horizonNames()[0];
@@ -641,7 +640,7 @@ export function renderPredictionCalendar() {
           const mini = document.createElement("div");
           mini.style.fontSize = "0.7rem";
           mini.style.color = "#94a3b8";
-          mini.innerText = `4w  L:${Math.round(pLong * 100)}% S:${Math.round(pShort * 100)}%`;
+          mini.innerText = `${shortest}  L:${Math.round(pLong * 100)}% S:${Math.round(pShort * 100)}%`;
           dayDiv.appendChild(mini);
 
           dayDiv.style.cursor = "pointer";

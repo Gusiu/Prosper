@@ -270,3 +270,18 @@ def test_the_sharpness_bar_does_not_hardcode_three_classes() -> None:
     ).read_text(encoding="utf-8")
     assert "Math.log(3)" not in evaluation_js
     assert "n_classes" in evaluation_js
+
+
+def test_the_prediction_calendar_names_the_horizon_it_shows() -> None:
+    """A calendar cell shows the shortest horizon, so it carries that horizon's
+    name. A span typed into the template ("4w") stays behind when the horizon set
+    changes, and labels the week as four weeks."""
+    import re
+    from pathlib import Path
+
+    models_js = (
+        Path(__file__).resolve().parents[1] / "frontend" / "js" / "tabs" / "models.js"
+    ).read_text(encoding="utf-8")
+    cell = next(line for line in models_js.splitlines() if "mini.innerText" in line)
+    assert "${shortest}" in cell
+    assert not re.search(r"\b\d+[dwmy]\b", cell)
