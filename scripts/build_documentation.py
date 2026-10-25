@@ -50,6 +50,12 @@ from prosper.domain import (  # noqa: E402
     HORIZON_NAMES,
     parse_depth_bins,
 )
+from prosper.eval.significance import (  # noqa: E402
+    DEFAULT_RESAMPLES,
+    accuracy_interval,
+    benjamini_hochberg,
+    bootstrap_p_value,
+)
 
 REPORT_ROOT = "data/reports"
 # Which runs are the study is decided in one place: documentation_sources.
@@ -566,6 +572,163 @@ def study_facts(runs: dict) -> dict:
     facts["spread"] = architecture_spread(runs)
     facts["beyond_noise"] = learners_beyond_noise(facts["spread"])
     return facts
+
+
+# The p-values of section 10.9 come from a longer run of the interval's own
+# resampling: under the same seed its first DEFAULT_RESAMPLES draws are the
+# published interval's. The length is set by the correction, not by taste: B
+# draws cannot give a p below 2 / (B + 1), and Benjamini-Hochberg asks the
+# smallest of ~240 values to clear 0.05 / 240, about 2e-4.
+P_VALUE_RESAMPLES = 20_000
+# A measurement that survives the correction is re-measured with ten times the
+# draws, so that its survival is not a matter of where the resampling stopped.
+PRECISION_RESAMPLES = 200_000
+FALSE_DISCOVERY_RATE = 0.05
+CHANCE = 0.5
+
+_departures_cache: dict[tuple, dict] = {}
+
+
+def _scored(symbol: str, slug: str, horizon: str, columns: list[str]):
+    """The scored rows of one run at one horizon, in the chronological order the
+    evaluation wrote them in - the order the block bootstrap needs."""
+    import polars
+
+    path = f"{REPORT_ROOT}/evaluations/{symbol}/{slug}/predictions_quality.parquet"
+    frame = polars.read_parquet(path, columns=sorted({"horizon", "status", *columns}))
+    return frame.filter((polars.col("status") == "scored") & (polars.col("horizon") == horizon))
+
+
+def _correct(frame) -> tuple[np.ndarray, int]:
+    return (np.asarray([bool(v) for v in frame["correct"].to_list()], dtype=float),
+            int(frame["forward_steps"][0] or 1))
+
+
+def departures(runs: dict) -> dict:
+    """Every distinct measurement tested against a coin flip, with its
+    Benjamini-Hochberg q-value over all of them.
+
+    The intervals are recomputed from the scored rows and compared with the ones
+    the evaluation stored, so a p-value is never read off data that differs
+    from what the tables show. Takes a few minutes, so it is computed once.
+    """
+    key = tuple(sorted((s, m, r["slug"]) for (s, m), v in runs.items() for r in v))
+    if key in _departures_cache:
+        return _departures_cache[key]
+
+    distinct = distinct_runs(runs)
+    measurements, mismatched = [], 0
+    for (symbol, model), entries in sorted(distinct.items()):
+        for run in entries:
+            for horizon in HORIZON_NAMES:
+                stored = (run["by_horizon"].get(horizon) or {}).get("accuracy_ci") or {}
+                frame = _scored(symbol, run["slug"], horizon, ["forward_steps", "correct"])
+                if frame.height == 0:
+                    continue
+                values, block = _correct(frame)
+                interval = accuracy_interval(values.astype(bool), block)
+                if (interval.low, interval.high) != (stored.get("low"), stored.get("high")):
+                    mismatched += 1
+                if not interval.estimable:
+                    continue
+                measurements.append({
+                    "symbol": symbol, "model": model, "slug": run["slug"],
+                    "seed": run["seed"] if len(entries) > 1 else None,
+                    "horizon": horizon, "accuracy": interval.point,
+                    "low": interval.low, "high": interval.high, "block": block,
+                    "p": bootstrap_p_value(values, block, CHANCE, resamples=P_VALUE_RESAMPLES),
+                })
+    for m, q in zip(measurements, benjamini_hochberg([m["p"] for m in measurements])):
+        m["q"] = q
+
+    # The survivors once more, with ten times the draws and with the block doubled.
+    survivors = [i for i, m in enumerate(measurements) if m["q"] < FALSE_DISCOVERY_RATE]
+    precise = [m["p"] for m in measurements]
+    for i in survivors:
+        m = measurements[i]
+        values, block = _correct(_scored(m["symbol"], m["slug"], m["horizon"],
+                                         ["forward_steps", "correct"]))
+        m["p_precise"] = precise[i] = bootstrap_p_value(
+            values, block, CHANCE, resamples=PRECISION_RESAMPLES)
+        m["p_double_block"] = bootstrap_p_value(values, 2 * block, CHANCE,
+                                                resamples=P_VALUE_RESAMPLES)
+    q_precise = benjamini_hochberg(precise)
+    for i in survivors:
+        measurements[i]["q_precise"] = q_precise[i]
+
+    result = {"measurements": measurements, "mismatched": mismatched}
+    _departures_cache[key] = result
+    return result
+
+
+def _side_runs(sides: list) -> float:
+    """Mean length of a stretch of consecutive bars predicting the same side."""
+    changes = sum(1 for a, b in zip(sides, sides[1:]) if a != b)
+    return len(sides) / (changes + 1) if sides else 0.0
+
+
+def _mean_pairwise_correlation(series: dict[str, dict]) -> tuple[float, int]:
+    """Mean correlation over every pair of symbols, on the dates all of them share."""
+    common = set.intersection(*(set(values) for values in series.values()))
+    dates = sorted(common)
+    matrix = np.array([[values[d] for d in dates] for values in series.values()], dtype=float)
+    corr = np.corrcoef(matrix)
+    upper = corr[np.triu_indices(len(series), k=1)]
+    return float(np.mean(upper)), len(dates)
+
+
+def effective_count(n: int, rho: float) -> float:
+    """How many independent series *n* equicorrelated ones are worth for a mean."""
+    return n / (1 + (n - 1) * rho)
+
+
+def baseline_lag(runs: dict, horizon: str = "quarter", symbol: str = "BTCUSDT") -> dict:
+    """What section 10.9 says about the baseline at one horizon: its year-by-year
+    record on one symbol, how long it holds a side, and how much the symbols
+    share."""
+    distinct = distinct_runs(runs)
+    returns, hits, holds, by_year = {}, {}, [], []
+    for name in SYMBOLS:
+        entries = distinct.get((name, "baseline"), [])
+        if not entries:
+            continue
+        frame = _scored(name, entries[0]["slug"], horizon,
+                        ["date", "correct", "pred_direction", "actual_direction", "actual_return"])
+        if frame.height == 0:
+            continue
+        dates = [str(d)[:10] for d in frame["date"].to_list()]
+        returns[name] = dict(zip(dates, frame["actual_return"].to_list()))
+        hits[name] = dict(zip(dates, (float(bool(v)) for v in frame["correct"].to_list())))
+        holds.append(_side_runs(frame["pred_direction"].to_list()))
+        if name == symbol:
+            years: dict[str, list] = defaultdict(list)
+            for date, predicted, actual, correct in zip(
+                dates, frame["pred_direction"].to_list(), frame["actual_direction"].to_list(),
+                frame["correct"].to_list(),
+            ):
+                years[date[:4]].append((predicted == "long", actual == "long", bool(correct)))
+            by_year = [
+                {"year": year, "bars": len(rows),
+                 "predicted_long": float(np.mean([r[0] for r in rows])),
+                 "actual_long": float(np.mean([r[1] for r in rows])),
+                 "accuracy": float(np.mean([r[2] for r in rows]))}
+                for year, rows in sorted(years.items())
+            ]
+    if len(returns) < 2 or not by_year:
+        return {}
+    rho_returns, days = _mean_pairwise_correlation(returns)
+    rho_hits, _ = _mean_pairwise_correlation(hits)
+    slug = distinct[(symbol, "baseline")][0]["slug"]
+    summary = f"{REPORT_ROOT}/predictions/{symbol}/{slug}/run_summary.json"
+    window = {}
+    if os.path.exists(summary):
+        windows = json.load(open(summary, encoding="utf-8")).get("training_windows") or {}
+        window = windows.get(horizon, {})
+    return {
+        "symbols": len(returns), "days": days, "by_year": by_year, "hold": float(np.mean(holds)),
+        "rho_returns": rho_returns, "rho_hits": rho_hits,
+        "window_bars": window.get("window_bars"), "forward_bars": window.get("forward_bars"),
+    }
 
 
 def abstract_texts(runs: dict) -> tuple[list[str], list[str]]:
@@ -2093,6 +2256,21 @@ def _chapter_9_methodology(doc: Document) -> None:
         "ponieważ cztery bloki losowane z szeregu zawierającego trzy nie są w stanie go "
         "odtworzyć.",
     )
+    add_body(
+        doc,
+        "Z tego samego próbkowania odczytywana jest wartość p dla hipotezy, że trafność wynosi "
+        "0,5: odsetek wylosowanych trafności leżących po drugiej stronie 0,5 niż większość z "
+        "nich, podwojony. Jest to test, który odwraca przedział percentylowy (Efron i "
+        "Tibshirani, 1993), więc p spada poniżej 0,05 tam, gdzie 95-procentowy przedział nie "
+        "obejmuje 0,5 - oba odczyty pochodzą z tych samych losowań i nie mogą sobie przeczyć. "
+        "Pomiarów jest jednak kilkaset, a przy takiej liczbie próg 0,05 przekracza kilkanaście z "
+        "nich nawet wtedy, gdy żaden model nie ma przewagi. Wartości p koryguje się zatem "
+        "procedurą Benjaminiego i Hochberga (1995), która ogranicza oczekiwany odsetek "
+        "fałszywych odkryć wśród pomiarów uznanych za istotne. Gwarancja ta obowiązuje także "
+        "przy dodatniej zależności między testami (Benjamini i Yekutieli, 2001), a z taką "
+        "zależnością ma się tu do czynienia: ziarna jednej konfiguracji widzą te same dane, a "
+        "kursy instrumentów poruszają się razem.",
+    )
 
     add_heading(doc, "9.3. Moc statystyczna jako ograniczenie", 2)
     add_figure(doc, "moc", "Średnia liczba obserwacji niezależnych na horyzont, w skali logarytmicznej. Horyzont roczny leży poniżej progu, przy którym system w ogóle wyznacza przedział ufności - i jest to własność ilości danych, nie modelu.")
@@ -2328,6 +2506,7 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
     _results_stability(doc)
     _results_backtest(doc)
     _results_max_vs_mean(doc)
+    _results_departures(doc, runs)
     page_break(doc)
 
 
@@ -2532,8 +2711,11 @@ def _results_max_vs_mean(doc: Document) -> None:
             if cell.get("accuracy") is None:
                 continue
             interval = cell.get("accuracy_ci") or {}
+            # The stored interval has no flag of its own: a refused one has no bounds.
+            bounds = (interval.get("low"), interval.get("high"))
             entry = (cell["accuracy"], symbol, slug.split("_")[0],
-                     interval.get("effective_samples"), interval.get("estimable"))
+                     interval.get("effective_samples"),
+                     None if None in bounds else bounds)
             if horizon not in best or entry[0] > best[horizon][0]:
                 best[horizon] = entry
     if not best:
@@ -2554,19 +2736,338 @@ def _results_max_vs_mean(doc: Document) -> None:
         ["Horyzont", "Najlepsza komórka", "Trafność", "Obs. niezależnych", "Przedział"],
         [[horizon, f"{sym.replace('USDT', '')} / {model}", fmt(acc),
           "\u2014" if eff is None else f"{eff:.1f}",
-          "wyznaczony" if estimable else "ODMÓWIONY"]
-         for horizon, (acc, sym, model, eff, estimable) in best.items()],
+          f"{bounds[0]:.3f}-{bounds[1]:.3f}" if bounds else "odmówiony"]
+         for horizon, (acc, sym, model, eff, bounds) in best.items()],
         [2.4, 4.0, 2.4, 3.4, 3.4],
         font=8.5,
     )
     add_caption(
         doc, "Tabela",
         "Najwyższa trafność na każdym horyzoncie wraz z liczbą obserwacji niezależnych, na "
-        "której ją zmierzono. Tam, gdzie liczba ta jest zbyt mała, system odmawia wyznaczenia "
-        "przedziału ufności i nie orzeka o przewadze \u2014 co jest właściwym zachowaniem: "
-        "wartość punktowa pozostaje raportowana, wycofane zostaje wyłącznie twierdzenie o jej "
-        "precyzji. Wnioski rozdziału opierają się na średnich, nie na maksimach.",
+        "której ją zmierzono, i 95-procentowym przedziałem ufności. Tam, gdzie liczba "
+        "obserwacji jest zbyt mała, system odmawia wyznaczenia przedziału i nie orzeka o "
+        "przewadze - co jest właściwym zachowaniem: wartość punktowa pozostaje raportowana, "
+        "wycofane zostaje wyłącznie twierdzenie o jej precyzji. Przedział wyłączający 0,5 "
+        "nie rozstrzyga jeszcze niczego, ponieważ maksimum wybrano spośród wielu pomiarów; "
+        "co z takich wyników zostaje po uwzględnieniu ich liczby, pokazuje podrozdział 10.9.",
     )
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    """The Polish noun form that goes with *n*."""
+    if n == 1:
+        return one
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return few
+    return many
+
+
+def _thousands(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
+
+
+def _percent(share: float) -> str:
+    return f"{share * 100:.0f}%"
+
+
+def _agreement_with_baseline(runs: dict, symbol: str, horizon: str) -> list[float]:
+    """For each learning run on *symbol*: the share of bars on which it predicted
+    the same side as the baseline."""
+    distinct = distinct_runs(runs)
+    base_entries = distinct.get((symbol, "baseline"), [])
+    if not base_entries:
+        return []
+    base = _scored(symbol, base_entries[0]["slug"], horizon, ["date", "pred_direction"])
+    side = dict(zip((str(d)[:10] for d in base["date"].to_list()), base["pred_direction"].to_list()))
+    shares = []
+    for model in MODELS:
+        if model == "baseline":
+            continue
+        for run in distinct.get((symbol, model), []):
+            frame = _scored(symbol, run["slug"], horizon, ["date", "pred_direction"])
+            pairs = [(side[str(d)[:10]], p) for d, p in
+                     zip(frame["date"].to_list(), frame["pred_direction"].to_list())
+                     if str(d)[:10] in side]
+            if pairs:
+                shares.append(float(np.mean([a == b for a, b in pairs])))
+    return shares
+
+
+def _year_record(year: dict) -> str:
+    """One year of a forecaster's record: the side it mostly called, against what happened."""
+    rising = year["predicted_long"] >= 0.5
+    called = year["predicted_long"] if rising else 1 - year["predicted_long"]
+    return (f"przewidywał {'wzrost' if rising else 'spadek'} w {_percent(called)} dni, a kwartał "
+            f"kończył się wzrostem w {_percent(year['actual_long'])} z nich - trafność "
+            f"{pl(year['accuracy'])}")
+
+
+def _who(m: dict) -> str:
+    seed = f" pod ziarnem {m['seed']}" if m["seed"] is not None else ""
+    return f"{MODEL_LABEL[m['model']]} na {m['symbol']}{seed}"
+
+
+def _results_departures(doc: Document, runs: dict) -> None:
+    """Which single measurements depart from a coin flip, and which survive the
+    number of measurements taken."""
+    found = departures(runs)
+    every = found["measurements"]
+    if not every:
+        return
+    total = len(every)
+    tested = [h for h in HORIZON_NAMES if any(m["horizon"] == h for m in every)]
+    refused = [h for h in HORIZON_NAMES if h not in tested]
+    nominal = sorted((m for m in every if m["p"] < FALSE_DISCOVERY_RATE), key=lambda m: m["p"])
+    below = [m for m in nominal if m["accuracy"] < CHANCE]
+    above = [m for m in nominal if m["accuracy"] > CHANCE]
+    survivors = sorted((m for m in every if m["q"] < FALSE_DISCOVERY_RATE), key=lambda m: m["p"])
+    agree = sum((m["p"] < FALSE_DISCOVERY_RATE) == (m["low"] > CHANCE or m["high"] < CHANCE)
+                for m in every)
+
+    add_heading(doc, "10.9. Odstępstwa od losowości", 2)
+    add_body(
+        doc,
+        "Podrozdziały 10.1-10.3 porównują architektury między sobą, a 10.8 pokazuje, dlaczego "
+        "wynikiem nie może być najlepsza komórka. Pytanie uzupełniające brzmi: "
+        "które pojedyncze pomiary odbiegają od rzutu monetą i czy którykolwiek z nich "
+        "wytrzymuje uwzględnienie liczby wykonanych pomiarów. Wartość p dla hipotezy, że "
+        "trafność wynosi 0,5, wyznaczono metodą z rozdziału 9.2 dla każdego z "
+        f"{total} pomiarów: {len({m['slug'] for m in every})} różnych przebiegów na horyzontach "
+        f"{_listing([HORIZON_LOCATIVE[h] for h in tested])}"
+        + (f"; na horyzoncie {_listing([HORIZON_LOCATIVE[h] for h in refused])} przedział, a z "
+           "nim wartość p, jest odmawiany z braku obserwacji niezależnych" if refused else "")
+        + f". Próbkowanie wydłużono do {_thousands(P_VALUE_RESAMPLES)} losowań przy tym samym "
+        f"ziarnie, więc pierwsze {_thousands(DEFAULT_RESAMPLES)} z nich to losowania "
+        "opublikowanych przedziałów. Dłuższy ciąg jest potrzebny, ponieważ z B losowań nie da "
+        "się otrzymać p mniejszego niż 2 / (B + 1), a poprawka wymaga od najmniejszej z "
+        f"{total} wartości, by nie przekraczała {pl(FALSE_DISCOVERY_RATE / total, '.4f')}. "
+        + ("Przedziały przeliczone z zapisanych wierszy ocenionych zgadzają się co do bitu z "
+           "zapisanymi w artefaktach." if not found["mismatched"] else
+           f"UWAGA: {found['mismatched']} przeliczonych przedziałów różni się od zapisanych w "
+           "artefaktach - tabele i wartości p pochodzą wtedy z różnych danych."),
+    )
+
+    if not survivors:
+        verdict = "nie pozostaje żaden."
+    else:
+        count = len(survivors)
+        verdict = (
+            ("pozostaje jeden pomiar: " if count == 1 else
+             f"pozostają {count} {_plural(count, 'pomiar', 'pomiary', 'pomiarów')}: ")
+            + "; ".join(
+                f"{_who(m)}, horyzont {HORIZON_NOMINATIVE[m['horizon']]}, "
+                f"trafność {pl(m['accuracy'])} - "
+                + ("poniżej losowości" if m["accuracy"] < CHANCE else "powyżej losowości")
+                for m in survivors)
+            + "."
+        )
+    add_body(
+        doc,
+        f"Próg 0,05 {_plural(len(nominal), 'przekroczył', 'przekroczyły', 'przekroczyło')} "
+        f"{len(nominal)} z {total} pomiarów, a przy braku jakiejkolwiek "
+        f"przewagi należałoby się spodziewać około {round(FALSE_DISCOVERY_RATE * total)}. "
+        f"Poniżej 0,5 {_plural(len(below), 'leży', 'leżą', 'leży')} {len(below)} z nich, "
+        f"powyżej {len(above)}. Są to "
+        + ("dokładnie te pomiary" if agree == total else
+           f"w {agree} z {total} przypadków te same pomiary")
+        + ", których 95-procentowy przedział nie obejmuje 0,5. Po poprawce "
+        "Benjaminiego-Hochberga przy odsetku fałszywych odkryć 5% " + verdict,
+    )
+    add_table(
+        doc,
+        ["Symbol", "Model", "Ziarno", "Horyzont", "Trafność", "Przedział 95%", "p", "q"],
+        [[m["symbol"].replace("USDT", ""), m["model"], "-" if m["seed"] is None else str(m["seed"]),
+          m["horizon"], fmt(m["accuracy"]), f"{m['low']:.3f}-{m['high']:.3f}",
+          fmt(m["p"], 4), fmt(m["q"])]
+         for m in nominal],
+        [1.8, 2.0, 1.5, 2.0, 1.8, 2.8, 1.6, 1.4],
+        font=8.5,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Pomiary, których trafność odbiega od 0,5 przy p < 0,05. Kolejność według rosnącego "
+        f"p. Kolumna q to wartość skorygowana procedurą Benjaminiego-Hochberga względem wszystkich "
+        f"{total} pomiarów; istotny po korekcie jest pomiar o q < 0,05. Wartości p z "
+        f"{_thousands(P_VALUE_RESAMPLES)} losowań bootstrapu blokowego, przedział z pierwszych "
+        f"{_thousands(DEFAULT_RESAMPLES)}. Kreska w kolumnie ziarna oznacza model, którego "
+        "wyniku ziarno nie zmienia.",
+    )
+
+    lag = baseline_lag(runs)
+    quarter = [m for m in nominal if m["horizon"] == "quarter"]
+    quarter_base = [m for m in quarter if m["model"] == "baseline"]
+    if lag and quarter_base and lag["window_bars"] and lag["forward_bars"]:
+        quarter_below = sum(m["accuracy"] < CHANCE for m in quarter)
+        add_body(
+            doc,
+            f"Spośród nich {len(quarter)} "
+            f"{_plural(len(quarter), 'pochodzi', 'pochodzą', 'pochodzi')} z horyzontu kwartalnego - "
+            + ("wszystkie poniżej 0,5" if quarter_below == len(quarter)
+               else f"{quarter_below} poniżej 0,5")
+            + f" - a {len(quarter_base)} z tych {len(quarter)} z modelu odniesienia ("
+            + _listing([m["symbol"] for m in quarter_base]) + "). Mechanizm widać w rozbiciu "
+            "wyników modelu odniesienia na lata. Na horyzoncie kwartalnym model zlicza kierunki "
+            f"{lag['window_bars'] - lag['forward_bars']} kwartalnych zwrotów zakończonych przed "
+            "dniem prognozy: najświeższy z nich rozpoczął się kwartał wcześniej, a całe okno "
+            f"sięga {lag['window_bars']} dni wstecz. Prognozuje więc kierunek, który dominował "
+            "przez mniej więcej dwa lata zakończone kwartał temu, i trzyma się raz wybranej "
+            f"strony średnio przez {lag['hold']:.0f} kolejnych dni (średnia z {lag['symbols']} "
+            "instrumentów). Taka reguła ma rację, dopóki "
+            "trwa reżim rynku, i myli się po każdym jego zwrocie - aż okno wypełni się nowym "
+            "reżimem.",
+        )
+        full_years = [y for y in lag["by_year"] if y["bars"] >= 360]
+        worst = sorted(sorted(full_years, key=lambda y: y["accuracy"])[:2], key=lambda y: y["year"])
+        add_table(
+            doc,
+            ["Rok", "Prognoza wzrostu", "Wzrost faktyczny", "Trafność", "Świec"],
+            [[y["year"], _percent(y["predicted_long"]), _percent(y["actual_long"]),
+              fmt(y["accuracy"]), str(y["bars"])] for y in lag["by_year"]],
+            [1.8, 3.4, 3.4, 2.4, 1.8],
+            font=8.5,
+        )
+        partial = [y["year"] for y in lag["by_year"] if y["bars"] < 360]
+        add_caption(
+            doc, "Tabela",
+            "Model odniesienia na BTCUSDT na horyzoncie kwartalnym, rok po roku. Kolumny: "
+            "odsetek dni z prognozą wzrostu, odsetek dni, po których kwartał rzeczywiście "
+            "zakończył się wzrostem, i trafność."
+            + (f" Rok {partial[0]} jest niepełny." if len(partial) == 1 else
+               f" Lata {_listing(partial)} są niepełne." if partial else ""),
+        )
+        if len(worst) == 2:
+            first, second = worst
+            add_body(
+                doc,
+                f"Na BTCUSDT najgorsze były lata {first['year']} i {second['year']}. W roku "
+                f"{first['year']} model {_year_record(first)}. W roku {second['year']} "
+                f"{_year_record(second)}. Trafność poniżej losowości nie jest tu zdolnością, "
+                "którą wystarczyłoby odwrócić: powstaje na kilku zwrotach cyklu rynku obecnych w "
+                "badanym okresie, a okres następny może ich zawierać inną liczbę.",
+            )
+
+        n, k = lag["symbols"], len(quarter_base)
+        add_body(
+            doc,
+            f"Wynik poniżej losowości na {k} "
+            f"{_plural(k, 'instrumencie', 'instrumentach', 'instrumentach')} nie oznacza {k} "
+            f"niezależnych potwierdzeń. Kwartalne zwroty {n} instrumentów "
+            f"korelują średnio na poziomie ρ = {pl(lag['rho_returns'], '.2f')} w "
+            f"{lag['days']} wspólnych dniach. Średnia z n zmiennych o wspólnej korelacji ρ ma "
+            "wariancję taką jak średnia z n / (1 + (n − 1)ρ) zmiennych niezależnych, więc "
+            f"{n} {_plural(n, 'instrument niesie', 'instrumenty niosą', 'instrumentów niesie')} "
+            "tu tyle informacji, co około "
+            f"{pl(effective_count(n, lag['rho_returns']), '.1f')} instrumentu niezależnego. "
+            "Same trafienia "
+            "i pomyłki modelu odniesienia korelują słabiej "
+            f"(ρ = {pl(lag['rho_hits'], '.2f')}), ponieważ okno każdego instrumentu zaczyna się "
+            "w innej dacie i obejmuje inną historię; równoważnik rośnie wtedy do "
+            f"{pl(effective_count(n, lag['rho_hits']), '.1f')}. Dla {k} instrumentów poniżej "
+            f"losowości oba odczyty dają od {pl(effective_count(k, lag['rho_returns']), '.1f')} "
+            f"do {pl(effective_count(k, lag['rho_hits']), '.1f')} niezależnego pomiaru.",
+        )
+
+    btc = [m for m in every if m["symbol"] == "BTCUSDT" and m["horizon"] == "quarter"]
+    shares = _agreement_with_baseline(runs, "BTCUSDT", "quarter")
+    if btc and shares and all(m["accuracy"] < CHANCE for m in btc):
+        accuracies = [m["accuracy"] for m in btc]
+        add_body(
+            doc,
+            "Na BTCUSDT horyzont kwartalny wypada poniżej 0,5 dla każdej architektury i "
+            f"każdego ziarna (od {pl(min(accuracies))} do {pl(max(accuracies))}). Modele uczące "
+            "się wskazywały tę samą stronę co model odniesienia w "
+            f"{_percent(min(shares))[:-1]}-{_percent(max(shares))} dni: przy cechach niosących "
+            "mało informacji odtwarzają częstość bazową swojego okna treningowego, a wraz z nią "
+            "jej opóźnienie.",
+        )
+    for m in survivors:
+        siblings = [s["accuracy"] for s in every
+                    if (s["symbol"], s["model"], s["horizon"]) == (m["symbol"], m["model"], m["horizon"])
+                    and s is not m]
+        text = (
+            ("Jedyny pomiar, który przetrwał poprawkę, " if len(survivors) == 1
+             else "Pomiar, który przetrwał poprawkę, ")
+            + f"to {_who(m)}, horyzont {HORIZON_NOMINATIVE[m['horizon']]}, "
+            f"trafność {pl(m['accuracy'])}"
+            + (f"; pozostałe ziarna dały {_listing([pl(a) for a in siblings])}" if siblings else "")
+            + ". Nie jest to skutek długości próbkowania - przy "
+            f"{_thousands(PRECISION_RESAMPLES)} losowaniach p = {pl(m['p_precise'], '.5f')}, a "
+            f"q = {pl(m['q_precise'])} - ani długości bloku: przy bloku podwojonym do "
+            f"{2 * m['block']} świec p = {pl(m['p_double_block'], '.4f')}."
+        )
+        if m["accuracy"] < CHANCE:
+            text += (" Jest to jednak pomiar opóźnienia trendu w jednym cyklu rynku, a nie "
+                     "zdolność, którą dałoby się wykorzystać - i to pomiar po stronie przegranej.")
+        add_body(doc, text)
+
+    if above:
+        def others_on(m: dict) -> list[dict]:
+            return [s for s in every if (s["symbol"], s["horizon"]) == (m["symbol"], m["horizon"])
+                    and s["model"] != m["model"]]
+
+        def mean_by_model(rows: list[dict]) -> dict[str, float]:
+            grouped: dict[str, list[float]] = defaultdict(list)
+            for row in rows:
+                grouped[row["model"]].append(row["accuracy"])
+            return {model: float(np.mean(v)) for model, v in grouped.items()}
+
+        lines = []
+        for m in above:
+            siblings = [s for s in every if (s["symbol"], s["model"], s["horizon"])
+                        == (m["symbol"], m["model"], m["horizon"]) and s is not m]
+            means = mean_by_model(others_on(m))
+            lines.append(
+                f"{_who(m)}, horyzont {HORIZON_NOMINATIVE[m['horizon']]}: {pl(m['accuracy'])}"
+                + (f"; pozostałe ziarna {_listing([pl(s['accuracy']) for s in siblings])}"
+                   if siblings else "")
+                + "; pozostałe architektury na tych samych danych: "
+                + ", ".join(f"{MODEL_LABEL[k]} {pl(v)}" for k, v in sorted(means.items(),
+                                                                         key=lambda kv: -kv[1]))
+                + "."
+            )
+        unconfirmed = not any(
+            s["p"] < FALSE_DISCOVERY_RATE and s["accuracy"] > CHANCE
+            for m in above for s in others_on(m)
+        )
+        elsewhere = not any(
+            s["p"] < FALSE_DISCOVERY_RATE and s["accuracy"] > CHANCE
+            for m in above for s in every
+            if (s["model"], s["horizon"]) == (m["model"], m["horizon"]) and s["symbol"] != m["symbol"]
+        )
+        add_body(
+            doc,
+            f"Powyżej 0,5 {_plural(len(above), 'leży', 'leżą', 'leży')} {len(above)} z "
+            f"{len(nominal)} pomiarów i "
+            + ("żaden nie przetrwał poprawki"
+               if not any(m["q"] < FALSE_DISCOVERY_RATE for m in above)
+               else "nie wszystkie przetrwały poprawkę")
+            + f" (najmniejsze q = {pl(min(m['q'] for m in above))}):",
+        )
+        add_bullets(doc, lines)
+        add_body(
+            doc,
+            "Tam, gdzie ziarna jednej architektury zgadzają się ze sobą, zgodność ta pokazuje "
+            "jedynie, że wynik nie jest artefaktem inicjalizacji. Ziarna widzą te same dane, "
+            "więc nie stanowią replikacji; replikacją byłby ten sam wynik innej architektury "
+            "uczonej na tych samych danych albo tej samej architektury na innym instrumencie."
+            + (" Żadnego z tych potwierdzeń w zestawieniu nie ma: na tych samych danych i "
+               "horyzoncie żadna inna architektura, a na innych instrumentach żaden przebieg tej "
+               "samej architektury nie przekracza progu 0,05 w górę nawet przed poprawką."
+               if unconfirmed and elsewhere else ""),
+        )
+
+    above_survivors = [m for m in survivors if m["accuracy"] > CHANCE]
+    most_common = max(tested, key=lambda h: sum(m["horizon"] == h for m in nominal))
+    if len(below) > len(above) and not above_survivors:
+        add_body(
+            doc,
+            f"Odstępstwa od losowości leżą zatem częściej poniżej niż powyżej 0,5 ({len(below)} "
+            f"wobec {len(above)}), najwięcej ich przypada na horyzont "
+            f"{HORIZON_NOMINATIVE[most_common]}, a te poniżej wyjaśnia opóźnienie reguły "
+            "częstościowej, nie struktura, której nauczyłby się model. Po uwzględnieniu liczby "
+            "pomiarów żaden z nich nie wskazuje trafności istotnie wyższej od losowej, co jest "
+            "zgodne z tezą pracy (rozdział 1.3).",
+        )
 
 
 def _results_stability(doc: Document) -> None:
@@ -2884,7 +3385,8 @@ def _chapter_12_interfaces(doc: Document) -> None:
         [
             "Menedżer danych - inwentarz jeziora danych, pobieranie, agregacja, kontrola jakości.",
             "Modele - konfiguracja i uruchamianie treningu, kolejka zadań, inwentarz przebiegów.",
-            "Ocena - miary jakości, przedziały ufności, wykres stabilności w czasie.",
+            "Ocena - ranking przebiegów, miary jakości, kalibracja i ostrość prognoz, "
+            "wykres stabilności w czasie.",
             "Symulacja — parametry wykonawcze, wynik wraz z czterema hipotezami zerowymi.",
         ],
     )
@@ -2963,8 +3465,11 @@ def _chapter_13_limits(doc: Document) -> None:
 
 HORIZON_LOCATIVE = {"week": "tygodniowym", "month": "miesięcznym", "quarter": "kwartalnym",
                     "year": "rocznym"}
+HORIZON_NOMINATIVE = {"week": "tygodniowy", "month": "miesięczny", "quarter": "kwartalny",
+                      "year": "roczny"}
 MODEL_LABEL = {"baseline": "model odniesienia", "ml": "scikit-learn", "xgboost": "XGBoost",
                "gru": "GRU", "tft": "TFT"}
+COUNT_LOCATIVE = {2: "dwóch", 3: "trzech", 4: "czterech"}
 COUNT_WORDS = {5: "pięć", 6: "sześć", 7: "siedem", 8: "osiem", 9: "dziewięć", 10: "dziesięć"}
 
 
@@ -2998,6 +3503,30 @@ def _rank_turnover(runs: dict) -> str:
             f"{_listing(last)}, jest pierwsza na {_listing(first)}")
 
 
+def _corrected_sentence(runs: dict) -> str:
+    """What is left of the departures from chance once their number is accounted for."""
+    every = departures(runs)["measurements"]
+    if not every:
+        return ""
+    survivors = [m for m in every if m["q"] < FALSE_DISCOVERY_RATE]
+    higher = [m for m in survivors if m["accuracy"] > CHANCE]
+    horizons = len({m["horizon"] for m in every})
+    scope = (f"{len(every)} pomiarów ({len({m['slug'] for m in every})} różnych przebiegów na "
+             f"{COUNT_LOCATIVE.get(horizons, str(horizons))} horyzontach)")
+    opening = "Po poprawce na wielokrotne porównania (rozdział 10.9) "
+    if not survivors:
+        return opening + f"żaden z {scope} nie odbiega istotnie od losowości. "
+    if higher:
+        return (opening + f"{len(higher)} z {scope} "
+                + _plural(len(higher), "wykazuje", "wykazują", "wykazuje")
+                + " trafność istotnie wyższą od losowej. ")
+    return (opening + f"żaden z {scope} nie wykazuje trafności istotnie wyższej od losowej; "
+            + ("jedyny pomiar, który przetrwał poprawkę, leży" if len(survivors) == 1 else
+               f"{len(survivors)} pomiary, które przetrwały poprawkę, "
+               + _plural(len(survivors), "leży", "leżą", "leży"))
+            + " poniżej losowości. ")
+
+
 def _chapter_14_summary(doc: Document, runs: dict) -> None:
     add_heading(doc, "14. Podsumowanie", 1)
     if not runs:
@@ -3023,6 +3552,7 @@ def _chapter_14_summary(doc: Document, runs: dict) -> None:
            "deterministycznie" if deterministic else "")
         + ". Żadna architektura nie osiąga trafności istotnie wyższej od losowej, a wszystkie "
         "wypadają poniżej reguły opartej na częstości klasy liczniejszej. "
+        + _corrected_sentence(runs)
         + differences + _rank_turnover(runs)
         + ". Ranking architektur nie jest zatem właściwością architektury.",
     )
@@ -3058,6 +3588,13 @@ def _check_thesis_against_data(runs: dict) -> None:
         problems.append(f"{above} measurements above chance where about {expected} are expected")
     if len(f["beyond_noise"]) > 1:
         problems.append(f"the learners exceed the seed spread on {f['beyond_noise']}")
+    found = departures(runs)
+    higher = [m for m in found["measurements"]
+              if m["q"] < FALSE_DISCOVERY_RATE and m["accuracy"] > CHANCE]
+    if higher:
+        problems.append(f"{len(higher)} measurements above chance survive Benjamini-Hochberg")
+    if found["mismatched"]:
+        problems.append(f"{found['mismatched']} recomputed intervals differ from the stored ones")
     for problem in problems:
         print(f"WARNING: thesis 1.3 / 1.5 no longer matches the data: {problem}")
 
@@ -3087,6 +3624,13 @@ def _chapter_14_bibliography(doc: Document) -> None:
             "Chen T., Guestrin C., XGBoost: A Scalable Tree Boosting System, KDD, 2016.",
             "Bailey D. H., López de Prado M., The Deflated Sharpe Ratio, Journal of Portfolio "
             "Management, 40(5), 2014.",
+            "Efron B., Tibshirani R. J., An Introduction to the Bootstrap, Chapman & Hall, "
+            "1993.",
+            "Benjamini Y., Hochberg Y., Controlling the False Discovery Rate: A Practical and "
+            "Powerful Approach to Multiple Testing, Journal of the Royal Statistical Society: "
+            "Series B, 57(1), 1995.",
+            "Benjamini Y., Yekutieli D., The Control of the False Discovery Rate in Multiple "
+            "Testing under Dependency, Annals of Statistics, 29(4), 2001.",
             "López de Prado M., Advances in Financial Machine Learning, Wiley, 2018.",
             "Cont R., Empirical Properties of Asset Returns: Stylized Facts and Statistical "
             "Issues, Quantitative Finance, 1(2), 2001.",
@@ -3499,50 +4043,70 @@ SCREENSHOT_DIR = "docs/zrzuty"
 # gap nobody notices is how a half-finished document ships.
 SCREENSHOTS: list[tuple[str, str, str, str]] = [
     ("01-menedzer-danych.png", "Menedżer danych - inwentarz",
-     "Widok inwentarza jeziora danych: symbole, zakresy dat, liczba świec i rozmiar na "
-     "dysku. Stąd uruchamiane są pobieranie, agregacja i kontrola jakości.",
+     "Zakładka menedżera danych. Inwentarz jeziora danych podaje dla każdego symbolu zakres "
+     "dat, rozmiar na dysku, dostępne interwały i stan kontroli jakości; obok formularz "
+     "pobierania i kolejka zadań. Terminal na dole pokazuje polecenie wiersza poleceń, na "
+     "które panel przełożył ostatnie zadanie, wraz z ostrzeżeniem o zbyt małej liczbie "
+     "obserwacji niezależnych na horyzoncie rocznym.",
      "zakładka „Data Manager” z widoczną tabelą inwentarza i co najmniej trzema symbolami"),
     ("02-pobieranie.png", "Menedżer danych - pobieranie",
-     "Formularz pobierania danych z Binance Public Data. Zakres podawany jest miesiącami, "
-     "ponieważ taka jest jednostka publikacji po stronie źródła.",
+     "Formularz pobierania danych z Binance Public Data: para walutowa, zakres dat i "
+     "interwały, do których świece jednominutowe zostaną zagregowane po pobraniu.",
      "formularz pobierania z wypełnionym symbolem i zakresem dat"),
     ("03-agregacja.png", "Menedżer danych - agregacja i kontrola jakości",
-     "Panel agregacji świec jednominutowych do interwałów wyższych oraz uruchamiania "
-     "kontroli jakości opisanych w rozdziale 5.4.",
+     "Panel agregacji jednego symbolu, rozwinięty w tabeli inwentarza. Interwał, który już "
+     "istnieje, jest przekreślony i niedostępny; zadanie można dopisać do kolejki albo "
+     "uruchomić od razu. Przycisk „Verify Quality” uruchamia kontrole jakości opisane w "
+     "rozdziale 5.4.",
      "panel agregacji z wybranymi interwałami docelowymi"),
-    ("04-trening-formularz.png", "Modele — konfiguracja treningu",
-     "Formularz treningu. Wartości domyślne pobierane są z interfejsu HTTP, nie ze "
-     "znaczników strony - powód opisano w rozdziale 12.3.",
+    ("04-trening-formularz.png", "Modele - konfiguracja treningu",
+     "Formularz treningu: symbol, architektura, interwał, zakres dat i horyzonty. Wartości "
+     "domyślne pobierane są z interfejsu HTTP, nie ze znaczników strony - powód opisano w "
+     "rozdziale 12.3. Z prawej inwentarz zapisanych przebiegów.",
      "zakładka „AI Models” z widocznym wyborem modelu, zakresem dat i horyzontami"),
-    ("05-trening-pula.png", "Modele — pula symboli treningowych",
-     "Rozwinięta sekcja wyboru dodatkowych symboli do puli treningowej. Symbol prognozowany "
-     "jest z niej automatycznie wykluczany, a sekcja znika dla architektur, które nie "
-     "przyjmują puli.",
+    ("05-trening-pula.png", "Modele - pula symboli treningowych",
+     "Rozwinięta sekcja wyboru dodatkowych symboli do puli treningowej. Prognoza dotyczy "
+     "nadal symbolu wybranego wyżej, a symbol ten jest z puli wykluczony. Sekcja pojawia się "
+     "tylko dla architektur tablicowych, które przyjmują pulę.",
      "sekcja „Advanced: train on several symbols” rozwinięta, model xgboost, kilka symboli "
      "zaznaczonych"),
     ("06-kolejka.png", "Modele - kolejka zadań",
-     "Kolejka zadań utrzymywana po stronie serwera. Przeładowanie przeglądarki jej nie "
-     "gubi, ponieważ przeglądarka jedynie ją wyświetla, nie przechowuje.",
+     "Kolejka zadań utrzymywana po stronie serwera: jedno zadanie wykonywane, drugie "
+     "oczekujące, z przyciskami zmiany kolejności i usunięcia. Pasek u góry pokazuje postęp "
+     "bieżącego zadania. Przeładowanie przeglądarki kolejki nie gubi, ponieważ przeglądarka "
+     "jedynie ją wyświetla.",
      "kolejka z co najmniej jednym zadaniem oczekującym lub wykonywanym"),
     ("07-ocena-metryki.png", "Ocena - miary jakości",
-     "Tabela miar jakości wraz z przedziałami ufności i liczbą obserwacji niezależnych. "
-     "Werdykt „= chance” oznacza przedział obejmujący poziom losowy.",
+     "Zakładka oceny dla jednego przebiegu badania (GRU na BTCUSDT): ranking wszystkich "
+     "ocenionych przebiegów według wyniku złożonego, karty miar zbiorczych (wynik złożony, "
+     "trafność, Brier, ECE), rozkład pewności prognoz w przedziałach kalibracji i ostrość "
+     "prognozy na każdym horyzoncie. Przedziały ufności i liczbę obserwacji niezależnych "
+     "ocena zapisuje w artefaktach przebiegu i wypisuje w wierszu poleceń; z artefaktów "
+     "pochodzą tabele rozdziału 10.",
      "zakładka „Evaluation” z tabelą metryk dla wybranego przebiegu"),
     ("08-ocena-stabilnosc.png", "Ocena - stabilność w czasie",
-     "Wykres jakości prognozy miesiąc po miesiącu, ten sam, który w formie zbiorczej "
-     "przedstawia rysunek stabilności w rozdziale 10.",
+     "Strata logarytmiczna przebiegu XGBoost na BTCUSDT miesiąc po miesiącu, od stycznia "
+     "2025 do czerwca 2026, osobno dla czterech horyzontów. "
+     "Linia horyzontu rocznego odrywa się od pozostałych i kończy wcześniej: na tym "
+     "horyzoncie ocenionych świec jest najmniej, a miesiące o zbyt małej ich liczbie są "
+     "oznaczone osobnym znacznikiem.",
      "wykres stabilności miesięcznej z widocznymi czterema horyzontami"),
     ("09-backtest-parametry.png", "Symulacja - założenia wykonawcze",
-     "Siedem założeń wykonawczych symulacji wystawionych jako parametry: prowizja, "
-     "poślizg, próg kosztowy, minimalna zmiana pozycji i polityka ekspozycji.",
+     "Założenia wykonawcze symulacji wystawione jako parametry: prowizja, poślizg, próg "
+     "kosztowy, minimalna zmiana pozycji, długość okna reguły momentum oraz docelowa "
+     "ekspozycja dla każdej rekomendacji. Wartość „Hold” celowo nie ma własnej ekspozycji - "
+     "oznacza utrzymanie poprzedniej.",
      "zakładka „Backtest” z rozwiniętym formularzem parametrów"),
-    ("10-backtest-wynik.png", "Symulacja — wynik i hipotezy zerowe",
-     "Wynik symulacji podany zawsze łącznie z czterema punktami odniesienia, w tym "
-     "percentylem względem własnych przesunięć cyklicznych.",
+    ("10-backtest-wynik.png", "Symulacja - wynik i hipotezy zerowe",
+     "Wynik symulacji modelu odniesienia na BTCUSDT, podany łącznie z czterema punktami "
+     "odniesienia: kupnem i trzymaniem, stałą ekspozycją o tym samym średnim udziale, "
+     "percentylem względem własnych przesunięć cyklicznych i regułą momentum bez modelu.",
      "wynik backtestu z widoczną sekcją hipotez zerowych"),
-    ("11-analiza-wykres.png", "Analiza - prognoza na tle notowań",
-     "Wykres świecowy z naniesionymi prognozami i rekomendacjami dla wybranego przebiegu.",
-     "wykres analizy z widocznymi prognozami"),
+    ("11-analiza-wykres.png", "Analiza - kalendarz prognoz",
+     "Inspektor historyczny przebiegu: kalendarz jednego miesiąca, w którym każdy dzień "
+     "podaje prognozowane prawdopodobieństwo wzrostu (L) i spadku (S) na najkrótszym "
+     "horyzoncie.",
+     "kalendarz prognoz wybranego przebiegu"),
 ]
 
 
@@ -3570,10 +4134,10 @@ def _chapter_12b_screenshots(doc: Document) -> None:
     )
     add_body(
         doc,
-        f"Poniżej zebrano widoki panelu odpowiadające etapom potoku. Zrzuty wykonywane są "
-        f"ręcznie i umieszczane w katalogu {SCREENSHOT_DIR}/ pod ustalonymi nazwami; "
-        f"dokument osadza je automatycznie przy kolejnym wygenerowaniu. Obecnie dostępnych "
-        f"jest {present} z {len(SCREENSHOTS)}.",
+        "Poniżej zebrano widoki panelu odpowiadające etapom potoku. Pliki leżą w katalogu "
+        f"{SCREENSHOT_DIR}/ pod ustalonymi nazwami i są osadzane przy generowaniu dokumentu"
+        + ("." if present == len(SCREENSHOTS)
+           else f"; obecnie dostępnych jest {present} z {len(SCREENSHOTS)}."),
     )
     for name, heading, caption, expected in SCREENSHOTS:
         add_heading(doc, heading, 3)
