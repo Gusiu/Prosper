@@ -4045,9 +4045,8 @@ SCREENSHOTS: list[tuple[str, str, str, str]] = [
     ("01-menedzer-danych.png", "Menedżer danych - inwentarz",
      "Zakładka menedżera danych. Inwentarz jeziora danych podaje dla każdego symbolu zakres "
      "dat, rozmiar na dysku, dostępne interwały i stan kontroli jakości; obok formularz "
-     "pobierania i kolejka zadań. Terminal na dole pokazuje polecenie wiersza poleceń, na "
-     "które panel przełożył ostatnie zadanie, wraz z ostrzeżeniem o zbyt małej liczbie "
-     "obserwacji niezależnych na horyzoncie rocznym.",
+     "pobierania i kolejka zadań. Na dole terminal, w którym pojawiają się polecenia "
+     "wiersza poleceń, na które panel tłumaczy zadania, wraz z ich wyjściem.",
      "zakładka „Data Manager” z widoczną tabelą inwentarza i co najmniej trzema symbolami"),
     ("02-pobieranie.png", "Menedżer danych - pobieranie",
      "Formularz pobierania danych z Binance Public Data: para walutowa, zakres dat i "
@@ -4085,22 +4084,27 @@ SCREENSHOTS: list[tuple[str, str, str, str]] = [
      "pochodzą tabele rozdziału 10.",
      "zakładka „Evaluation” z tabelą metryk dla wybranego przebiegu"),
     ("08-ocena-stabilnosc.png", "Ocena - stabilność w czasie",
-     "Strata logarytmiczna przebiegu XGBoost na BTCUSDT miesiąc po miesiącu, od stycznia "
-     "2025 do czerwca 2026, osobno dla czterech horyzontów. "
-     "Linia horyzontu rocznego odrywa się od pozostałych i kończy wcześniej: na tym "
-     "horyzoncie ocenionych świec jest najmniej, a miesiące o zbyt małej ich liczbie są "
+     "Strata logarytmiczna przebiegu badania GRU na BTCUSDT (ziarno 42) miesiąc po "
+     "miesiącu, od stycznia 2021 do czerwca 2026, osobno dla czterech horyzontów. Horyzonty "
+     "tygodniowy i miesięczny utrzymują niemal stały poziom, a kwartalny i roczny odrywają "
+     "się od niego na całe miesiące - tam, gdzie obserwacji niezależnych jest najmniej. "
+     "Linia roczna kończy się wcześniej, a miesiące o zbyt małej liczbie ocenionych świec są "
      "oznaczone osobnym znacznikiem.",
      "wykres stabilności miesięcznej z widocznymi czterema horyzontami"),
     ("09-backtest-parametry.png", "Symulacja - założenia wykonawcze",
-     "Założenia wykonawcze symulacji wystawione jako parametry: prowizja, poślizg, próg "
+     "Założenia wykonawcze symulacji, tu dla przebiegu badania GRU na BTCUSDT, wystawione "
+     "jako parametry: prowizja, poślizg, próg "
      "kosztowy, minimalna zmiana pozycji, długość okna reguły momentum oraz docelowa "
      "ekspozycja dla każdej rekomendacji. Wartość „Hold” celowo nie ma własnej ekspozycji - "
      "oznacza utrzymanie poprzedniej.",
      "zakładka „Backtest” z rozwiniętym formularzem parametrów"),
     ("10-backtest-wynik.png", "Symulacja - wynik i hipotezy zerowe",
-     "Wynik symulacji modelu odniesienia na BTCUSDT, podany łącznie z czterema punktami "
-     "odniesienia: kupnem i trzymaniem, stałą ekspozycją o tym samym średnim udziale, "
-     "percentylem względem własnych przesunięć cyklicznych i regułą momentum bez modelu.",
+     "Wynik symulacji przebiegu badania GRU na BTCUSDT (ziarno 42, horyzont tygodniowy, "
+     "styczeń 2020 - czerwiec 2026), podany łącznie z czterema punktami odniesienia: kupnem "
+     "i trzymaniem, stałą ekspozycją o tym samym średnim udziale, percentylem względem "
+     "własnych przesunięć cyklicznych i regułą momentum bez modelu. Strategia zarabia 55,5%, "
+     "lecz przegrywa z kupnem i trzymaniem oraz ze stałą ekspozycją, a wobec własnych "
+     "przesunięć leży na 43. percentylu - poniżej losowego 50.",
      "wynik backtestu z widoczną sekcją hipotez zerowych"),
     ("11-analiza-wykres.png", "Analiza - kalendarz prognoz",
      "Inspektor historyczny przebiegu: kalendarz jednego miesiąca, w którym każdy dzień "
