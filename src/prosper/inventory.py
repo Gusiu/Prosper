@@ -545,7 +545,7 @@ class DataManager:
         Used both to delete a symbol and to measure it, so a missing entry
         leaks twice: deletion strands the files and the reported size
         understates them. Features and labels are enumerated per interval for
-        that reason — asking only for the 1d ones left every other interval on
+        that reason - asking only for the 1d ones left every other interval on
         disk, invisible afterwards because the inventory keys off klines.
         """
         paths = [
@@ -897,7 +897,7 @@ class DataManager:
 
     # How far below each root the fingerprint walks. The tree is
     # root/<interval>/symbol=X/year=Y/month=Z, and a lost or added month shows
-    # up as an mtime change on its `year=` directory — three levels down. The
+    # up as an mtime change on its `year=` directory - three levels down. The
     # original fingerprint stopped at the first level, so it never noticed:
     # deleting three months of 1d klines left the cached inventory reporting
     # "Complete" indefinitely, and the Refresh button could not clear it.

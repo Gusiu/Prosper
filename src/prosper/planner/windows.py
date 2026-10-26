@@ -36,7 +36,7 @@ RECOMMENDATIONS: tuple[str, ...] = (
 # planner has already seen. Absolute cut-offs cannot survive a change to the
 # metric and did not: 0.2/0.3/0.4 were chosen when `calculate_risk_metric`
 # summed both sides and could reach 1.0. Counting only the adverse side capped
-# it at 0.5 by construction — the losing side's probability is at most 0.5 —
+# it at 0.5 by construction - the losing side's probability is at most 0.5 -
 # and in practice at 0.365, so the outer gate stopped being reachable and
 # blocked 0 of 2129 bars. Reading the observed maximum and lowering the number
 # to suit would be tuning on the evaluation set.
@@ -70,7 +70,7 @@ def risk_gates(history: Sequence[float]) -> tuple[float, float, float]:
     """The three risk cut-offs implied by the risk already observed.
 
     *history* must contain only windows strictly earlier than the one being
-    graded — the gates are part of the decision, so letting them see the bar
+    graded - the gates are part of the decision, so letting them see the bar
     they judge would be the same look-ahead the rest of the package refuses.
     """
     if len(history) < RISK_WARMUP_WINDOWS:
@@ -119,7 +119,7 @@ def calculate_risk_metric(
     short_large = sum(prob for label, prob in depth_short_bins.items() if is_large_move_bin(label))
 
     # Risk is the chance of a large move *against* the position the edge
-    # implies — not of a large move in general. Summing both sides counted an
+    # implies - not of a large move in general. Summing both sides counted an
     # expected rally as a reason not to buy: on strongly bullish bars of the ml
     # run, mean risk was 0.85 and 98% of it was the upside term, so the planner
     # vetoed the very signals it was most confident about.
@@ -165,7 +165,7 @@ def clears_cost(expected: float, round_trip_cost: float) -> bool:
     Costs are a property of the trade, not of the market: one round trip is
     paid whether the position is held for a month or a year, so this threshold
     is deliberately *not* scaled by horizon. It is symmetric because entering
-    and exiting both cost the same — see `map_to_recommendation`.
+    and exiting both cost the same - see `map_to_recommendation`.
     """
     return abs(expected) > round_trip_cost
 
@@ -189,7 +189,7 @@ def map_to_recommendation(
     *gates* are the three risk cut-offs, strongest first, from `risk_gates`.
     The edge thresholds stay fixed because `edge` already has a scale that does
     not drift: it is a difference of two probabilities, so 0.3 means the same
-    thing under any bin scheme. `risk` does not — see `RISK_QUANTILES`.
+    thing under any bin scheme. `risk` does not - see `RISK_QUANTILES`.
 
     Both sides are tested strongest-first and are mirror images of each other:
 

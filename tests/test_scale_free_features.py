@@ -2,7 +2,7 @@
 
 The predictors took every column in the features parquet bar a handful of names,
 which fed them raw price levels. Measured across BTCUSDT and SOLUSDT over the
-same period, `ma_10` differed by 553x, `atr_14` by 360x and `macd_hist` by 387x —
+same period, `ma_10` differed by 553x, `atr_14` by 360x and `macd_hist` by 387x -
 that last one is the interesting case, because nothing in its name says "price
 units" and reading the names alone would have missed it.
 

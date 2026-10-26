@@ -5,7 +5,7 @@ is defensible for a 7-day horizon and indefensible for a 364-day one, and the
 difference is not a matter of taste: a window of W bars is worth
 ``(W - forward) / forward`` independent observations, because consecutive labels
 share all but one bar of their forward return. At 730 days that is 104
-observations for the week and 1.0 for the year — and a single observation was
+observations for the week and 1.0 for the year - and a single observation was
 being reported to three decimal places.
 
 These tests pin the rule that replaced it and, more importantly, the constraint
@@ -83,7 +83,7 @@ def test_the_two_floors_swap_over_between_the_horizons() -> None:
 
 def test_every_horizon_clears_both_floors_on_the_history_we_have() -> None:
     """The point of the exercise. On BTCUSDT's nine years, all four horizons come
-    out measurable on both sides — which the fixed 730-day window did not manage
+    out measurable on both sides - which the fixed 730-day window did not manage
     for the year at all."""
     for horizon in DEFAULT_HORIZONS:
         forward = horizon.steps("1d")
@@ -97,7 +97,7 @@ def test_every_horizon_clears_both_floors_on_the_history_we_have() -> None:
 
 def test_a_horizon_the_history_cannot_support_is_not_quietly_widened() -> None:
     """SOLUSDT has 2150 daily bars. The ideal annual window is 1456 of them,
-    which would leave 0.9 scored observations — so the ideal is unreachable, and
+    which would leave 0.9 scored observations - so the ideal is unreachable, and
     what comes back is the balance point rather than the ideal.
     """
     window = dynamic_window_steps(364, SOL_BARS)

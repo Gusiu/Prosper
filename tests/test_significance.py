@@ -7,7 +7,7 @@ naive interval treats those as independent and comes out several times too
 narrow, which would make 0.565 look distinguishable from 0.500 when it is not.
 
 The moving-block bootstrap resamples runs of consecutive rows instead, so each
-resample keeps that correlation. These tests pin the property that matters —
+resample keeps that correlation. These tests pin the property that matters -
 that it is *wider* than the naive version on correlated data and agrees with it
 when the data really is independent.
 """
@@ -378,8 +378,8 @@ def test_the_cli_prints_the_interval_and_the_verdict() -> None:
 
 def test_an_interval_that_cannot_bracket_its_estimate_is_refused() -> None:
     """Found in real output, not imagined: at 3.1 blocks two of fifty-five
-    intervals came out excluding their own point estimate — 0.339 against
-    [0.066, 0.335] — because four blocks drawn and truncated cannot represent a
+    intervals came out excluding their own point estimate - 0.339 against
+    [0.066, 0.335] - because four blocks drawn and truncated cannot represent a
     series holding three. The block count alone did not catch it, so the
     inconsistency is detected directly.
     """

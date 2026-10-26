@@ -67,7 +67,7 @@ class Interval:
     def excludes(self, reference: float) -> bool | None:
         """Whether *reference* lies outside the interval.
 
-        `None` when the interval could not be estimated — which must not be read
+        `None` when the interval could not be estimated - which must not be read
         as "no difference", only as "this data cannot say".
         """
         if self.low is None or self.high is None:
@@ -113,7 +113,7 @@ def block_bootstrap(
 ) -> Interval:
     """Percentile interval for *statistic* under a moving-block bootstrap.
 
-    *rows* is one row per scored bar, in chronological order — either a 1-D array
+    *rows* is one row per scored bar, in chronological order - either a 1-D array
     of values or a 2-D array whose columns the statistic knows how to read (the
     calibration error needs confidence and correctness together).
 
@@ -236,7 +236,7 @@ def accuracy_interval(correct: Sequence[bool], block_size: int, **kwargs: Any) -
 
 
 def mean_interval(values: Sequence[float], block_size: int, **kwargs: Any) -> Interval:
-    """Any per-row score averaged over bars — Brier, NLL, the composite."""
+    """Any per-row score averaged over bars - Brier, NLL, the composite."""
     return block_bootstrap(np.asarray(values, dtype=float), block_size, **kwargs)
 
 
@@ -249,8 +249,8 @@ def calibration_error_interval(
 ) -> Interval:
     """Expected calibration error with an interval.
 
-    ECE is not a mean of per-row values — it is a weighted sum over confidence
-    bins — so it has to be recomputed inside every resample rather than averaged.
+    ECE is not a mean of per-row values - it is a weighted sum over confidence
+    bins - so it has to be recomputed inside every resample rather than averaged.
     """
     paired = np.column_stack(
         [np.asarray(confidence, dtype=float), np.asarray(correct, dtype=float)]

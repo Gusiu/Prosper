@@ -98,7 +98,7 @@ def _print_epoch_usage(results: dict[str, Any]) -> None:
     """Show what early stopping actually decided.
 
     `--epochs` is a ceiling, so the epochs a horizon used are a result of the
-    run. They were computed, returned, and then never printed — which is how
+    run. They were computed, returned, and then never printed - which is how
     "did early stopping fire?" stayed a question needing a bespoke probe.
     `hit_ceiling` is the one to read: a horizon reaching its budget in most
     windows is limited by the budget, not by the signal.
@@ -910,7 +910,7 @@ def eval_backtest_cmd(
 
     The execution assumptions are all adjustable, which makes this an instrument
     rather than a verdict. Whatever they are set to, the four comparisons in
-    "Did the model add anything?" are reported — a configuration that lifts ROI
+    "Did the model add anything?" are reported - a configuration that lifts ROI
     while the no-model momentum row stays negative is a fact about the market.
     """
     settings = get_settings(data_root=root)

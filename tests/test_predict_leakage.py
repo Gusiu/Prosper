@@ -84,7 +84,7 @@ def test_the_shipped_horizons_convert_exactly_to_whole_weeks() -> None:
     """The reason `long` is 364 rather than 365.
 
     `days_to_steps` rounds, so a 365-day horizon became 52 bars at the 1w
-    interval — 364 days — while staying 365 at 1d. Invariant 2 requires both to
+    interval - 364 days - while staying 365 at 1d. Invariant 2 requires both to
     ask the same question, and they did not: a 1w run's `long` was a day shorter
     than a 1d run's. Whole weeks remove the rounding entirely.
     """
@@ -151,7 +151,7 @@ def test_the_window_reports_how_many_observations_each_horizon_has() -> None:
     sibling for a window that can train but cannot measure.
 
     A 730-day window holds 730 - 364 = 366 labelled bars at the annual horizon,
-    and those overlap by 363 of 364 days — about one independent observation. No
+    and those overlap by 363 of 364 days - about one independent observation. No
     model, optimiser or epoch budget changes that; it is arithmetic about how
     much non-overlapping history two years contains, and it is why one shared
     window had to go.
@@ -194,7 +194,7 @@ def test_a_well_powered_configuration_warns_about_nothing() -> None:
 def test_the_scored_side_is_warned_about_too() -> None:
     """Widening a window to fix the training side takes the bars from the scored
     side, one for one. A warning about only the first would read as an invitation
-    to keep widening — which is how a well-trained horizon ends up unmeasurable.
+    to keep widening - which is how a well-trained horizon ends up unmeasurable.
     """
     from prosper.predict.window import warn_low_power
 
@@ -207,7 +207,7 @@ def test_the_scored_side_is_warned_about_too() -> None:
 
 
 def test_an_underpowered_configuration_warns_without_refusing() -> None:
-    """The annual horizon must still run — that it cannot be validated is a
+    """The annual horizon must still run - that it cannot be validated is a
     finding worth reporting, not a reason to hide it."""
     windows = resolve_train_windows(730, "1d", DEFAULT_HORIZONS)
     assert windows.forward_steps, "the configuration is accepted"

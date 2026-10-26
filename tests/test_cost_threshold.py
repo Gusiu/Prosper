@@ -46,7 +46,7 @@ def test_a_large_expected_move_clears_costs() -> None:
 
 
 def test_depth_decides_where_edge_cannot() -> None:
-    """Same direction probabilities, opposite verdicts — the point of the gate."""
+    """Same direction probabilities, opposite verdicts - the point of the gate."""
     tiny = expected_move(0.9, 0.05, CHEAP, CHEAP)
     large = expected_move(0.9, 0.05, RICH, RICH)
 

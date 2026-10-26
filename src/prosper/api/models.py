@@ -44,7 +44,7 @@ class TrainRequest(BaseModel):
     # unasked-for value here would override a decision the data made.
     train_window_by_horizon: dict[str, int] = Field(default_factory=dict)
     # Extra symbols pooled into the training set. Predictions are always for
-    # `symbol` alone, and only the tabular predictors accept a pool — the
+    # `symbol` alone, and only the tabular predictors accept a pool - the
     # sequence models need sequences built inside a symbol first.
     pool_symbols: list[str] = Field(default_factory=list)
     horizons: list[str] = Field(default_factory=lambda: list(HORIZON_NAMES))

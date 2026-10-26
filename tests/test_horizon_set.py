@@ -4,7 +4,7 @@ It was `short`/`medium`/`long` at 28/182/364 days. Three problems, none cosmetic
 
 `short` meant four weeks, which no reader guesses. Worse, `short` and `long` are
 also the two `DIRECTION_CLASSES`, so one word named a horizon in one place and
-"the price falls" in another — a collision in the project's own vocabulary.
+"the price falls" in another - a collision in the project's own vocabulary.
 
 And the half-year was the weakest choice available. A 730-day training window
 holds (730 - 182) / 182 = 3.0 independent observations at 182 days against
@@ -34,7 +34,7 @@ def test_the_names_do_not_collide_with_the_direction_classes() -> None:
 
 def test_every_horizon_is_a_whole_number_of_weeks() -> None:
     """`days_to_steps` rounds, so anything else means the 1w interval asks a
-    different question than 1d — which invariant 2 forbids."""
+    different question than 1d - which invariant 2 forbids."""
     for horizon in DEFAULT_HORIZONS:
         assert horizon.forward_days % 7 == 0, horizon.name
         assert days_to_steps(horizon.forward_days, "1w") * 7 == horizon.forward_days
@@ -100,7 +100,7 @@ def test_a_run_with_unknown_horizons_fails_loudly(tmp_path) -> None:
 
     `prediction.get(name) or {}` followed by a test for `trained is False` let a
     missing horizon fall through to `normalize_probabilities({})`, which returns
-    the uniform prior — scoring the prior as a forecast, which invariant 3 exists
+    the uniform prior - scoring the prior as a forecast, which invariant 3 exists
     to prevent.
     """
     import json

@@ -53,7 +53,7 @@ def _class_columns(dataset_ref: Any) -> list[int]:
 
     This must be read from the encoder and never assumed. `NaNLabelEncoder`
     numbers its classes by sorting the labels, so with `add_nan=True` it yields
-    ``{'nan': 0, 'long': 1, 'short': 2}`` — alphabetical — while
+    ``{'nan': 0, 'long': 1, 'short': 2}`` - alphabetical - while
     `DIRECTION_CLASSES` is ordered ``['short', 'long']`` because the sign of the
     return defines it. Dropping the leading column and reading the rest
     positionally therefore lined `short` up with the model's `long` logit and
@@ -252,7 +252,7 @@ def _predict_month(
     )
     # pytorch-forecasting >=1.x returns a Prediction namedtuple
     # (output, x, index, decoder_lengths, y); older versions returned a plain
-    # (output, index) tuple — which cannot be unpacked into two names. Test for
+    # (output, index) tuple - which cannot be unpacked into two names. Test for
     # `output`, not `index`: every tuple has an `.index` *method*, so that check
     # is true for both shapes and would send the old one down the wrong branch.
     if hasattr(result, "output"):
@@ -291,7 +291,7 @@ def _fit_tft_calibrator(
     """Score the held-out trainable bars and fit a temperature on the result.
 
     The cutoff is the first held-out bar, so the encoder cannot read a label
-    from the very region being scored — the same masking rule inference uses.
+    from the very region being scored - the same masking rule inference uses.
     """
     if not bar_indices:
         return TemperatureCalibrator(1.0)

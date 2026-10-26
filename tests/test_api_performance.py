@@ -49,7 +49,7 @@ def _evaluated_run(tmp_path, rows: int = 300) -> Settings:
                 "high": [101.0 + i for i in range(rows + 40)],
                 "low": [99.0 + i for i in range(rows + 40)],
                 # A trend under the 7-day cycle. Without it close[i + 28] equals
-                # close[i] exactly — 28 and 182 are both multiples of 7 — so
+                # close[i] exactly - 28 and 182 are both multiples of 7 - so
                 # every short and medium outcome had a zero forward return and
                 # no side to be scored against.
                 "close": [100.0 + i * 0.5 + (i % 7) * 3 for i in range(rows + 40)],

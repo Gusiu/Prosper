@@ -2,7 +2,7 @@
 
 The direction heads were confident far past their accuracy: median |edge| of
 0.996 against roughly coin-flip accuracy, ECE 0.40-0.46. That makes every
-threshold downstream meaningless — the planner's seven-point scale collapsed to
+threshold downstream meaningless - the planner's seven-point scale collapsed to
 Strong Buy / Strong Sell on 90% of bars. Temperature scaling pulls the mass
 back without reordering anything.
 """
@@ -128,8 +128,8 @@ def test_a_single_class_holdout_never_sharpens() -> None:
 
     The model is "right" on every held-out row, so the loss keeps falling as
     the temperature drops and the fit turns an overconfident forecast into a
-    certain one. On BTCUSDT the 365-day horizon hits this often — long
-    stretches where every forward return shares a sign — and it left the long
+    certain one. On BTCUSDT the 365-day horizon hits this often - long
+    stretches where every forward return shares a sign - and it left the long
     horizon at |edge| = 1.000 for every single bar.
     """
     n = 200
@@ -206,8 +206,8 @@ def test_sharpening_raises_the_raw_loss_but_not_the_calibrated_one() -> None:
     Raw cross-entropy charges for confidence. A network that keeps the same
     ranking but states it more strongly scores worse on it, even though the
     temperature fit that follows training undoes exactly that. Measured on
-    BTCUSDT the raw sequence ran 0.7244, 0.9109, 0.9282, 1.0216 — rising from
-    the first epoch — while an epoch sweep showed accuracy still climbing.
+    BTCUSDT the raw sequence ran 0.7244, 0.9109, 0.9282, 1.0216 - rising from
+    the first epoch - while an epoch sweep showed accuracy still climbing.
     """
     rng = np.random.default_rng(11)
     n = 500

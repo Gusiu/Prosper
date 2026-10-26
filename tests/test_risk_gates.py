@@ -4,7 +4,7 @@
 the losing direction's probability cannot exceed a half. The cut-offs
 0.2/0.3/0.4 were chosen when the metric summed both sides and could reach 1.0,
 and nobody re-derived them. Measured on the recomputed runs the metric peaks at
-0.365, so the outer gate blocked 0 of 2129 bars — an advertised three-stage
+0.365, so the outer gate blocked 0 of 2129 bars - an advertised three-stage
 gate that was really two.
 
 Reading the observed maximum and lowering the constant to suit would be tuning
@@ -146,7 +146,7 @@ def test_a_window_does_not_influence_its_own_gate(tmp_path) -> None:
         assert tuple(diagnostics["risk_gates"]) == pytest.approx(expected)
 
     # Risk climbs over the run, so a late window's own value is above every
-    # gate it was judged by — proof the gate never absorbed it.
+    # gate it was judged by - proof the gate never absorbed it.
     assert short[-1]["diagnostics"]["risk_mean"] > max(short[-1]["diagnostics"]["risk_gates"])
 
 

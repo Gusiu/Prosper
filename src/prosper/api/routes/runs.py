@@ -22,7 +22,7 @@ from prosper.storage.layout import (
 from prosper.storage.runs import list_runs
 
 # A 1d run is ~2000 bars; a 1h run over the same span is 24x that. The cap
-# is a ceiling on the response, not a paging scheme — narrow with
+# is a ceiling on the response, not a paging scheme - narrow with
 # year/month to walk a run.
 MAX_PREDICTION_ROWS = 5000
 
@@ -227,7 +227,7 @@ def delete_ai_model(
         raise HTTPException(status_code=404, detail="Model run not found")
 
     # Every derived artifact names its source run (invariant 5), so once the
-    # run is gone they are unattributable — and worse, still readable. A
+    # run is gone they are unattributable - and worse, still readable. A
     # deleted run left its backtest and recommendations behind, and a reader
     # globbing those directories happily reported its numbers alongside
     # current ones.

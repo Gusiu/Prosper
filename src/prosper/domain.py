@@ -78,7 +78,7 @@ def effective_samples(n: int, forward_steps: int) -> float:
     A label at bar `k` is the sign of the return over `[k, k + forward_steps]`,
     so the label at `k + 1` shares all but one bar of that interval with it. Two
     labels stop sharing anything only once they are `forward_steps` apart, which
-    makes `n / forward_steps` the count that matters — at the annual horizon,
+    makes `n / forward_steps` the count that matters - at the annual horizon,
     1249 daily rows are about three observations, not 1249.
 
     An upper bound: non-overlapping annual returns are still not independent,
@@ -94,13 +94,13 @@ def effective_symbols(count: int, correlation: float) -> float:
 
     The standard design effect: `n / (1 + (n - 1) * rho)`. Pooling symbols is the
     only lever that adds training observations without spending scored bars, but
-    it does not add them one for one — two symbols that move together carry one
+    it does not add them one for one - two symbols that move together carry one
     symbol's worth of information about what moves them.
 
     Measured on this project's daily data, mean pairwise correlation of forward
     returns runs 0.60 at the weekly horizon and **0.76 at the annual** one, so
     three symbols are worth 1.34 and 1.19 respectively. The limit as more symbols
-    are added is `1 / rho` — about 1.3 at the annual horizon — so no number of
+    are added is `1 / rho` - about 1.3 at the annual horizon - so no number of
     crypto symbols rescues that horizon by pooling alone. They share one dominant
     market factor, and pooling averages over the part that differs, not the part
     that dominates.
@@ -135,17 +135,17 @@ class HorizonSpec:
 
 
 # Whole weeks: 1, 4, 13 and 52, so `days_to_steps` needs no rounding at the 1w
-# interval — a 365-day `long` became 52 bars there (364 days) while staying 365
+# interval - a 365-day `long` became 52 bars there (364 days) while staying 365
 # at 1d, which invariant 2 forbids. The year is exactly four quarters.
 #
 # The names state the span. The previous set was `short`/`medium`/`long`, which
-# was both vague — `short` was four weeks — and *colliding*: `short` and `long`
+# was both vague - `short` was four weeks - and *colliding*: `short` and `long`
 # are also the two `DIRECTION_CLASSES`, so one word meant a horizon in one place
 # and "the price falls" in another.
 #
 # A quarter replaced the half-year for a measured reason. A 730-day training
 # window holds (730 - 91) / 91 = 7.0 independent observations at 91 days against
-# (730 - 182) / 182 = 3.0 at 182 — more than double, on the same data. The week
+# (730 - 182) / 182 = 3.0 at 182 - more than double, on the same data. The week
 # horizon carries 103. See `predict/window.py::training_window_power`; the year
 # has 1.0 and is reported as unmeasurable rather than quietly quoted.
 DEFAULT_HORIZONS: tuple[HorizonSpec, ...] = (
@@ -166,8 +166,8 @@ DEFAULT_TRADED_HORIZON: str = DEFAULT_HORIZONS[0].name
 # The columns a model may train on: every one is scale-free, so the same feature
 # means the same thing on BTCUSDT at ~47000 and SOLUSDT at ~85.
 #
-# The predictors used an *exclude* list — everything in the parquet except a few
-# names — which quietly fed them raw price levels. Measured across the two
+# The predictors used an *exclude* list - everything in the parquet except a few
+# names - which quietly fed them raw price levels. Measured across the two
 # symbols over the same period, `ma_10` differed by 553x, `atr_14` by 360x and
 # `macd_hist` by 387x. On one symbol that is harmless: the normaliser removes the
 # level and the model sees a shape. Pooled, it is a symbol label, and robust
@@ -178,7 +178,7 @@ DEFAULT_TRADED_HORIZON: str = DEFAULT_HORIZONS[0].name
 # adopted every one of the sixteen relative columns *alongside* its absolute
 # twin.
 TRAINING_FEATURE_COLUMNS: tuple[str, ...] = (
-    # Returns and volatility — already dimensionless.
+    # Returns and volatility - already dimensionless.
     "log_return_1b",
     "log_return_3b",
     "log_return_7b",
@@ -193,7 +193,7 @@ TRAINING_FEATURE_COLUMNS: tuple[str, ...] = (
     "max_intraday_drawdown",
     "jump_count",
     "rsi_14",
-    # Order flow — ratios and shares, not amounts.
+    # Order flow - ratios and shares, not amounts.
     "taker_buy_ratio",
     "taker_buy_ratio_14",
     "flow_imbalance",
@@ -294,7 +294,7 @@ def assign_depth_bin(value_pct: float, bins: list[tuple[float, float | None]]) -
 DEFAULT_DEPTH_BINS_STR = "0-1,1-2,2-3,3-5,5-8,8-13,13-21,21-34,34-55,55-89,89-144,144+"
 
 # Runs produced before 2026-07-29 used this scheme. Their artifacts name their
-# own bins, so nothing needs migrating — but a reader that assumes the current
+# own bins, so nothing needs migrating - but a reader that assumes the current
 # labels would silently drop their `34+` mass, which is most of the tail.
 LEGACY_DEPTH_BINS_STR = "1-2,2-3,3-5,5-8,8-13,13-21,21-34,34+"
 

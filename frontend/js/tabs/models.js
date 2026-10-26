@@ -27,7 +27,7 @@ export function horizonNames() {
 let analysisDrawerContext = { symbol: null, model_type: null, timestamp: null };
 // The calendar shows one month, so it fetches one month. Loading the whole
 // run to page through it client-side pulled ~5 MB for a 1d run and 24x that
-// for 1h — the endpoint has always supported year/month narrowing.
+// for 1h - the endpoint has always supported year/month narrowing.
 const predictionCalendarState = {
   rowsByDate: new Map(),
   year: 0,
@@ -551,7 +551,7 @@ export function renderPredictionCalendar() {
     if (!isNaN(m) && !isNaN(y)) {
       predictionCalendarState.month = Math.max(0, Math.min(11, m));
       predictionCalendarState.year = y;
-      // Jumping to a month must fetch it — only the current month is in memory.
+      // Jumping to a month must fetch it - only the current month is in memory.
       loadPredictionMonth();
     }
   };

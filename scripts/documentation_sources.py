@@ -1,7 +1,7 @@
 """Pull the reference chapters out of the code itself.
 
-Every catalogue in the documentation — features, CLI flags, HTTP routes,
-configuration fields, the test inventory — is read from the running system rather
+Every catalogue in the documentation - features, CLI flags, HTTP routes,
+configuration fields, the test inventory - is read from the running system rather
 than transcribed. A transcribed reference is wrong the first time someone adds a
 flag and nobody notices; a generated one cannot be.
 
@@ -74,7 +74,7 @@ class Feature:
 
 # What each column means, keyed by the stem the builder uses. Written here rather
 # than parsed out of comments because a feature's *meaning* is domain knowledge,
-# not an implementation detail — but the list of names is still read from the
+# not an implementation detail - but the list of names is still read from the
 # code, so a column that exists without an entry shows up as such.
 FEATURE_NOTES: dict[str, tuple[str, str]] = {
     "log_return": ("Zwroty", "Logarytmiczny zwrot z n świec wstecz. Addytywny w czasie i "
@@ -128,7 +128,7 @@ def feature_catalogue() -> list[Feature]:
 
     out: list[Feature] = []
     for name in TRAINING_FEATURE_COLUMNS:
-        group, description = "Pozostałe", "—"
+        group, description = "Pozostałe", "-"
         for stem, (candidate_group, candidate_text) in FEATURE_NOTES.items():
             if name.startswith(stem):
                 group, description = candidate_group, candidate_text
@@ -159,7 +159,7 @@ class Command:
 
 def _describe_default(value: object) -> str:
     if value is None or value is ...:
-        return "—"
+        return "-"
     if isinstance(value, bool):
         return "tak" if value else "nie"
     return str(value)
@@ -193,7 +193,7 @@ def _options_of(callback) -> list[Option]:
                 kind=kind,
                 required=bool(getattr(click_param, "required", False)),
                 default=_describe_default(default.default),
-                help=(default.help or "").strip() or "—",
+                help=(default.help or "").strip() or "-",
             )
         )
     return out
@@ -208,7 +208,7 @@ def cli_reference() -> list[Command]:
     def collect(typer_app, prefix: str) -> None:
         for registered in typer_app.registered_commands:
             name = registered.name or registered.callback.__name__.replace("_", "-")
-            summary = (inspect.getdoc(registered.callback) or "").strip().split("\n")[0] or "—"
+            summary = (inspect.getdoc(registered.callback) or "").strip().split("\n")[0] or "-"
             commands.append(
                 Command(
                     path=f"{prefix} {name}".strip(),
@@ -247,7 +247,7 @@ def api_reference() -> list[Route]:
             Route(
                 methods=", ".join(sorted(methods - {"HEAD", "OPTIONS"})),
                 path=path,
-                summary=summary or "—",
+                summary=summary or "-",
             )
         )
     return sorted(out, key=lambda r: r.path)
@@ -277,7 +277,7 @@ def settings_reference() -> list[SettingField]:
                 name=name,
                 kind=str(annotation).replace("typing.", ""),
                 default=_describe_default(default),
-                description=(info.description or "—"),
+                description=(info.description or "-"),
             )
         )
     return sorted(out, key=lambda f: f.name)
@@ -300,7 +300,7 @@ class TestModule:
 
 def _first_sentence(text: str | None, limit: int = 400) -> str:
     if not text:
-        return "—"
+        return "-"
     collapsed = re.sub(r"\s+", " ", text.strip())
     match = re.match(r"(.+?[.!?])(\s|$)", collapsed)
     sentence = match.group(1) if match else collapsed
@@ -310,7 +310,7 @@ def _first_sentence(text: str | None, limit: int = 400) -> str:
 def _collapse(text: str | None) -> str:
     """Whitespace-normalised docstring, kept whole."""
     if not text:
-        return "—"
+        return "-"
     return re.sub(r"\s+", " ", text.strip())
 
 def _humanise(name: str) -> str:
@@ -340,7 +340,7 @@ def test_inventory(root: str = "tests") -> list[TestModule]:
                 name=node.name,
                 # The whole rationale, not its opening line. A test docstring in
                 # this suite explains which defect the assertion prevents, and
-                # that explanation is the part worth documenting — the first
+                # that explanation is the part worth documenting - the first
                 # sentence usually only states what is asserted.
                 intent=_collapse(ast.get_docstring(node)) if ast.get_docstring(node)
                 else _humanise(node.name),

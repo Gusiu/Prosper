@@ -5,16 +5,16 @@ whether the model added anything. That turned out not to finish the job. A
 long-only strategy that sits flat through high-volatility months finishes ahead
 of holding by compounding alone: ETHUSDT tft on a 2023-start window beat holding
 by 11.06 pp while its cumulative monthly excess was negative in **all 40
-months**, and it was flat during the largest months in both directions — 2024-02
+months**, and it was flat during the largest months in both directions - 2024-02
 at 1% exposure into a +44.95% month, 2025-11 at 0% into a -22.78% one. That is
 variance reduction, not forecasting.
 
 So the report now carries three more comparisons, ordered weakest to strongest:
 
-1. the same average exposure held throughout — rules out carrying less beta
-2. the same exposure path mistimed by every circular shift — rules out
+1. the same average exposure held throughout - rules out carrying less beta
+2. the same exposure path mistimed by every circular shift - rules out
    volatility timing
-3. a 7-bar momentum rule with no model in it — rules out "any trend rule would
+3. a 7-bar momentum rule with no model in it - rules out "any trend rule would
    have done this", which measurement says is the binding one: across the 1d
    runs that rule scores a median 90.5 percentile against its own shifts while
    the models' own policy scores 34.1.
@@ -150,7 +150,7 @@ def test_a_wipeout_stops_at_total_loss() -> None:
 
 def test_the_api_forwards_the_whole_comparison_set() -> None:
     """The route builds its response field by field, so a new one is easy to
-    drop — and a benchmark the browser never sees is a benchmark nobody reads."""
+    drop - and a benchmark the browser never sees is a benchmark nobody reads."""
     import inspect
 
     from prosper.api.routes import backtest as route
@@ -175,7 +175,7 @@ def test_the_backtest_tab_shows_every_comparison() -> None:
 
 def test_the_ui_only_uses_css_classes_that_exist() -> None:
     """`text-yellow` and `table-scroll` were invented in a first draft and would
-    have rendered unstyled — silent, and only visible by looking."""
+    have rendered unstyled - silent, and only visible by looking."""
     import re
     from pathlib import Path
 

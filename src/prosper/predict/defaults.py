@@ -24,7 +24,7 @@ from prosper.domain import HORIZON_NAMES as DOMAIN_HORIZON_NAMES
 #
 # Measured on BTCUSDT 1d (2023-01..2026-06, 42 retrainings, seed 42): GRU's
 # short horizon improves to 20 epochs and plateaus by 40, while medium and long
-# stop gaining accuracy after ~5 and their NLL degrades monotonically past it —
+# stop gaining accuracy after ~5 and their NLL degrades monotonically past it -
 # more epochs make them confidently wrong rather than more often right. That
 # spread per horizon is exactly what early stopping is for.
 DEFAULT_EPOCH_BUDGET: dict[str, int] = {
@@ -37,7 +37,7 @@ EPOCHLESS_MODELS: frozenset[str] = frozenset({"baseline", "ml", "xgboost"})
 
 # Models that accept `--symbols`. The sequence models read fixed-length windows
 # of consecutive bars, so pooling them means building sequences inside each
-# symbol before mixing — which is a different change from sharing rows. Listing
+# symbol before mixing - which is a different change from sharing rows. Listing
 # them here rather than in the API keeps the dashboard from offering a flag the
 # CLI would reject.
 POOLING_MODELS: frozenset[str] = frozenset({"ml", "xgboost"})
@@ -73,8 +73,8 @@ def window_seed(
 
     That makes a controlled experiment impossible, and not in theory. Raising the
     `long` ceiling from 10 to 20 on ETHUSDT tft moved the two horizons whose
-    ceiling had not changed: `medium` gained 0.070 accuracy while `long` — the one
-    actually changed — gained 0.022. Whatever the ceiling does, that run could not
+    ceiling had not changed: `medium` gained 0.070 accuracy while `long` - the one
+    actually changed - gained 0.022. Whatever the ceiling does, that run could not
     measure it.
 
     Deriving the seed from the window's own identity makes each model depend only
@@ -84,7 +84,7 @@ def window_seed(
     **The symbol belongs in that identity**, and leaving it out cost a result. For
     a given (base seed, model, horizon, month) every symbol drew the *same*
     weights, dropout masks and batch order, so four symbols trained under one base
-    seed were not four independent draws of "this model on a new dataset" — they
+    seed were not four independent draws of "this model on a new dataset" - they
     were one draw of the initialisation sequence applied to four datasets. A
     four-symbol replication was read as independent evidence on that basis, and
     the shared factor is large: reseeding moves a single symbol's accuracy by
@@ -93,7 +93,7 @@ def window_seed(
     hyperparameter under test.
     """
     # A real hash over the identity, not arithmetic on the characters: summing
-    # code points collides immediately — "tft" and "gru" both sum to 334, so the
+    # code points collides immediately - "tft" and "gru" both sum to 334, so the
     # two models would have shared every seed. `hash()` is unusable here because
     # Python salts it per process, which would make runs irreproducible.
     identity = (
@@ -214,7 +214,7 @@ def parse_window_overrides(raw: str | None) -> dict[str, int]:
 # Rolling training window, in calendar days.
 #
 # `None` means the window is derived per horizon from the horizon's own span and
-# the history available — see `prosper.predict.window.dynamic_window_steps`. One
+# the history available - see `prosper.predict.window.dynamic_window_steps`. One
 # fixed width for every horizon was a mistake of arithmetic, not of taste: a
 # window of W days is worth `(W - forward) / forward` independent observations,
 # because consecutive labels share all but one day of their forward return, so

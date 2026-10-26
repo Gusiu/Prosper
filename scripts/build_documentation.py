@@ -2,8 +2,8 @@
 
 The document is *generated*, not written by hand, for the reason the previous one
 was deleted: a hand-written write-up drifts from the code and then contradicts
-it. Every catalogue — features, CLI flags, HTTP routes, configuration, the test
-inventory — is read from the running system, and every result table is read from
+it. Every catalogue - features, CLI flags, HTTP routes, configuration, the test
+inventory - is read from the running system, and every result table is read from
 `data/reports/` at build time. The document therefore cannot state a number the
 artifacts do not contain, nor list a flag the CLI does not have.
 
@@ -136,7 +136,7 @@ def horizon_values(runs: list[dict], horizon: str, field: str) -> list[float]:
 
 
 def fmt(value: float | None, places: int = 3) -> str:
-    return "—" if value is None else f"{value:.{places}f}"
+    return "-" if value is None else f"{value:.{places}f}"
 
 
 def pl(value: float, spec: str = ".3f") -> str:
@@ -1629,13 +1629,13 @@ def _chapter_3_theory(doc: Document) -> None:
         doc,
         ["Miara", "Definicja", "Zakres", "Interpretacja"],
         [
-            ["Trafność", "udział poprawnie wskazanych kierunków", "0–1",
+            ["Trafność", "udział poprawnie wskazanych kierunków", "0-1",
              "niewłaściwa, ale bezpośrednio interpretowalna"],
-            ["Brier", "średni kwadrat różnicy prognozy i wyniku", "0–1",
+            ["Brier", "średni kwadrat różnicy prognozy i wyniku", "0-1",
              "właściwa; kwadratowa kara za pewność błędną"],
             ["Logarytmiczna", "średnia ujemnego logarytmu prawdopodobieństwa trafnej klasy",
-             "0–∞", "właściwa; kara nieograniczona"],
-            ["ECE", "średnia rozbieżność deklarowanej pewności i częstości trafień", "0–1",
+             "0-∞", "właściwa; kara nieograniczona"],
+            ["ECE", "średnia rozbieżność deklarowanej pewności i częstości trafień", "0-1",
              "mierzy kalibrację, nie zdolność rozróżniania"],
         ],
         [2.6, 6.2, 1.8, 5.4],
@@ -1907,7 +1907,7 @@ def _chapter_5_data(doc: Document) -> None:
             "Symbole o krótszej historii ograniczają horyzont roczny (rozdział 9.3).",
         )
     else:
-        add_body(doc, "Jezioro danych jest puste — uruchom etap pobrania.", italic=True)
+        add_body(doc, "Jezioro danych jest puste - uruchom etap pobrania.", italic=True)
     page_break(doc)
 
 
@@ -2000,7 +2000,7 @@ def _chapter_7_labels(doc: Document) -> None:
     add_table(
         doc,
         ["Kubełek", "Zakres ruchu [%]"],
-        [[label, label.replace("-", " – ").replace("+", " i więcej")] for label in labels],
+        [[label, label.replace("-", " - ").replace("+", " i więcej")] for label in labels],
         [4.0, 6.0],
     )
     add_caption(doc, "Tabela", "Kubełki głębokości ruchu.")
@@ -2308,7 +2308,7 @@ def _chapter_9_methodology(doc: Document) -> None:
         doc,
         ["Punkt odniesienia", "Co usuwa", "Siła"],
         [
-            ["Kup i trzymaj", "nic — punkt odniesienia rynkowy", "najsłabszy"],
+            ["Kup i trzymaj", "nic - punkt odniesienia rynkowy", "najsłabszy"],
             ["Stała ekspozycja równa średniej strategii",
              "efekt samego poziomu zaangażowania", "średni"],
             ["Ta sama ścieżka ekspozycji przesunięta cyklicznie",
@@ -2481,13 +2481,13 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
                 rows.append([
                     symbol.replace("USDT", ""), model, str(len(accs)),
                     fmt(float(arr.mean())),
-                    fmt(float(arr.std(ddof=1))) if len(arr) > 1 else "—",
-                    f"{arr.min():.3f}–{arr.max():.3f}" if len(arr) > 1 else fmt(float(arr[0])),
-                    fmt(float(np.mean(eces))) if eces else "—",
+                    fmt(float(arr.std(ddof=1))) if len(arr) > 1 else "-",
+                    f"{arr.min():.3f}-{arr.max():.3f}" if len(arr) > 1 else fmt(float(arr[0])),
+                    fmt(float(np.mean(eces))) if eces else "-",
                 ])
         if not rows:
             continue
-        add_body(doc, f"Horyzont „{horizon}” — wszystkie symbole i ziarna:")
+        add_body(doc, f"Horyzont „{horizon}” - wszystkie symbole i ziarna:")
         add_table(
             doc,
             ["Symbol", "Model", "Przeb.", "Trafność", "Odch.", "Zakres", "ECE"],
@@ -2580,7 +2580,7 @@ def _results_baserate(doc: Document) -> None:
         "Kolumna \u201eRóżnica\u201d to trafność pomniejszona o częstość klasy liczniejszej. "
         "Wartość ujemna oznacza, że model wypada gorzej niż reguła bez uczenia. Zwraca uwagę "
         "kolumna \u201eMówi wzrost\u201d: modele wystawiają prognozy bliskie zbalansowanym "
-        "również tam, gdzie rynek był wyraźnie jednostronny \u2014 czego nie należy im "
+        "również tam, gdzie rynek był wyraźnie jednostronny - czego nie należy im "
         "poczytywać za wadę, ponieważ częstość bazowa jest znana dopiero z perspektywy czasu, "
         "a model kroczący poznaje ją wyłącznie z własnego okna treningowego.",
     )
@@ -2600,7 +2600,7 @@ def _results_calibration(doc: Document, runs: dict) -> None:
             table_rows.append([
                 horizon, model, str(len(arr)),
                 fmt(float(arr.mean())),
-                f"{arr.min():.3f}\u2013{arr.max():.3f}",
+                f"{arr.min():.3f}-{arr.max():.3f}",
             ])
     if not table_rows:
         return
@@ -2623,7 +2623,7 @@ def _results_calibration(doc: Document, runs: dict) -> None:
         doc, "Tabela",
         "Błąd kalibracji na horyzont i architekturę. Niski błąd przy trafności bliskiej "
         "poziomowi losowemu oznacza system, który poprawnie komunikuje własną niepewność "
-        "\u2014 jest to osobny, pozytywny wynik inżynierski, niezależny od braku przewagi "
+        "- jest to osobny, pozytywny wynik inżynierski, niezależny od braku przewagi "
         "prognostycznej.",
     )
 
@@ -2688,7 +2688,7 @@ def _results_backtest(doc: Document) -> None:
     add_caption(
         doc, "Tabela",
         f"Symulacja na horyzoncie tygodniowym, uśredniona po ziarnach. Mediana percentyla "
-        f"wobec własnych przesunięć wynosi {pl(median, '.1f')} \u2014 poniżej przypadkowych 50, co "
+        f"wobec własnych przesunięć wynosi {pl(median, '.1f')} - poniżej przypadkowych 50, co "
         "oznacza, że rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie "
         "arbitralne. Kolumny \u201evs\u201d podają różnicę stopy zwrotu w punktach "
         "procentowych wobec danego punktu odniesienia; wartości ujemne oznaczają przegraną.",
@@ -2728,14 +2728,14 @@ def _results_max_vs_mean(doc: Document) -> None:
         "Zestawienie najlepszych komórek jest miarą kuszącą i myloną (Bailey i López de "
         "Prado, 2014). Maksimum z wielu "
         "zaszumionych pomiarów rośnie wraz z ich liczbą nawet wtedy, gdy żaden z nich nie "
-        "zawiera sygnału \u2014 przy kilkudziesięciu komórkach i poziomie istotności 5% "
+        "zawiera sygnału - przy kilkudziesięciu komórkach i poziomie istotności 5% "
         "należy oczekiwać kilku przekroczeń progu wyłącznie z przypadku.",
     )
     add_table(
         doc,
         ["Horyzont", "Najlepsza komórka", "Trafność", "Obs. niezależnych", "Przedział"],
         [[horizon, f"{sym.replace('USDT', '')} / {model}", fmt(acc),
-          "\u2014" if eff is None else f"{eff:.1f}",
+          "-" if eff is None else f"{eff:.1f}",
           f"{bounds[0]:.3f}-{bounds[1]:.3f}" if bounds else "odmówiony"]
          for horizon, (acc, sym, model, eff, bounds) in best.items()],
         [2.4, 4.0, 2.4, 3.4, 3.4],
@@ -3387,7 +3387,7 @@ def _chapter_12_interfaces(doc: Document) -> None:
             "Modele - konfiguracja i uruchamianie treningu, kolejka zadań, inwentarz przebiegów.",
             "Ocena - ranking przebiegów, miary jakości, kalibracja i ostrość prognoz, "
             "wykres stabilności w czasie.",
-            "Symulacja — parametry wykonawcze, wynik wraz z czterema hipotezami zerowymi.",
+            "Symulacja - parametry wykonawcze, wynik wraz z czterema hipotezami zerowymi.",
         ],
     )
     add_body(
@@ -3409,7 +3409,7 @@ def _chapter_12_interfaces(doc: Document) -> None:
     page_break(doc)
 
 
-# ── 12–13 ────────────────────────────────────────────────────────────────────
+# ── 12-13 ────────────────────────────────────────────────────────────────────
 
 def _chapter_13_limits(doc: Document) -> None:
     add_heading(doc, "13. Ograniczenia i kierunki dalszych prac", 1)
@@ -3684,7 +3684,7 @@ def _appendix_cli(doc: Document) -> None:
         add_table(
             doc,
             ["Flaga", "Typ", "Wym.", "Domyślnie", "Opis"],
-            [[o.flags, o.kind, "tak" if o.required else "—", o.default, o.help]
+            [[o.flags, o.kind, "tak" if o.required else "-", o.default, o.help]
              for o in command.options],
             [4.0, 1.8, 1.2, 2.4, 6.6],
             font=8,
@@ -3739,7 +3739,7 @@ def _chapter_12a_worked_example(doc: Document) -> None:
         [
             ["1. Pobranie",
              "Archiwum miesięczne trafia do jeziora danych jako świece jednominutowe.",
-             "—"],
+             "-"],
             ["2. Agregacja",
              "Świece minutowe składają się w jedną dzienną: otwarcie pierwszej, zamknięcie "
              "ostatniej, skrajne maksimum i minimum, suma wolumenów.",
@@ -3864,9 +3864,9 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
                 rows.append([
                     symbol.replace("USDT", ""),
                     model,
-                    str(entry.get("seed") if entry.get("seed") is not None else "—"),
+                    str(entry.get("seed") if entry.get("seed") is not None else "-"),
                     horizon,
-                    str(cell.get("samples") or "—"),
+                    str(cell.get("samples") or "-"),
                     fmt(cell.get("accuracy")),
                     f"[{low:.3f}; {high:.3f}]" if low is not None and high is not None
                     else "odmówiony",
@@ -4151,7 +4151,7 @@ def _chapter_12b_screenshots(doc: Document) -> None:
             except Exception:
                 _screenshot_placeholder(doc, f"plik {name} istnieje, ale nie daje się osadzić")
         else:
-            _screenshot_placeholder(doc, f"{name} — {expected}")
+            _screenshot_placeholder(doc, f"{name} - {expected}")
         add_caption(doc, "Rysunek", caption)
 
 

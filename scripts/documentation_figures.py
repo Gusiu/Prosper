@@ -6,7 +6,7 @@ copy of the results. Charts are written as PNG into a working directory and
 embedded by `build_documentation.py`; nothing is committed, because the figures
 are outputs and this file is the source.
 
-Style is deliberately plain — grayscale-safe, no gridline clutter, no decoration
+Style is deliberately plain - grayscale-safe, no gridline clutter, no decoration
 that would survive printing as noise rather than information.
 """
 
@@ -211,7 +211,7 @@ def calibration_by_horizon() -> str | None:
 
 
 def backtest_percentiles() -> str | None:
-    """Percentile against a run's own circular shifts — the timing test."""
+    """Percentile against a run's own circular shifts - the timing test."""
     values: dict[str, list[float]] = defaultdict(list)
     for path in sorted(glob.glob(f"{REPORT_ROOT}/backtests/*/*/backtest.json")):
         parts = path.replace("\\", "/").split("/")
@@ -360,7 +360,7 @@ def feature_importance() -> str | None:
 
 
 def observation_power() -> str | None:
-    """Independent observations per horizon — the binding constraint, drawn."""
+    """Independent observations per horizon - the binding constraint, drawn."""
     counts: dict[str, list[float]] = defaultdict(list)
     for path in glob.glob(f"{REPORT_ROOT}/evaluations/*/*/metrics.json"):
         if not is_study_run(*path.replace("\\", "/").split("/")[-3:-1]):

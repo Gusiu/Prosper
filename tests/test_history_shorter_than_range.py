@@ -3,7 +3,7 @@
 Asking for 2020-01-01 onwards from a symbol first quoted on 2020-08-11 puts its
 very first bar inside the range, so the walk-forward loop starts at row 0. The
 causal normalisation window reaches back from there and finds nothing, and
-`np.percentile` cannot describe an empty array — it indexes `arr[-1]`. Six runs
+`np.percentile` cannot describe an empty array - it indexes `arr[-1]`. Six runs
 of a recompute died that way, after the predictions they would have produced were
 already known to be untrainable.
 

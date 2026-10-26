@@ -2,7 +2,7 @@
 
 The browser never runs Python; `api/commands.py` builds an argv list and the
 API spawns `python -m prosper.cli ...`. Nothing checked that the two agreed, so
-`predict baseline` could lose `--interval` while the API kept sending it —
+`predict baseline` could lose `--interval` while the API kept sending it -
 which it did. Training the baseline from the UI failed with "No such option:
 --interval" and the only symptom was a task that exited non-zero.
 """
@@ -91,7 +91,7 @@ def test_the_api_never_invents_a_model_type() -> None:
 
 def test_the_ui_offers_every_model_the_api_accepts() -> None:
     """The baseline was missing from the dropdown, so the benchmark model
-    could not be trained from the dashboard at all — even though the API
+    could not be trained from the dashboard at all - even though the API
     accepts it, the CLI implements it, and every comparison depends on it.
     """
     import re

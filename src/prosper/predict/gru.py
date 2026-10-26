@@ -45,8 +45,8 @@ class SequenceDataset(Dataset):
 
     def __init__(
         self,
-        X: np.ndarray,  # (T, F)  – feature matrix, already normalised
-        y_dir: np.ndarray,  # (T,)    – int labels 0/1/2
+        X: np.ndarray,  # (T, F)  - feature matrix, already normalised
+        y_dir: np.ndarray,  # (T,)    - int labels 0/1/2
         seq_len: int,
     ):
         self.X = torch.tensor(X, dtype=torch.float32)
@@ -88,7 +88,7 @@ class GRUClassifier(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out, _ = self.gru(x)  # (B, T, H)
-        last = out[:, -1, :]  # (B, H) – last timestep
+        last = out[:, -1, :]  # (B, H) - last timestep
         last = self.norm(last)
         return self.head(last)  # (B, C)
 
@@ -99,7 +99,7 @@ def _holdout_loss(
     indices: list[int],
     device: torch.device,
 ) -> float:
-    """Held-out loss after temperature scaling — see `calibrated_nll`.
+    """Held-out loss after temperature scaling - see `calibrated_nll`.
 
     Raw cross-entropy is not usable as a stopping signal here: it charges for
     overconfidence, the network becomes overconfident long before it stops
@@ -136,8 +136,8 @@ def _train_gru(
     about five.
 
     What is measured is the loss *after* temperature scaling. The raw
-    cross-entropy on this slice rises from the first epoch — the network
-    becomes overconfident faster than it stops discriminating — so stopping on
+    cross-entropy on this slice rises from the first epoch - the network
+    becomes overconfident faster than it stops discriminating - so stopping on
     it returned a one-epoch model while accuracy was still climbing.
     `_holdout_loss` therefore reports the calibrated value, which is also what
     the stored artifact will carry.
@@ -216,7 +216,7 @@ def _robust_normalise(X_train: np.ndarray, X_all: np.ndarray):
     """Median/IQR normalisation fitted on train, applied to all.
 
     Returns ``None`` when there is nothing to fit on. That happens at the very
-    first bar of a symbol whose history begins inside the requested range — the
+    first bar of a symbol whose history begins inside the requested range - the
     causal window reaches back from bar 0 and finds nothing - and
     `np.percentile` would crash on it, since it indexes `arr[-1]`. A bar with no
     history behind it has no training rows either, so

@@ -26,7 +26,7 @@ def test_an_expected_rally_is_not_a_reason_to_avoid_buying() -> None:
 
 
 def test_a_fat_adverse_tail_still_blocks_the_signal() -> None:
-    """The gate must keep working — this is the case it exists for."""
+    """The gate must keep working - this is the case it exists for."""
     risk = calculate_risk_metric(0.55, 0.45, depth_long_bins=SMALL, depth_short_bins=BIG)
 
     assert risk == pytest.approx(0.45)

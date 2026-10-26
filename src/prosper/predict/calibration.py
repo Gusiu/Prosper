@@ -9,7 +9,7 @@ downstream threshold meaningless: the planner's seven-point scale collapses to
 Calibration is fitted the same way everything else in this package is: on data
 that was already realised at the moment of the forecast. Splitting the
 *training* window rather than holding out later bars is what keeps invariant 6
-intact — the calibrator never sees a label whose forward close lies at or after
+intact - the calibrator never sees a label whose forward close lies at or after
 the bar being predicted.
 
     |<------------- trainable region (training_bounds) ------------->|
@@ -141,7 +141,7 @@ def fit_temperature(
     # confidence, and minimising NLL on it is actively harmful: the model is
     # "right" on every row, so the loss falls monotonically as the temperature
     # drops and the fit sharpens an already overconfident forecast to certainty.
-    # This is not hypothetical — on BTCUSDT the 365-day horizon has long
+    # This is not hypothetical - on BTCUSDT the 365-day horizon has long
     # stretches where every forward return shares a sign, and the first version
     # of this function left the long horizon at |edge| = 1.000 for every bar.
     if len(np.unique(np.asarray(y_true))) < 2:
@@ -160,8 +160,8 @@ def calibrated_nll(probs: np.ndarray, y_true: Sequence[int] | np.ndarray) -> flo
     """Held-out loss the forecast carries *once its temperature is fitted*.
 
     This is the quantity DL training stops on, and raw cross-entropy is the
-    wrong one. A proper score decomposes into a calibration term — how far the
-    stated confidence is from the observed frequency — and a refinement term,
+    wrong one. A proper score decomposes into a calibration term - how far the
+    stated confidence is from the observed frequency - and a refinement term,
     how well the forecast separates the classes at all. Training moves both:
     the network sharpens long before it stops learning to discriminate, so its
     raw NLL on the holdout climbs from the first epoch while accuracy is still
@@ -234,15 +234,15 @@ def usable_split(
 
     `calibration_split` divides by position alone, which is right for the
     look-ahead rule but blind to what the labels contain. When the older part
-    turns out to be single-class — common at the long horizon, where a whole
-    year of start dates can share one sign — the model cannot be fitted on it,
+    turns out to be single-class - common at the long horizon, where a whole
+    year of start dates can share one sign - the model cannot be fitted on it,
     and the caller's only recourse was to train on everything and drop the
     holdout, losing early stopping and calibration for that window.
 
     Often a nearby split works: on BTCUSDT, 5 of the 13 affected windows have a
     valid one, some with more than fifty candidates. This returns the candidate
     closest to *default_split*, keeping the held-out fraction near what was
-    asked for, or ``None`` when no split satisfies both halves — in which case
+    asked for, or ``None`` when no split satisfies both halves - in which case
     dropping the holdout really is the only option.
 
     A single-class *holdout* is deliberately rejected too. Cross-entropy over

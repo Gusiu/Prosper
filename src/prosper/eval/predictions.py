@@ -419,14 +419,14 @@ def _recommendation_payload(
     *grader* must be the horizon's own `SequenceGrader`, fed in chronological
     order: the risk gates are quantiles of the risk already seen. Passing None
     falls back to the static gates, which is what this function did for every
-    row until the three decision paths were unified — the recommendation in the
+    row until the three decision paths were unified - the recommendation in the
     evaluation artifacts disagreed with both the planner's report and the
     simulation that traded it.
     """
     # Normalise over the bins the run itself used, not the current constant:
     # runs written under the 8-bin scheme name a `34+` bin that today's scheme
     # does not have, and normalising them against today's labels would drop the whole
-    # tail — most of their probability mass — without raising anything.
+    # tail - most of their probability mass - without raising anything.
     raw_long = horizon_pred.get("depth_long_bins", {}) or {}
     raw_short = horizon_pred.get("depth_short_bins", {}) or {}
     depth_long = normalize_distribution(raw_long, depth_scheme_of(raw_long))
@@ -452,7 +452,7 @@ def _recommendation_payload(
 
 
 def max_entropy(n_classes: int) -> float:
-    """Entropy of a uniform guess over *n_classes* — the "knows nothing" point.
+    """Entropy of a uniform guess over *n_classes* - the "knows nothing" point.
 
     Every normalisation below is expressed against it, not against a literal
     such as `math.log(3.0)` that is right for one class count only: a coin-flip
@@ -881,7 +881,7 @@ def evaluate_predictions(
 
     # Score every run against the bin scheme it was written with. Binning the
     # realised return under one scheme while the forecast used another would
-    # compare distributions over different label sets — the depth Brier and the
+    # compare distributions over different label sets - the depth Brier and the
     # expected-depth error would both be meaningless.
     # A run whose horizons this build does not know would score zero rows and
     # look like a model that predicted nothing, so it fails instead.
@@ -926,7 +926,7 @@ def evaluate_predictions(
             # A horizon this run never wrote is not the same as an untrained one
             # and must not be counted as either. Reading it as `or {}` and then
             # testing only `trained is False` let a missing key fall through to
-            # `normalize_probabilities({})`, which returns the uniform prior —
+            # `normalize_probabilities({})`, which returns the uniform prior -
             # scoring the prior as a forecast, which invariant 3 exists to stop.
             # A run written under a different horizon set hits this on every row.
             if horizon_pred is None:

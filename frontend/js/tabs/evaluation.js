@@ -371,7 +371,7 @@ export function renderStability() {
               const series = data.series[item.dataset.label];
               const n = series?.samples?.[item.dataIndex];
               const sparse = series?.sparse?.[item.dataIndex];
-              return sparse ? `${n} bars — too few to read` : `${n} bars`;
+              return sparse ? `${n} bars - too few to read` : `${n} bars`;
             },
           },
         },
