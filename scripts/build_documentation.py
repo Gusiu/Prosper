@@ -3818,19 +3818,14 @@ def _appendix_tests(doc: Document) -> None:
         f"Zestawienie {cases} przypadków testowych w {len(modules)} modułach, odczytane wprost "
         "z kodu. Jest to specyfikacja systemu w jedynej postaci, która nie może się "
         "zdezaktualizować: każdej pozycji odpowiada asercja, która wykonuje się przy każdym "
-        "uruchomieniu pakietu. Opis pochodzi z dokumentacji przypadku, a gdy jej nie ma - z jego "
-        "nazwy, którą pakiet formułuje zdaniem.",
+        "uruchomieniu pakietu. Pakiet nazywa przypadki zdaniami, więc sama nazwa mówi, czego "
+        "przypadek pilnuje; jeżeli ma on też dokumentację, jej treść następuje po nazwie.",
     )
     for module in modules:
         add_heading(doc, module.path, 3)
         add_body(doc, module.purpose, italic=True, size=9)
-        add_table(
-            doc,
-            ["Przypadek", "Co gwarantuje"],
-            [[c.name.removeprefix("test_"), c.intent] for c in module.cases],
-            [5.6, 10.4],
-            font=8,
-        )
+        for case in module.cases:
+            add_definition(doc, case.name.removeprefix("test_"), case.intent, size=9)
     page_break(doc)
 
 

@@ -307,6 +307,8 @@ def settings_reference() -> list[SettingField]:
 @dataclass
 class TestCase:
     name: str
+    # Empty when the test has no docstring: the suite names its tests as
+    # sentences, so the name alone then states the guarantee.
     intent: str
 
 
@@ -332,14 +334,6 @@ def _collapse(text: str | None) -> str:
         return "-"
     return re.sub(r"\s+", " ", text.strip())
 
-def _humanise(name: str) -> str:
-    """`test_the_window_reports_power` -> `the window reports power`.
-
-    The suite names its tests as sentences, so the name alone states the
-    guarantee even where no docstring was written.
-    """
-    return name.removeprefix("test_").replace("_", " ")
-
 
 def test_inventory(root: str = "tests") -> list[TestModule]:
     """Every test in the suite, with what it pins.
@@ -361,8 +355,7 @@ def test_inventory(root: str = "tests") -> list[TestModule]:
                 # this suite explains which defect the assertion prevents, and
                 # that explanation is the part worth documenting - the first
                 # sentence usually only states what is asserted.
-                intent=_collapse(ast.get_docstring(node)) if ast.get_docstring(node)
-                else _humanise(node.name),
+                intent=_collapse(ast.get_docstring(node)) if ast.get_docstring(node) else "",
             )
             for node in ast.walk(tree)
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
