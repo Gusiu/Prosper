@@ -223,7 +223,7 @@ def add_table(
     which matters here: several of these tables run for pages.
     """
     table = doc.add_table(rows=1, cols=len(header))
-    table.style = "Light Grid Accent 1"
+    table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
     for index, label in enumerate(header):
@@ -232,6 +232,8 @@ def add_table(
         run = cell.paragraphs[0].add_run(plain_dashes(label))
         run.bold = True
         run.font.size = Pt(font)
+
+    _horizontal_rules(table)
 
     header_properties = table.rows[0]._tr.get_or_add_trPr()
     repeat = OxmlElement("w:tblHeader")
@@ -250,6 +252,55 @@ def add_table(
         for index, cell in enumerate(row.cells):
             cell.width = Cm(widths[index])
     doc.add_paragraph()
+
+
+# Colours of the table rules: the accent for the frame, a light grey between rows.
+RULE_COLOUR = "1F3B63"
+HAIRLINE_COLOUR = "C9D1DB"
+HEADER_FILL = "EEF2F7"
+# Elements that must follow w:tblBorders inside w:tblPr, in schema order.
+_AFTER_TABLE_BORDERS = ("shd", "tblLayout", "tblCellMar", "tblLook", "tblCaption",
+                        "tblDescription")
+
+
+def _border(name: str, size: int, colour: str = "auto"):
+    element = OxmlElement(f"w:{name}")
+    if size:
+        element.set(qn("w:val"), "single")
+        element.set(qn("w:sz"), str(size))
+        element.set(qn("w:space"), "0")
+        element.set(qn("w:color"), colour)
+    else:
+        element.set(qn("w:val"), "nil")
+    return element
+
+
+def _horizontal_rules(table) -> None:
+    """Horizontal rules only: a frame above and below, a rule under the header,
+    hairlines between rows and nothing vertical - the plain academic table, which
+    reads as well as a grid and prints better in black and white."""
+    properties = table._tbl.tblPr
+    borders = OxmlElement("w:tblBorders")
+    for name, size, colour in (("top", 8, RULE_COLOUR), ("left", 0, ""),
+                               ("bottom", 8, RULE_COLOUR), ("right", 0, ""),
+                               ("insideH", 2, HAIRLINE_COLOUR), ("insideV", 0, "")):
+        borders.append(_border(name, size, colour))
+    successor = next((child for child in properties
+                      if child.tag in {qn(f"w:{n}") for n in _AFTER_TABLE_BORDERS}), None)
+    if successor is not None:
+        successor.addprevious(borders)
+    else:
+        properties.append(borders)
+    for cell in table.rows[0].cells:
+        cell_properties = cell._tc.get_or_add_tcPr()
+        cell_borders = OxmlElement("w:tcBorders")
+        cell_borders.append(_border("bottom", 6, RULE_COLOUR))
+        cell_properties.append(cell_borders)
+        shading = OxmlElement("w:shd")
+        shading.set(qn("w:val"), "clear")
+        shading.set(qn("w:color"), "auto")
+        shading.set(qn("w:fill"), HEADER_FILL)
+        cell_properties.append(shading)
 
 
 def _field(paragraph, instruction: str, shown: str) -> None:
@@ -295,6 +346,7 @@ def add_caption(doc: Document, kind: str, text: str) -> None:
     styled(f"{kind} ")
     _field(paragraph, f"SEQ {kind} \\* ARABIC", str(_counters[kind]))
     styled(f". {title}")
+    paragraphs = [paragraph]
     if rest:
         paragraph.paragraph_format.space_after = Pt(2)
         paragraph.paragraph_format.keep_with_next = True
@@ -304,6 +356,28 @@ def add_caption(doc: Document, kind: str, text: str) -> None:
         run.italic = True
         run.font.size = Pt(8.5)
         run.font.color.rgb = MUTED
+        paragraphs.append(follow)
+    if kind == "Tabela":
+        _place_above_table(paragraphs)
+
+
+def _place_above_table(paragraphs: list) -> None:
+    """Move a table's caption above it, as Polish theses set them.
+
+    Captions are written after the table they describe, so the table is found as
+    the nearest preceding element, past the spacing paragraph `add_table` leaves.
+    """
+    previous = paragraphs[0]._p.getprevious()
+    while (previous is not None and previous.tag == qn("w:p")
+           and not "".join(previous.itertext()).strip()):
+        previous = previous.getprevious()
+    if previous is None or previous.tag != qn("w:tbl"):
+        return
+    for paragraph in paragraphs:
+        previous.addprevious(paragraph._p)
+        paragraph.paragraph_format.keep_with_next = True
+    paragraphs[0].paragraph_format.space_before = Pt(6)
+    paragraphs[-1].paragraph_format.space_after = Pt(4)
 
 
 def add_figure(doc: Document, key: str, caption: str) -> None:
