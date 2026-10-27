@@ -201,6 +201,35 @@ def add_bullets(doc: Document, items: list[str]) -> None:
             run.font.size = Pt(10)
 
 
+def add_label(doc: Document, text: str) -> None:
+    """A bold run-in label that opens a group of definitions."""
+    paragraph = doc.add_paragraph()
+    paragraph.paragraph_format.space_before = Pt(6)
+    paragraph.paragraph_format.space_after = Pt(2)
+    paragraph.paragraph_format.keep_with_next = True
+    run = paragraph.add_run(plain_dashes(text))
+    run.bold = True
+    run.font.size = Pt(10)
+    run.font.color.rgb = ACCENT
+
+
+def add_definition(doc: Document, term: str, text: str, *, size: float = 9.5) -> None:
+    """A term in monospace and what it means, with a hanging indent - a list
+    where a two-column table would only add rules. An empty text leaves the
+    term on its own."""
+    paragraph = doc.add_paragraph()
+    paragraph.paragraph_format.left_indent = Cm(0.6)
+    paragraph.paragraph_format.first_line_indent = Cm(-0.6)
+    paragraph.paragraph_format.space_after = Pt(2)
+    term_run = paragraph.add_run(plain_dashes(term))
+    term_run.bold = True
+    term_run.font.name = "Consolas"
+    term_run.font.size = Pt(size - 0.5)
+    if text:
+        text_run = paragraph.add_run(" - " + plain_dashes(text))
+        text_run.font.size = Pt(size)
+
+
 def add_code(doc: Document, lines: list[str]) -> None:
     for line in lines:
         paragraph = doc.add_paragraph()
@@ -415,6 +444,10 @@ def add_diagram(doc: Document, key: str, caption: str) -> None:
     if not path or not os.path.exists(path):
         print(f"WARNING: diagram {key} was not rendered; the thesis omits it")
         return
+    _embed_diagram(doc, path, caption)
+
+
+def _embed_diagram(doc: Document, path, caption: str) -> None:
     width, height = _diagram_size(path)
     scale = min(1.0, DIAGRAM_MAX_WIDTH_CM / width, DIAGRAM_MAX_HEIGHT_CM / height)
     paragraph = doc.add_paragraph()
@@ -2125,26 +2158,62 @@ def _chapter_6_features(doc: Document) -> None:
         by_group[feature.group].append(feature)
     add_body(
         doc,
-        f"Model odczytuje {len(catalogue)} kolumn, zgrupowanych poniżej według rodzaju "
+        f"Model odczytuje {len(catalogue)} kolumn w {len(by_group)} grupach według rodzaju "
         "informacji. Nazwy pochodzą wprost z definicji w kodzie, więc katalog nie może "
         "rozminąć się z tym, co modele faktycznie czytają.",
     )
-    for group in sorted(by_group):
-        add_heading(doc, f"6.2.{sorted(by_group).index(group) + 1}. {group}", 3)
-        add_table(
-            doc,
-            ["Kolumna", "Opis"],
-            [[f.name, f.description] for f in by_group[group]],
-            [4.5, 11.5],
+    try:
+        from documentation_diagrams import render_source
+
+        picture = render_source("cechy", _feature_map_source(by_group, len(catalogue)))
+    except Exception as error:  # Java or PlantUML absent and nothing rendered before
+        print(f"[diagrams] feature map skipped: {error}")
+        picture = None
+    if picture:
+        _embed_diagram(
+            doc, picture,
+            f"Mapa {len(catalogue)} cech treningowych w {len(by_group)} grupach. Opis każdej "
+            "cechy podano poniżej, w tym samym podziale.",
         )
-    add_caption(
-        doc, "Tabela",
-        f"Pełny katalog {len(catalogue)} cech treningowych w {len(by_group)} grupach.",
-    )
+    for group in sorted(by_group):
+        add_label(doc, group)
+        for feature in by_group[group]:
+            add_definition(doc, feature.name, feature.description)
     page_break(doc)
 
 
 # ── 7 ────────────────────────────────────────────────────────────────────────
+
+def _feature_map_source(by_group: dict[str, list], total: int) -> str:
+    """PlantUML source of the feature map, built from the catalogue itself.
+
+    Groups go to the side with fewer features so far, which keeps the two halves
+    of the map about the same height.
+    """
+    lines = [
+        "@startmindmap",
+        "skinparam dpi 200",
+        "<style>",
+        "mindmapDiagram {",
+        "  node { BackgroundColor #EEF2F7; LineColor #1F3B63; FontName Calibri;"
+        " FontSize 12; RoundCorner 6; Padding 4; Margin 4 }",
+        "  rootNode { BackgroundColor #DCE4EE; FontStyle bold }",
+        "  boxless { FontName Consolas; FontSize 10; FontColor #26303C; Padding 1;"
+        " Margin 1 }",
+        "  arrow { LineColor #1F3B63 }",
+        "}",
+        "</style>",
+        f"+ Cechy treningowe ({total})",
+    ]
+    sides = {"+": 0, "-": 0}
+    for group in sorted(by_group, key=lambda g: -len(by_group[g])):
+        side = min(sides, key=lambda key: sides[key])
+        sides[side] += len(by_group[group])
+        lines.append(f"{side * 2} {group}")
+        lines.extend(f"{side * 3}_ {feature.name}" for feature in by_group[group])
+    lines.append("@endmindmap")
+    return "\n".join(lines) + "\n"
+
 
 def _chapter_7_labels(doc: Document) -> None:
     add_heading(doc, "7. Etykiety", 1)
