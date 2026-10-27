@@ -72,49 +72,74 @@ class Feature:
     description: str
 
 
-# What each column means, keyed by the stem the builder uses. Written here rather
-# than parsed out of comments because a feature's *meaning* is domain knowledge,
-# not an implementation detail - but the list of names is still read from the
-# code, so a column that exists without an entry shows up as such.
+# What each training column means, keyed by its exact name and checked against
+# the formulas in `features/build.py`. Written here rather than parsed out of
+# comments because a feature's *meaning* is domain knowledge, not an
+# implementation detail - but the list of names is still read from the code, so
+# a column that exists without an entry shows up as such.
 FEATURE_NOTES: dict[str, tuple[str, str]] = {
-    "log_return": ("Zwroty", "Logarytmiczny zwrot z n świec wstecz. Addytywny w czasie i "
-                             "symetryczny względem wzrostów i spadków."),
-    "rsi": ("Oscylatory", "Relative Strength Index: stosunek średniego wzrostu do średniego "
-                          "spadku w oknie, przeskalowany do 0-100."),
-    "macd": ("Oscylatory", "Różnica dwóch wykładniczych średnich kroczących oraz jej odległość "
-                           "od własnej średniej sygnałowej."),
-    "stoch": ("Oscylatory", "Położenie zamknięcia względem zakresu maks.-min. w oknie."),
-    "williams": ("Oscylatory", "Odwrócony wskaźnik położenia zamknięcia w zakresie okna."),
-    "cci": ("Oscylatory", "Odchylenie ceny typowej od jej średniej, skalowane odchyleniem "
-                          "bezwzględnym."),
-    "roc": ("Momentum", "Tempo zmiany: procentowa zmiana ceny względem n świec wstecz."),
-    "momentum": ("Momentum", "Bezwzględna różnica ceny względem n świec wstecz, wyrażona "
-                             "względnie."),
-    "ma": ("Trend", "Odległość ceny od średniej kroczącej, wyrażona jako ułamek tej średniej - "
-                    "dzięki czemu wielkość nie zależy od poziomu ceny."),
-    "ema": ("Trend", "Jak wyżej, dla średniej wykładniczej."),
-    "bb": ("Zmienność", "Położenie ceny wewnątrz wstęgi Bollingera oraz szerokość wstęgi "
-                        "względem jej środka."),
-    "atr": ("Zmienność", "Średni rzeczywisty zakres, wyrażony jako ułamek ceny."),
-    "rolling_vol": ("Zmienność", "Odchylenie standardowe zwrotów logarytmicznych w oknie."),
-    "realized_vol": ("Zmienność", "Zmienność zrealizowana liczona z danych o wyższej "
-                                  "częstotliwości niż interwał modelu."),
-    "volume": ("Wolumen", "Wolumen odniesiony do własnej średniej kroczącej, co usuwa zależność "
-                          "od skali instrumentu."),
-    "obv": ("Wolumen", "On-Balance Volume: skumulowany wolumen ze znakiem zwrotu, raportowany "
-                       "jako zmiana względna."),
-    "taker_buy": ("Przepływ zleceń", "Udział wolumenu inicjowanego przez kupujących w wolumenie "
-                                     "całkowitym - dostępny tylko dla danych zawierających "
-                                     "kolumny przepływu."),
-    "trade": ("Przepływ zleceń", "Charakterystyki liczby i wielkości transakcji w świecy."),
-    "candle": ("Kształt świecy", "Proporcje korpusu i cieni względem pełnego zakresu świecy."),
-    "gap": ("Kształt świecy", "Odległość otwarcia od poprzedniego zamknięcia."),
-    "jump": ("Kształt świecy", "Liczba zwrotów przekraczających wielokrotność bieżącej "
-                               "zmienności - miara nieciągłości."),
-    "drawdown": ("Ryzyko", "Maksymalne obsunięcie wewnątrz okna."),
-    "intraday": ("Ryzyko", "Charakterystyki wyliczone z danych o wyższej częstotliwości."),
-    "day_of": ("Kalendarz", "Zmienne kalendarzowe kodujące porę tygodnia lub miesiąca."),
-    "hour": ("Kalendarz", "Pora doby, istotna wyłącznie dla interwałów krótszych niż dzień."),
+    "log_return_1b": ("Zwroty", "Logarytmiczny zwrot z ostatniej świecy. Zwroty logarytmiczne "
+                                "sumują się w czasie i są symetryczne względem wzrostów i "
+                                "spadków."),
+    "log_return_3b": ("Zwroty", "Logarytmiczny zwrot z trzech ostatnich świec."),
+    "log_return_7b": ("Zwroty", "Logarytmiczny zwrot z siedmiu ostatnich świec."),
+    "log_return_14b": ("Zwroty", "Logarytmiczny zwrot z czternastu ostatnich świec."),
+    "rolling_vol_7": ("Zmienność", "Odchylenie standardowe zwrotów logarytmicznych z 7 "
+                                   "ostatnich świec."),
+    "rolling_vol_14": ("Zmienność", "To samo z 14 ostatnich świec."),
+    "rolling_vol_30": ("Zmienność", "To samo z 30 ostatnich świec."),
+    "realized_vol_1d": ("Zmienność", "Suma kwadratów zwrotów jednominutowych w ciągu dnia - "
+                                     "zmienność zrealizowana. Liczona tylko dla interwału "
+                                     "dziennego i tylko gdy w jeziorze są dane jednominutowe."),
+    "atr_14_rel": ("Zmienność", "Średni rzeczywisty zakres (wykładnicza średnia z 14 świec) "
+                                "jako ułamek zamknięcia."),
+    "bb_mid_rel": ("Zmienność", "Odległość środka wstęgi Bollingera (średniej z 20 świec) od "
+                                "zamknięcia, jako ułamek ceny."),
+    "bb_upper_rel": ("Zmienność", "Odległość górnej wstęgi Bollingera (środek plus dwa "
+                                  "odchylenia standardowe) od zamknięcia, jako ułamek ceny."),
+    "bb_lower_rel": ("Zmienność", "Odległość dolnej wstęgi Bollingera (środek minus dwa "
+                                  "odchylenia standardowe) od zamknięcia, jako ułamek ceny."),
+    "rolling_drawdown_30": ("Ryzyko", "Spadek zamknięcia poniżej najwyższego zamknięcia z "
+                                      "30 ostatnich świec, jako ułamek tego maksimum."),
+    "rolling_drawdown_90": ("Ryzyko", "To samo dla 90 ostatnich świec."),
+    "max_intraday_drawdown": ("Ryzyko", "Największy spadek ceny poniżej dotychczasowego "
+                                        "maksimum dnia, liczony z danych jednominutowych."),
+    "jump_count": ("Ryzyko", "Liczba minut w ciągu dnia, w których cena zmieniła się o "
+                             "więcej niż 2% - miara nieciągłości."),
+    "candle_range": ("Kształt świecy", "Rozpiętość świecy (maksimum minus minimum) jako ułamek "
+                                       "zamknięcia."),
+    "open_rel": ("Kształt świecy", "Otwarcie świecy względem jej zamknięcia, jako ułamek ceny. "
+                                   "Ta i dwie następne cechy zachowują kierunek, który "
+                                   "rozpiętość świecy gubi."),
+    "high_rel": ("Kształt świecy", "Maksimum świecy względem jej zamknięcia, jako ułamek ceny."),
+    "low_rel": ("Kształt świecy", "Minimum świecy względem jej zamknięcia, jako ułamek ceny."),
+    "ma_10_rel": ("Trend", "Odległość średniej kroczącej z 10 świec od zamknięcia, jako ułamek "
+                           "ceny."),
+    "ma_30_rel": ("Trend", "To samo dla średniej z 30 świec."),
+    "ma_diff_rel": ("Trend", "Różnica średnich z 10 i 30 świec jako ułamek ceny - jej znak "
+                             "wskazuje kierunek trendu."),
+    "ma_slope_rel": ("Trend", "Zmiana średniej z 10 świec względem poprzedniej świecy, jako "
+                              "ułamek ceny - nachylenie trendu."),
+    "rsi_14": ("Oscylatory", "Relative Strength Index z 14 świec: stosunek średniego wzrostu do "
+                             "średniego spadku, przeskalowany do 0-100."),
+    "macd_hist_rel": ("Oscylatory", "Histogram MACD - różnica średnich wykładniczych z 12 i 26 "
+                                    "świec pomniejszona o jej 9-świecową średnią sygnałową - "
+                                    "jako ułamek ceny."),
+    "taker_buy_ratio": ("Przepływ zleceń", "Udział wolumenu inicjowanego przez kupujących w "
+                                           "wolumenie świecy; 0,5 oznacza równowagę."),
+    "taker_buy_ratio_14": ("Przepływ zleceń", "Średnia tego udziału z 14 świec."),
+    "flow_imbalance": ("Przepływ zleceń", "Udział kupujących pomniejszony o 0,5 - nierównowaga "
+                                          "przepływu ze znakiem."),
+    "trade_count_rel_30": ("Przepływ zleceń", "Liczba transakcji w świecy jako wielokrotność "
+                                              "jej średniej z 30 świec."),
+    "avg_trade_size_rel_30": ("Przepływ zleceń", "Średnia wielkość transakcji jako "
+                                                 "wielokrotność jej średniej z 30 świec: ten "
+                                                 "sam wolumen z kilku dużych transakcji niesie "
+                                                 "inną informację niż z wielu małych."),
+    "volume_rel_30": ("Wolumen", "Wolumen świecy jako wielokrotność jego średniej z 30 świec."),
+    "obv_change_rel": ("Wolumen", "Zmiana On-Balance Volume (wolumenu skumulowanego ze znakiem "
+                                  "zwrotu) odniesiona do średniego wolumenu z 30 świec. Sam "
+                                  "poziom OBV jest dowolną sumą bieżącą, jego zmiana nie."),
 }
 
 
@@ -122,21 +147,15 @@ def feature_catalogue() -> list[Feature]:
     """Every training feature, grouped and described.
 
     The names come from `domain.TRAINING_FEATURE_COLUMNS`, so the catalogue can
-    never drift from what the models actually read.
+    never drift from what the models actually read; a name without a note lands
+    in its own group with no description.
     """
     from prosper.domain import TRAINING_FEATURE_COLUMNS
 
-    out: list[Feature] = []
-    for name in TRAINING_FEATURE_COLUMNS:
-        group, description = "Pozostałe", "-"
-        for stem, (candidate_group, candidate_text) in FEATURE_NOTES.items():
-            if name.startswith(stem):
-                group, description = candidate_group, candidate_text
-                break
-        if name.endswith("_rel"):
-            description += " Wariant względny, niezależny od poziomu ceny."
-        out.append(Feature(name=name, group=group, description=description))
-    return out
+    return [
+        Feature(name, *FEATURE_NOTES.get(name, ("Bez opisu", "")))
+        for name in TRAINING_FEATURE_COLUMNS
+    ]
 
 
 # ── command line ─────────────────────────────────────────────────────────────
