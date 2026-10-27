@@ -181,6 +181,8 @@ def _describe_default(value: object) -> str:
         return "-"
     if isinstance(value, bool):
         return "tak" if value else "nie"
+    if isinstance(value, list | tuple):
+        return ", ".join(str(item) for item in value)
     return str(value)
 
 
@@ -288,9 +290,9 @@ def settings_reference() -> list[SettingField]:
     out: list[SettingField] = []
     for name, info in Settings.model_fields.items():
         annotation = getattr(info.annotation, "__name__", str(info.annotation))
-        default = info.default
-        if default is None and info.default_factory is not None:
-            default = "(wyliczane)"
+        # A field with a default factory has no `default` of its own; the factory
+        # takes no arguments here, so calling it shows the value a user gets.
+        default = info.get_default(call_default_factory=True)
         out.append(
             SettingField(
                 name=name,
