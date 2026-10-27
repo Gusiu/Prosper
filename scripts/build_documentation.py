@@ -26,6 +26,7 @@ import numpy as np
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.image.image import Image as DocxImage
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
@@ -4242,6 +4243,11 @@ def _chapter_3_equations(doc: Document) -> None:
 # ── screenshots supplied by hand ─────────────────────────────────────────────
 
 SCREENSHOT_DIR = "docs/zrzuty"
+# Full-window screenshots are this wide; see `_screenshot_width_cm`.
+SCREENSHOT_FULL_WIDTH_PX = 2000
+SCREENSHOT_WIDTH_CM = 15.5
+SCREENSHOT_MAX_ENLARGEMENT = 1.6
+SCREENSHOT_MAX_HEIGHT_CM = 17.0
 
 # Each entry: file name, heading, caption, and what the screenshot should show.
 # The file names are fixed so the document can find them without configuration;
@@ -4337,6 +4343,20 @@ def _screenshot_placeholder(doc: Document, expected: str) -> None:
     doc.add_paragraph()
 
 
+def _screenshot_width_cm(path: str) -> float:
+    """The width a screenshot is placed at.
+
+    A full-window screenshot fills the text width. A crop of one panel is
+    enlarged over that same scale only up to a limit, so its interface text does
+    not come out larger than in the rest, and no screenshot is so tall that its
+    heading and caption cannot share its page.
+    """
+    image = DocxImage.from_file(path)
+    natural = image.px_width / SCREENSHOT_FULL_WIDTH_PX * SCREENSHOT_WIDTH_CM
+    return min(SCREENSHOT_WIDTH_CM, natural * SCREENSHOT_MAX_ENLARGEMENT,
+               SCREENSHOT_MAX_HEIGHT_CM * image.px_width / image.px_height)
+
+
 def _chapter_12b_screenshots(doc: Document) -> None:
     add_heading(doc, "12.6. Panel przeglądarkowy - widoki", 2)
     present = sum(
@@ -4356,8 +4376,9 @@ def _chapter_12b_screenshots(doc: Document) -> None:
             paragraph = doc.add_paragraph()
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             paragraph.paragraph_format.space_after = Pt(2)
+            paragraph.paragraph_format.keep_with_next = True
             try:
-                paragraph.add_run().add_picture(path, width=Cm(15.5))
+                paragraph.add_run().add_picture(path, width=Cm(_screenshot_width_cm(path)))
             except Exception:
                 _screenshot_placeholder(doc, f"plik {name} istnieje, ale nie daje się osadzić")
         else:
