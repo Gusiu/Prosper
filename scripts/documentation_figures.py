@@ -21,6 +21,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.ticker  # noqa: E402
 import numpy as np  # noqa: E402
 from documentation_sources import STUDY_MODELS, STUDY_SYMBOLS, is_study_run  # noqa: E402
 
@@ -51,7 +52,9 @@ plt.rcParams.update({
 def _save(fig, name: str) -> str:
     os.makedirs(FIGURE_DIR, exist_ok=True)
     path = os.path.join(FIGURE_DIR, name)
-    fig.tight_layout()
+    # A figure laid out by its own engine (constrained) must not be re-laid out.
+    if fig.get_layout_engine() is None:
+        fig.tight_layout()
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
     return path
@@ -393,6 +396,244 @@ def observation_power() -> str | None:
     return _save(fig, "moc_statystyczna.png")
 
 
+def accuracy_map() -> str | None:
+    """Mean accuracy of every instrument and architecture, one panel per horizon.
+
+    The detailed results as a picture: the colour says on which side of a coin
+    flip a cell lies, the number by how much, and a panel at a glance whether any
+    architecture or instrument stands apart from the rest.
+    """
+    from matplotlib.colors import TwoSlopeNorm
+
+    runs = _runs()
+    if not runs:
+        return None
+    norm = TwoSlopeNorm(vmin=0.35, vcenter=0.5, vmax=0.65)
+    fig, axes = plt.subplots(2, 2, figsize=(9.5, 7.6), layout="constrained")
+    image = None
+    for axis, horizon in zip(axes.flat, HORIZON_NAMES, strict=False):
+        grid = np.full((len(SYMBOLS), len(MODELS)), np.nan)
+        for i, symbol in enumerate(SYMBOLS):
+            for j, model in enumerate(MODELS):
+                values = [
+                    by_horizon[horizon]["accuracy"]
+                    for by_horizon in runs.get((symbol, model), [])
+                    if by_horizon.get(horizon) and by_horizon[horizon].get("accuracy") is not None
+                ]
+                if values:
+                    grid[i, j] = float(np.mean(values))
+        image = axis.imshow(grid, cmap="RdBu", norm=norm, aspect="auto")
+        for i in range(grid.shape[0]):
+            for j in range(grid.shape[1]):
+                if np.isnan(grid[i, j]):
+                    continue
+                dark = abs(grid[i, j] - 0.5) > 0.09
+                axis.text(j, i, f"{grid[i, j]:.3f}", ha="center", va="center", fontsize=7,
+                          color="white" if dark else "#26303C")
+        axis.set_xticks(range(len(MODELS)))
+        axis.set_xticklabels(MODELS, fontsize=7.5)
+        axis.set_yticks(range(len(SYMBOLS)))
+        axis.set_yticklabels([s.replace("USDT", "") for s in SYMBOLS], fontsize=7.5)
+        axis.tick_params(length=0)
+        for spine in axis.spines.values():
+            spine.set_visible(False)
+        axis.set_title(horizon if horizon != "year" else "year (przedziały odmówione)")
+    if image is None:
+        plt.close(fig)
+        return None
+    fig.colorbar(image, ax=axes, shrink=0.55, label="trafność; 0,5 = rzut monetą")
+    return _save(fig, "mapa_trafnosci.png")
+
+
+def base_rate_rows() -> dict[tuple[str, str], list[tuple[float, float, float, float]]]:
+    """Per (horizon, model): accuracy, share of forecasts of a rise, share of rises,
+    and the frequency of the more common class - one tuple per run."""
+    import polars as pl
+
+    rows: dict[tuple[str, str], list[tuple[float, float, float, float]]] = defaultdict(list)
+    for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/predictions_quality.parquet")):
+        parts = path.replace("\\", "/").split("/")
+        symbol, slug = parts[-3], parts[-2]
+        if not is_study_run(symbol, slug):
+            continue
+        try:
+            frame = pl.read_parquet(
+                path, columns=["horizon", "status", "pred_direction", "actual_direction", "correct"]
+            ).filter(pl.col("status") == "scored")
+        except Exception:
+            continue
+        for horizon in HORIZON_NAMES:
+            sub = frame.filter(pl.col("horizon") == horizon)
+            if sub.is_empty():
+                continue
+            predicted = np.array(sub["pred_direction"].to_list())
+            actual = np.array(sub["actual_direction"].to_list())
+            correct = np.array([bool(x) for x in sub["correct"].to_list()])
+            share_long = float((actual == "long").mean())
+            rows[(horizon, slug.split("_")[0])].append((
+                float(correct.mean()), float((predicted == "long").mean()),
+                share_long, max(share_long, 1 - share_long),
+            ))
+    return rows
+
+
+def base_rate() -> str | None:
+    """Accuracy against the more common class, and forecasts of a rise against rises."""
+    rows = base_rate_rows()
+    if not rows:
+        return None
+    fig, axes = plt.subplots(2, len(HORIZON_NAMES), figsize=(9.5, 4.8), sharey="row")
+    for column, horizon in enumerate(HORIZON_NAMES):
+        labels = [m for m in MODELS if rows.get((horizon, m))]
+        if not labels:
+            continue
+        means = np.array([np.mean(rows[(horizon, m)], axis=0) for m in labels])
+        x = np.arange(len(labels))
+        top, bottom = axes[0, column], axes[1, column]
+        top.bar(x, means[:, 3], width=0.62, color="#D5DCE5", label="częstość klasy liczniejszej")
+        top.scatter(x, means[:, 0], color=ACCENT, s=20, zorder=3, label="trafność")
+        top.axhline(0.5, color="#C0392B", linewidth=0.9, linestyle="--")
+        top.set_ylim(0.3, 0.8)
+        top.set_title(horizon)
+        bottom.bar(x, means[:, 2], width=0.62, color="#D5DCE5", label="udział wzrostów na rynku")
+        bottom.scatter(x, means[:, 1], color=ACCENT, s=20, zorder=3,
+                       label="udział prognoz wzrostu")
+        bottom.set_ylim(0.0, 1.0)
+        for axis in (top, bottom):
+            axis.set_xticks(x)
+            axis.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+    axes[0, 0].set_ylabel("trafność, częstość")
+    axes[1, 0].set_ylabel("udział wzrostów")
+    # One legend per row: the two rows draw different quantities with the same marks.
+    for row in (0, 1):
+        axes[row, 0].legend(frameon=False, fontsize=6.5, loc="upper left")
+    return _save(fig, "czestosc_bazowa.png")
+
+
+def month_shares() -> dict[tuple[str, str, str], tuple[int, int]]:
+    """Per (symbol, run, horizon): months with accuracy above 0.5, and months scored.
+
+    Only months with at least 20 scored bars count, and a run needs six of them,
+    so that a share is not read off a handful of bars.
+    """
+    shares: dict[tuple[str, str, str], tuple[int, int]] = {}
+    for path in sorted(glob.glob(f"{REPORT_ROOT}/eval/*/*/stability_summary.json")):
+        parts = path.replace("\\", "/").split("/")
+        symbol, slug = parts[-3], parts[-2]
+        if not is_study_run(symbol, slug):
+            continue
+        try:
+            payload = json.load(open(path, encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for horizon in HORIZON_NAMES:
+            values = [
+                cell["accuracy"]
+                for month in payload.get("months", [])
+                if (cell := (month.get("horizons") or {}).get(horizon))
+                and not cell.get("sparse")
+                and cell.get("accuracy") is not None
+                and (cell.get("samples") or 0) >= 20
+            ]
+            if len(values) >= 6:
+                shares[(symbol, slug, horizon)] = (int((np.array(values) > 0.5).sum()), len(values))
+    return shares
+
+
+def month_share() -> str | None:
+    """For every run, the share of months in which it beat a coin flip."""
+    shares = month_shares()
+    if not shares:
+        return None
+    fig, axes = plt.subplots(1, len(HORIZON_NAMES), figsize=(9.5, 2.9), sharey=True)
+    rng = np.random.default_rng(0)
+    for axis, horizon in zip(np.atleast_1d(axes), HORIZON_NAMES, strict=False):
+        labels, data = [], []
+        for model in MODELS:
+            values = [above / total for (_, slug, h), (above, total) in shares.items()
+                      if h == horizon and slug.split("_")[0] == model]
+            if values:
+                labels.append(model)
+                data.append(values)
+        if not data:
+            continue
+        axis.boxplot(data, widths=0.5, showfliers=False,
+                     medianprops={"color": ACCENT}, whiskerprops={"color": MUTED},
+                     capprops={"color": MUTED}, boxprops={"color": MUTED})
+        for index, values in enumerate(data, start=1):
+            jitter = rng.uniform(-0.14, 0.14, len(values))
+            axis.scatter(index + jitter, values, s=7, color=ACCENT, alpha=0.55, linewidths=0)
+        axis.axhline(0.5, color="#C0392B", linewidth=0.9, linestyle="--")
+        axis.set_xticks(range(1, len(labels) + 1))
+        axis.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+        axis.set_title(horizon)
+        axis.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
+    np.atleast_1d(axes)[0].set_ylabel("miesiące z trafnością > 0,5")
+    return _save(fig, "udzial_miesiecy.png")
+
+
+def backtest_summary() -> dict[tuple[str, str], list[tuple]]:
+    """Per (symbol, model), one tuple per run: ROI, excess over holding, over a
+    constant exposure, percentile against its own shifts, excess over the
+    momentum rule, and the deepest drawdown - percentages throughout."""
+    found: dict[tuple[str, str], list[tuple]] = defaultdict(list)
+    for path in sorted(glob.glob(f"{REPORT_ROOT}/backtests/*/*/backtest.json")):
+        parts = path.replace("\\", "/").split("/")
+        symbol, slug = parts[-3], parts[-2]
+        if not is_study_run(symbol, slug):
+            continue
+        try:
+            payload = json.load(open(path, encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        nulls = payload.get("nulls") or {}
+        momentum = (nulls.get("naive_momentum") or {}).get("roi_pct") or 0
+        found[(symbol, slug.split("_")[0])].append((
+            payload.get("roi_pct"),
+            (payload.get("benchmark") or {}).get("excess_roi_pct"),
+            (nulls.get("constant_exposure") or {}).get("excess_roi_pct"),
+            (nulls.get("mistimed_replay") or {}).get("percentile"),
+            (payload.get("roi_pct") or 0) - momentum,
+            payload.get("max_drawdown_pct"),
+        ))
+    return found
+
+
+def simulation_excess() -> str | None:
+    """How far each instrument's strategy lands from three of its benchmarks."""
+    found = backtest_summary()
+    if not found:
+        return None
+    panels = [(1, "wobec kupna i trzymania"), (2, "wobec stałej ekspozycji"),
+              (4, "wobec reguły momentum")]
+    fig, axes = plt.subplots(1, len(panels), figsize=(9.5, 2.9))
+    rng = np.random.default_rng(0)
+    for axis, (field, title) in zip(axes, panels, strict=False):
+        labels, data = [], []
+        for model in MODELS:
+            values = []
+            for (symbol, name), rows in found.items():
+                if name != model:
+                    continue
+                column = [row[field] for row in rows if row[field] is not None]
+                if column:
+                    values.append(float(np.mean(column)))
+            if values:
+                labels.append(model)
+                data.append(values)
+        for index, values in enumerate(data):
+            jitter = rng.uniform(-0.12, 0.12, len(values))
+            axis.scatter(index + jitter, values, s=12, color=ACCENT, alpha=0.75, linewidths=0)
+            axis.hlines(np.median(values), index - 0.25, index + 0.25, color="#26303C",
+                        linewidth=1.2)
+        axis.axhline(0, color="#C0392B", linewidth=0.9, linestyle="--")
+        axis.set_xticks(range(len(labels)))
+        axis.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+        axis.set_title(title)
+    axes[0].set_ylabel("różnica stopy zwrotu [pp]")
+    return _save(fig, "symulacja_nadwyzki.png")
+
+
 def build_all() -> dict[str, str]:
     """Render every figure; return name -> path for the ones that had data."""
     figures = {
@@ -405,6 +646,10 @@ def build_all() -> dict[str, str]:
         "waznosc": feature_importance(),
         "backtest": backtest_percentiles(),
         "kapital": equity_curves(),
+        "mapa_trafnosci": accuracy_map(),
+        "czestosc_bazowa": base_rate(),
+        "udzial_miesiecy": month_share(),
+        "symulacja_nadwyzki": simulation_excess(),
     }
     return {name: path for name, path in figures.items() if path}
 

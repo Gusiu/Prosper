@@ -1835,7 +1835,6 @@ def _chapter_3_theory(doc: Document) -> None:
     )
 
     add_heading(doc, "3.5. Kalibracja probabilistyczna", 2)
-    add_figure(doc, "niezawodnosc", "Krzywe niezawodności: deklarowana pewność wobec zrealizowanej częstości trafień, zbiorczo po wszystkich przebiegach. Przekątna oznacza kalibrację doskonałą.")
     add_body(
         doc,
         "Kalibracja to zgodność deklarowanej pewności z rzeczywistą częstością: spośród świec, "
@@ -2695,7 +2694,7 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
     add_heading(doc, "10.1. Ranking architektur wobec podłogi szumu", 2)
     add_body(
         doc,
-        "Tabele poniżej odpowiadają wprost na pytanie badawcze. Wielkością rozstrzygającą jest "
+        "Tabela poniżej odpowiada wprost na pytanie badawcze. Wielkością rozstrzygającą jest "
         "porównanie rozstępu między architekturami z rozrzutem tej samej architektury pod "
         "różnymi ziarnami. Jeżeli rozstęp nie przekracza rozrzutu, ranking architektur nie ma "
         "podstaw. Rozrzut liczony jest wyłącznie z architektur, których wynik ziarno zmienia: "
@@ -2707,90 +2706,62 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
 
     spread = architecture_spread(runs)
     distinct = distinct_runs(runs)
-    for horizon in HORIZON_NAMES:
-        cell = spread[horizon]
-        means = cell["means"]
-        if len(means) < 2:
-            continue
-        order = sorted(means, key=lambda m: -means[m])
-        labels = {}
-        for model in order:
-            taken = sum(len(horizon_values(runs.get((symbol, model), []), horizon, "accuracy"))
-                        for symbol in SYMBOLS)
+    tested = [h for h in HORIZON_NAMES if len(spread[h]["means"]) >= 2]
+    models = [m for m in MODELS if any(m in spread[h]["means"] for h in tested)]
+    if tested and models:
+        rows = []
+        for model in models:
+            row = [model]
+            for horizon in tested:
+                means = spread[horizon]["means"]
+                if model not in means:
+                    row.append("-")
+                    continue
+                rank = sorted(means, key=lambda m: -means[m]).index(model) + 1
+                row.append(f"{means[model]:.3f} ({rank})")
+            rows.append(row)
+        for label, key in (("rozstęp - wszystkie", "range"),
+                           ("rozstęp - uczące się", "range_learners"),
+                           ("rozrzut ziarna", "noise")):
+            rows.append([label] + [fmt(spread[h][key]) for h in tested])
+        add_table(doc, ["Architektura", *tested], rows, [4.4] + [2.9] * len(tested), font=9)
+        counts = []
+        for model in models:
+            taken = sum(len(horizon_values(runs.get((s, model), []), tested[0], "accuracy"))
+                        for s in SYMBOLS)
             different = sum(
-                len(horizon_values(distinct.get((symbol, model), []), horizon, "accuracy"))
-                for symbol in SYMBOLS
+                len(horizon_values(distinct.get((s, model), []), tested[0], "accuracy"))
+                for s in SYMBOLS
             )
-            labels[model] = str(taken) if different == taken else f"{taken} ({different} różnych)"
-
-        add_body(doc, f"Horyzont „{horizon}”:")
-        add_table(
-            doc,
-            ["Poz.", "Architektura", "Przebiegów", "Trafność średnia"],
-            [[str(rank), model, labels[model], fmt(means[model])]
-             for rank, model in enumerate(order, start=1)],
-            [1.6, 4.6, 3.6, 3.4],
-            font=9,
-        )
-        noise, every, learners = cell["noise"], cell["range"], cell["range_learners"]
-        if noise is None:
-            add_caption(
-                doc, "Tabela",
-                f"Horyzont „{horizon}”. Rozstęp: {pl(every)}. Brak powtórzeń pod różnymi "
-                "ziarnami - rozrzutu inicjalizacji nie zmierzono.",
-            )
-            continue
-        if learners <= noise:
-            verdict = ("architektury uczące się mieszczą się w rozrzucie ziarna, więc ich "
-                       "ranking nie ma podstaw")
-            if every > noise:
-                verdict += "; rozstęp całego zestawienia wynika z modelu odniesienia"
-        else:
-            verdict = ("rozstęp architektur uczących się przekracza rozrzut ziarna "
-                       + ("nieznacznie" if learners < 1.5 * noise else "wyraźnie"))
+            counts.append(f"{MODEL_LABEL[model]} {taken}"
+                          + ("" if different == taken else f" ({different} różnych)"))
         add_caption(
             doc, "Tabela",
-            f"Horyzont „{horizon}”. Rozstęp średnich: {pl(every)} dla wszystkich architektur, "
-            f"{pl(learners)} dla uczących się. Rozrzut tej samej architektury pod innym "
-            f"ziarnem: {pl(noise)}. Wniosek: {verdict}.",
+            "Średnia trafność architektur na każdym horyzoncie, w nawiasie miejsce w rankingu. "
+            "Trzy dolne wiersze porównują rozstęp średnich z rozrzutem tej samej architektury "
+            "pod innym ziarnem. Liczba przebiegów w średniej: " + _listing(counts) + ".",
+        )
+        add_body(
+            doc,
+            "Wniosek: " + "; ".join(
+                f"na horyzoncie {HORIZON_LOCATIVE[h]} {_spread_verdict(spread[h])}"
+                for h in tested
+            ) + ".",
         )
 
     _results_rank_stability(doc, runs)
 
     add_heading(doc, "10.3. Wyniki szczegółowe", 2)
     add_figure(doc, "porownanie", "Trafność średnia każdej architektury na czterech horyzontach. Wąsy to odchylenie standardowe między wszystkimi przebiegami danej architektury - na różnych instrumentach i pod różnymi ziarnami; przerywana linia oznacza poziom losowy. Nachodzenie wąsów na siebie i na linię 0,5 jest treścią wyniku.")
-    for horizon in HORIZON_NAMES:
-        rows = []
-        for symbol in SYMBOLS:
-            for model in MODELS:
-                got = runs.get((symbol, model), [])
-                accs = horizon_values(got, horizon, "accuracy")
-                eces = horizon_values(got, horizon, "ece")
-                if not accs:
-                    continue
-                arr = np.array(accs)
-                rows.append([
-                    symbol.replace("USDT", ""), model, str(len(accs)),
-                    fmt(float(arr.mean())),
-                    fmt(float(arr.std(ddof=1))) if len(arr) > 1 else "-",
-                    f"{arr.min():.3f}-{arr.max():.3f}" if len(arr) > 1 else fmt(float(arr[0])),
-                    fmt(float(np.mean(eces))) if eces else "-",
-                ])
-        if not rows:
-            continue
-        add_body(doc, f"Horyzont „{horizon}” - wszystkie symbole i ziarna:")
-        add_table(
-            doc,
-            ["Symbol", "Model", "Przeb.", "Trafność", "Odch.", "Zakres", "ECE"],
-            rows,
-            [2.2, 2.4, 1.5, 2.2, 1.8, 3.2, 2.4],
-        )
-        add_caption(
-            doc, "Tabela",
-            f"Horyzont „{horizon}”. Kolumna „Odch.” to odchylenie standardowe trafności między "
-            "przebiegami różniącymi się wyłącznie ziarnem - miara szumu inicjalizacji, "
-            "niewidoczna w przedziale pojedynczego przebiegu.",
-        )
+    add_figure(
+        doc, "mapa_trafnosci",
+        "Trafność średnia każdej pary instrument - architektura na czterech horyzontach. "
+        "Kolor wskazuje stronę i odległość od 0,5, liczba - średnią ze wszystkich przebiegów "
+        "danej pary. Na horyzoncie rocznym liczba obserwacji niezależnych nie pozwala "
+        "wyznaczyć przedziału, więc barwy tego panelu odzwierciedlają kilka cykli rynku, a "
+        "nie zdolność modeli. Wynik każdego przebiegu osobno podaje załącznik E.",
+    )
+    add_figure(doc, "rozrzut", "Każdy przebieg jako osobny punkt, horyzont tygodniowy. W obrębie architektury punkty ułożono według instrumentu, a trzy ziarna jednego instrumentu leżą w jednej kolumnie - dla modeli gradientowych pokrywają się, ponieważ ziarno nie zmienia ich wyniku. Różnice między instrumentami i ziarnami są większe niż odległości między architekturami - dlatego ranking oparty na pojedynczym przebiegu nie ma podstaw.")
 
     _results_baserate(doc)
     _results_calibration(doc, runs)
@@ -2801,6 +2772,21 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
     page_break(doc)
 
 
+def _spread_verdict(cell: dict) -> str:
+    """What one horizon's spread says about ranking the learning architectures."""
+    noise, every, learners = cell["noise"], cell["range"], cell["range_learners"]
+    if noise is None:
+        return f"rozstęp wynosi {pl(every)}, a rozrzutu inicjalizacji nie zmierzono"
+    if learners <= noise:
+        verdict = ("architektury uczące się mieszczą się w rozrzucie ziarna, więc ich "
+                   "ranking nie ma podstaw")
+        if every > noise:
+            verdict += ", a rozstęp całego zestawienia wynika z modelu odniesienia"
+        return verdict
+    return ("rozstęp architektur uczących się przekracza rozrzut ziarna "
+            + ("nieznacznie" if learners < 1.5 * noise else "wyraźnie"))
+
+
 def _results_baserate(doc: Document) -> None:
     """Accuracy against the frequency of the more common class.
 
@@ -2808,92 +2794,37 @@ def _results_baserate(doc: Document) -> None:
     coin flip only when the classes are balanced, and over this period they are
     not.
     """
-    import polars as pl
-
-    rows_by = defaultdict(list)
-    for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/predictions_quality.parquet")):
-        parts = path.replace("\\", "/").split("/")
-        symbol, model = parts[-3], parts[-2].split("_")[0]
-        if not is_study_run(symbol, parts[-2]):
-            continue
-        try:
-            frame = pl.read_parquet(path).filter(pl.col("status") == "scored")
-        except Exception:
-            continue
-        for horizon in HORIZON_NAMES:
-            sub = frame.filter(pl.col("horizon") == horizon)
-            if sub.is_empty():
-                continue
-            predicted = np.array(sub["pred_direction"].to_list())
-            actual = np.array(sub["actual_direction"].to_list())
-            correct = np.array([bool(x) for x in sub["correct"].to_list()])
-            share_long = float((actual == "long").mean())
-            rows_by[(horizon, model)].append(
-                (float(correct.mean()), float((predicted == "long").mean()),
-                 share_long, max(share_long, 1 - share_long))
-            )
-    if not rows_by:
+    if "czestosc_bazowa" not in _FIGURES:
         return
+    from documentation_figures import base_rate_rows
+
+    rows = base_rate_rows()
+    means = {key: np.mean(values, axis=0) for key, values in rows.items() if values}
+    below = bool(means) and all(m[0] < m[3] for m in means.values())
 
     add_heading(doc, "10.4. Trafność wobec częstości klasy większościowej", 2)
-    add_figure(doc, "rozrzut", "Każdy przebieg jako osobny punkt, horyzont tygodniowy. W obrębie architektury punkty ułożono według instrumentu, a trzy ziarna jednego instrumentu leżą w jednej kolumnie - dla modeli gradientowych pokrywają się, ponieważ ziarno nie zmienia ich wyniku. Różnice między instrumentami i ziarnami są większe niż odległości między architekturami - dlatego ranking oparty na pojedynczym przebiegu nie ma podstaw.")
     add_body(
         doc,
         "Trafność 0,50 oznacza rzut monetą tylko wtedy, gdy obie klasy są jednakowo częste. "
         "W badanym okresie tak nie jest: udział wzrostów rośnie wraz z horyzontem, więc "
         "właściwym punktem odniesienia nie jest 0,500, lecz częstość klasy liczniejszej. "
-        "Reguła \u201ezawsze wskazuj klasę liczniejszą\u201d nie zawiera żadnego uczenia.",
+        "Reguła „zawsze wskazuj klasę liczniejszą” nie zawiera żadnego uczenia.",
     )
-    table_rows = []
-    for horizon in HORIZON_NAMES:
-        for model in MODELS:
-            values = rows_by.get((horizon, model))
-            if not values:
-                continue
-            arr = np.array(values)
-            table_rows.append([
-                horizon, model,
-                fmt(float(arr[:, 0].mean())),
-                f"{arr[:, 1].mean():.1%}",
-                f"{arr[:, 2].mean():.1%}",
-                fmt(float(arr[:, 3].mean())),
-                f"{arr[:, 0].mean() - arr[:, 3].mean():+.3f}",
-            ])
-    add_table(
-        doc,
-        ["Horyzont", "Model", "Trafność", "Mówi wzrost", "Był wzrost", "Większość", "Różnica"],
-        table_rows,
-        [2.1, 2.1, 2.0, 2.5, 2.3, 2.2, 2.2],
-        font=8,
-    )
-    add_caption(
-        doc, "Tabela",
-        "Kolumna \u201eRóżnica\u201d to trafność pomniejszona o częstość klasy liczniejszej. "
-        "Wartość ujemna oznacza, że model wypada gorzej niż reguła bez uczenia. Zwraca uwagę "
-        "kolumna \u201eMówi wzrost\u201d: modele wystawiają prognozy bliskie zbalansowanym "
-        "również tam, gdzie rynek był wyraźnie jednostronny - czego nie należy im "
-        "poczytywać za wadę, ponieważ częstość bazowa jest znana dopiero z perspektywy czasu, "
-        "a model kroczący poznaje ją wyłącznie z własnego okna treningowego.",
+    add_figure(
+        doc, "czestosc_bazowa",
+        "Trafność wobec częstości klasy liczniejszej (górny rząd) oraz udział prognoz wzrostu "
+        "wobec udziału wzrostów na rynku (dolny rząd), średnio ze wszystkich przebiegów. "
+        + ("Na każdym horyzoncie i w każdej architekturze punkt leży poniżej słupka: reguła "
+           "bez uczenia wypada lepiej. " if below else
+           "Punkty powyżej słupka oznaczają architekturę lepszą od reguły bez uczenia. ")
+        + "Częstość bazowa jest jednak znana dopiero z perspektywy czasu, a model kroczący "
+        "poznaje ją wyłącznie z własnego okna treningowego.",
     )
 
 
 def _results_calibration(doc: Document, runs: dict) -> None:
     """ECE per architecture: the project's one positive engineering result."""
-    table_rows = []
-    for horizon in HORIZON_NAMES:
-        for model in MODELS:
-            values = []
-            for symbol in SYMBOLS:
-                values.extend(horizon_values(runs.get((symbol, model), []), horizon, "ece"))
-            if not values:
-                continue
-            arr = np.array(values)
-            table_rows.append([
-                horizon, model, str(len(arr)),
-                fmt(float(arr.mean())),
-                f"{arr.min():.3f}-{arr.max():.3f}",
-            ])
-    if not table_rows:
+    if "kalibracja" not in _FIGURES and "niezawodnosc" not in _FIGURES:
         return
     add_heading(doc, "10.5. Kalibracja", 2)
     add_body(
@@ -2903,49 +2834,32 @@ def _results_calibration(doc: Document, runs: dict) -> None:
         "rozróżniania: model pozbawiony przewagi może być doskonale skalibrowany, jeżeli "
         "poprawnie raportuje, że nic nie wie.",
     )
-    add_table(
+    add_figure(doc, "kalibracja", "Oczekiwany błąd kalibracji według horyzontu i architektury. Wartości rosną z horyzontem, ponieważ wycinek kalibracyjny kurczy się wraz z liczbą obserwacji niezależnych; błąd każdego przebiegu podaje załącznik E.")
+    add_figure(doc, "niezawodnosc", "Krzywe niezawodności: deklarowana pewność wobec zrealizowanej częstości trafień, zbiorczo po wszystkich przebiegach. Przekątna oznacza kalibrację doskonałą.")
+    add_body(
         doc,
-        ["Horyzont", "Model", "Przeb.", "ECE średnie", "Zakres"],
-        table_rows,
-        [2.4, 2.4, 2.0, 3.0, 3.6],
-        font=8.5,
-    )
-    add_caption(
-        doc, "Tabela",
-        "Błąd kalibracji na horyzont i architekturę. Niski błąd przy trafności bliskiej "
-        "poziomowi losowemu oznacza system, który poprawnie komunikuje własną niepewność "
-        "- jest to osobny, pozytywny wynik inżynierski, niezależny od braku przewagi "
-        "prognostycznej.",
+        "Niski błąd kalibracji przy trafności bliskiej poziomowi losowemu oznacza system, "
+        "który poprawnie komunikuje własną niepewność - jest to osobny, pozytywny wynik "
+        "inżynierski, niezależny od braku przewagi prognostycznej.",
     )
 
 
 def _results_backtest(doc: Document) -> None:
     """Trading simulation with its four nulls, read from the artifacts."""
-    found = defaultdict(list)
-    for path in sorted(glob.glob(f"{REPORT_ROOT}/backtests/*/*/backtest.json")):
-        parts = path.replace("\\", "/").split("/")
-        symbol, model = parts[-3], parts[-2].split("_")[0]
-        if not is_study_run(symbol, parts[-2]):
-            continue
-        try:
-            payload = json.load(open(path, encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        nulls = payload.get("nulls") or {}
-        momentum = (nulls.get("naive_momentum") or {}).get("roi_pct") or 0
-        found[(symbol, model)].append((
-            payload.get("roi_pct"),
-            (payload.get("benchmark") or {}).get("excess_roi_pct"),
-            (nulls.get("constant_exposure") or {}).get("excess_roi_pct"),
-            (nulls.get("mistimed_replay") or {}).get("percentile"),
-            (payload.get("roi_pct") or 0) - momentum,
-            payload.get("max_drawdown_pct"),
-        ))
+    try:
+        from documentation_figures import backtest_summary
+    except Exception:
+        return
+    found = backtest_summary()
     if not found:
         return
+    percentiles = [
+        float(np.nanmean([row[3] if row[3] is not None else np.nan for row in values]))
+        for values in found.values()
+    ]
+    median = float(np.nanmedian(percentiles))
 
     add_heading(doc, "10.7. Symulacja handlowa", 2)
-    add_figure(doc, "stabilnosc", "Trafność miesiąc po miesiącu dla BTCUSDT na horyzoncie tygodniowym. Wahania wokół poziomu losowego są znacznie większe niż jakakolwiek trwała przewaga - to jest obraz, który średnia z całego okresu ukrywa.")
     add_body(
         doc,
         "Wyniki podano wyłącznie jako kontekst ekonomiczny; nie stanowią oceny prognozy "
@@ -2953,36 +2867,19 @@ def _results_backtest(doc: Document) -> None:
         "rozstrzygający jest percentyl względem własnych przesunięć cyklicznych: wielkość ta "
         "zachowuje sekwencję ekspozycji i zmienia wyłącznie jej ułożenie w czasie, więc "
         "izoluje wyczucie momentu od poziomu zaangażowania. Wartość 50 oznacza brak wyczucia, "
-        "95 byłaby sygnałem.",
+        "95 byłaby sygnałem. Mediana tego percentyla ze wszystkich par instrument - "
+        f"architektura wynosi {pl(median, '.1f')} - "
+        + ("poniżej przypadkowych 50, co oznacza, że rzeczywiste ułożenie sygnałów w czasie "
+           "wypada gorzej niż ułożenie arbitralne." if median < 50 else
+           "powyżej przypadkowych 50, lecz daleko od progu sygnału."),
     )
-    table_rows, percentiles = [], []
-    for (symbol, model), values in sorted(found.items()):
-        arr = np.array(
-            [[v if v is not None else np.nan for v in row] for row in values], dtype=float
-        )
-        mean = np.nanmean(arr, axis=0)
-        percentiles.append(mean[3])
-        table_rows.append([
-            symbol.replace("USDT", ""), model, str(len(values)),
-            f"{mean[0]:+.0f}", f"{mean[1]:+.0f}", f"{mean[2]:+.0f}",
-            f"{mean[3]:.1f}", f"{mean[4]:+.0f}", f"{mean[5]:.0f}",
-        ])
-    add_table(
-        doc,
-        ["Symbol", "Model", "Przeb.", "ROI %", "vs hold", "vs stała", "Percentyl",
-         "vs momentum", "Obsun. %"],
-        table_rows,
-        [1.7, 1.9, 1.4, 1.8, 1.9, 1.9, 2.0, 2.2, 1.8],
-        font=8,
-    )
-    median = float(np.nanmedian(percentiles))
-    add_caption(
-        doc, "Tabela",
-        f"Symulacja na horyzoncie tygodniowym, uśredniona po ziarnach. Mediana percentyla "
-        f"wobec własnych przesunięć wynosi {pl(median, '.1f')} - poniżej przypadkowych 50, co "
-        "oznacza, że rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie "
-        "arbitralne. Kolumny \u201evs\u201d podają różnicę stopy zwrotu w punktach "
-        "procentowych wobec danego punktu odniesienia; wartości ujemne oznaczają przegraną.",
+    add_figure(doc, "backtest", "Percentyl każdej symulacji względem jej własnych przesunięć cyklicznych. Mediana leży poniżej 50, czyli rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie arbitralne. Próg sygnału na poziomie 95 nie został osiągnięty przez żaden przebieg.")
+    add_figure(
+        doc, "symulacja_nadwyzki",
+        "Różnica stopy zwrotu strategii wobec trzech punktów odniesienia, w punktach "
+        "procentowych. Każdy punkt to jeden instrument (średnia z ziaren), kreska - mediana "
+        "architektury; wartości poniżej zera oznaczają przegraną z danym punktem odniesienia. "
+        "Pełne wyniki symulacji podaje załącznik E.",
     )
 
 
@@ -3013,7 +2910,6 @@ def _results_max_vs_mean(doc: Document) -> None:
         return
 
     add_heading(doc, "10.8. Dlaczego najlepsza komórka nie jest wynikiem", 2)
-    add_figure(doc, "backtest", "Percentyl każdej symulacji względem jej własnych przesunięć cyklicznych. Mediana leży poniżej 50, czyli rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie arbitralne. Próg sygnału na poziomie 95 nie został osiągnięty przez żaden przebieg.")
     add_body(
         doc,
         "Zestawienie najlepszych komórek jest miarą kuszącą i myloną (Bailey i López de "
@@ -3362,64 +3258,26 @@ def _results_departures(doc: Document, runs: dict) -> None:
 
 
 def _results_stability(doc: Document) -> None:
-    """Per-month quality, read from the stability artifacts."""
-    reports = sorted(glob.glob(f"{REPORT_ROOT}/eval/*/*/stability_summary.json"))
-    if not reports:
+    """Quality month by month, drawn from the stability artifacts."""
+    if "udzial_miesiecy" not in _FIGURES and "stabilnosc" not in _FIGURES:
         return
-
     add_heading(doc, "10.6. Stabilność w czasie", 2)
-    add_figure(doc, "kalibracja", "Oczekiwany błąd kalibracji według horyzontu i architektury. Wartości rosną z horyzontem, ponieważ wycinek kalibracyjny kurczy się wraz z liczbą obserwacji niezależnych.")
     add_body(
         doc,
         "Średnia z całego okresu maskuje sytuację, w której model działa w jednym reżimie "
-        "rynkowym i zawodzi w innym. Poniższe zestawienie rozbija jakość na miesiące "
-        "kalendarzowe i podaje, w jakim odsetku miesięcy trafność przekroczyła poziom losowy - "
-        "wielkość odporną na pojedyncze wartości skrajne.",
+        "rynkowym i zawodzi w innym. Dlatego jakość rozbito na miesiące kalendarzowe: pierwszy "
+        "rysunek pokazuje przebieg trafności dla jednego instrumentu, drugi dla każdego "
+        "przebiegu - odsetek miesięcy, w których trafność przekroczyła poziom losowy. Ta "
+        "druga wielkość jest odporna na pojedyncze wartości skrajne; jej wartość dla każdego "
+        "przebiegu podaje kolumna „Mies. > 0,5” w załączniku E.",
     )
-
-    rows = []
-    for path in reports:
-        parts = path.replace("\\", "/").split("/")
-        symbol, slug = parts[-3], parts[-2]
-        model = slug.split("_")[0]
-        if not is_study_run(symbol, slug):
-            continue
-        try:
-            payload = json.load(open(path, encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        for horizon in HORIZON_NAMES:
-            values = [
-                cell["accuracy"]
-                for month in payload.get("months", [])
-                if (cell := (month.get("horizons") or {}).get(horizon))
-                and not cell.get("sparse")
-                and cell.get("accuracy") is not None
-                and (cell.get("samples") or 0) >= 20
-            ]
-            if len(values) < 6:
-                continue
-            arr = np.array(values)
-            above = int((arr > 0.5).sum())
-            rows.append([
-                symbol.replace("USDT", ""), model, horizon, str(len(arr)),
-                fmt(float(arr.mean())), fmt(float(np.median(arr))),
-                f"{above}/{len(arr)}", f"{above / len(arr):.0%}",
-            ])
-    if not rows:
-        return
-    add_table(
-        doc,
-        ["Symbol", "Model", "Horyzont", "Mies.", "Średnia", "Mediana", "> 0,5", "Udział"],
-        sorted(rows, key=lambda r: (r[2], r[0], r[1])),
-        [1.9, 2.1, 2.1, 1.5, 1.9, 1.9, 1.8, 1.8],
-        font=8,
-    )
-    add_caption(
-        doc, "Tabela",
-        "Jakość prognozy miesiąc po miesiącu. Kolumna „Udział” podaje odsetek miesięcy, w "
-        "których trafność przekroczyła poziom losowy; wartość bliska połowie oznacza brak "
-        "trwałej przewagi niezależnie od średniej z całego okresu.",
+    add_figure(doc, "stabilnosc", "Trafność miesiąc po miesiącu dla BTCUSDT na horyzoncie tygodniowym. Wahania wokół poziomu losowego są znacznie większe niż jakakolwiek trwała przewaga - to jest obraz, który średnia z całego okresu ukrywa.")
+    add_figure(
+        doc, "udzial_miesiecy",
+        "Odsetek miesięcy z trafnością powyżej 0,5, każdy przebieg jako punkt. Liczą się "
+        "miesiące z co najmniej 20 ocenionymi świecami, a przebieg musi mieć sześć takich "
+        "miesięcy. Pudełka skupione wokół 50% oznaczają brak trwałej przewagi, niezależnie "
+        "od średniej z całego okresu.",
     )
 
 
@@ -4162,6 +4020,12 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
     lets a reader check any single number against the artifact that produced it,
     which is what makes the aggregate auditable rather than merely stated.
     """
+    try:
+        from documentation_figures import backtest_summary, month_shares
+
+        shares, simulations = month_shares(), backtest_summary()
+    except Exception:
+        shares, simulations = {}, {}
     rows = []
     for (symbol, model), entries in sorted(runs.items()):
         for entry in sorted(entries, key=lambda e: str(e.get("seed"))):
@@ -4181,6 +4045,8 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
                     f"[{low:.3f}; {high:.3f}]" if low is not None and high is not None
                     else "odmówiony",
                     fmt(cell.get("ece")),
+                    "{}/{}".format(*shares[(symbol, entry["slug"], horizon)])
+                    if (symbol, entry["slug"], horizon) in shares else "-",
                 ])
     if not rows:
         return
@@ -4191,19 +4057,54 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
         "Tabele rozdziału 10 podają wielkości zagregowane; ta pozwala prześledzić każdą z nich "
         "do pojedynczego artefaktu. Kolumna „Przedział” zawiera wpis „odmówiony” tam, gdzie "
         "liczba obserwacji niezależnych była zbyt mała, aby przedział nie był artefaktem "
-        "losowania.",
+        "losowania. Kolumna „Mies. > 0,5” podaje, w ilu miesiącach z ocenionych trafność "
+        "przekroczyła poziom losowy (rozdział 10.6).",
     )
     add_table(
         doc,
-        ["Symbol", "Model", "Ziarno", "Horyzont", "Wierszy", "Trafność", "Przedział", "ECE"],
+        ["Symbol", "Model", "Ziarno", "Horyzont", "Wierszy", "Trafność", "Przedział", "ECE",
+         "Mies. > 0,5"],
         rows,
-        [1.7, 1.9, 1.5, 1.9, 1.7, 1.8, 3.0, 1.5],
+        [1.6, 1.8, 1.4, 1.8, 1.6, 1.7, 2.8, 1.4, 1.9],
         font=7.5,
     )
     add_caption(
         doc, "Tabela",
         "Pełne wyniki wszystkich przebiegów. Kolumna „Ziarno” pozwala odróżnić powtórzenia tej "
         "samej konfiguracji, których rozrzut mierzy szum inicjalizacji.",
+    )
+    if not simulations:
+        return
+    table_rows = []
+    for (symbol, model), values in sorted(simulations.items()):
+        arr = np.array(
+            [[v if v is not None else np.nan for v in row] for row in values], dtype=float
+        )
+        mean = np.nanmean(arr, axis=0)
+        table_rows.append([
+            symbol.replace("USDT", ""), model, str(len(values)),
+            f"{mean[0]:+.0f}", f"{mean[1]:+.0f}", f"{mean[2]:+.0f}",
+            f"{mean[3]:.1f}", f"{mean[4]:+.0f}", f"{mean[5]:.0f}",
+        ])
+    add_body(
+        doc,
+        "Symulację handlową każdej pary instrument - architektura (rozdział 10.7) zestawia "
+        "tabela poniżej, w tej samej postaci: stopa zwrotu i jej różnica wobec czterech "
+        "punktów odniesienia.",
+    )
+    add_table(
+        doc,
+        ["Symbol", "Model", "Przeb.", "ROI %", "vs hold", "vs stała", "Percentyl",
+         "vs momentum", "Obsun. %"],
+        table_rows,
+        [1.7, 1.9, 1.4, 1.8, 1.9, 1.9, 2.0, 2.2, 1.8],
+        font=8,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Symulacja na horyzoncie tygodniowym, uśredniona po ziarnach. Kolumny „vs” podają "
+        "różnicę stopy zwrotu w punktach procentowych wobec danego punktu odniesienia; "
+        "wartości ujemne oznaczają przegraną.",
     )
 
 def _data_quality_results(doc: Document) -> None:
