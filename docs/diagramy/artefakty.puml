@@ -1,0 +1,75 @@
+@startuml
+!include _styl.iuml
+hide circle
+hide methods
+
+class "Świece" as swiece {
+  processed/.../klines/<interwał>/
+  symbol=<symbol>/year=/month=/
+  part.parquet
+}
+class "Cechy" as cechy {
+  processed/.../features/
+  <interwał>/symbol=<symbol>/
+  features.parquet
+}
+class "Etykiety (podgląd)" as etykiety {
+  processed/.../labels/
+  <interwał>/symbol=<symbol>/
+  labels.parquet
+}
+class "Przebieg" as przebieg {
+  predictions/<symbol>/
+  <model>_<interwał>_<znacznik>/
+  --
+  predictions.jsonl
+  run_summary.json
+  feature_importances.json
+}
+class "Ocena" as ocena {
+  evaluations/
+  <symbol>/<przebieg>/
+  --
+  metrics.json
+  calibration.json
+  predictions_quality.parquet
+  worst_predictions.csv
+  recommendations.json
+}
+class "Stabilność" as stabilnosc {
+  eval/
+  <symbol>/<przebieg>/
+  --
+  stability_summary.json
+}
+class "Symulacja" as symulacja {
+  backtests/
+  <symbol>/<przebieg>/
+  --
+  backtest.json
+}
+class "Rekomendacje" as rekomendacje {
+  recommendations/
+  <symbol>/<przebieg>/
+  --
+  <rok>-<miesiąc>.json
+}
+
+swiece <.. cechy : wyznaczone z
+swiece <.. etykiety : wyznaczone z
+cechy <.. przebieg : trening na
+swiece <.. przebieg : etykiety\n(forward.py)
+przebieg *-- "0..1" ocena
+przebieg *-- "0..1" stabilnosc
+przebieg *-- "0..1" symulacja
+przebieg *-- "0..*" rekomendacje
+ocena ..> swiece : zrealizowane\nzwroty
+
+note left of przebieg
+  Usunięcie przebiegu
+  usuwa wszystkie artefakty,
+  które z niego powstały.
+  feature_importances.json
+  zapisuje tylko XGBoost.
+end note
+@enduml

@@ -1,0 +1,51 @@
+' Shared look of every thesis diagram: the thesis font, black on white with the
+' document's accent colour, and the built-in layout engine, so rendering needs
+' nothing beyond Java and the PlantUML jar.
+!pragma layout smetana
+skinparam dpi 200
+skinparam shadowing false
+skinparam monochrome false
+skinparam defaultFontName Calibri
+skinparam defaultFontSize 12
+skinparam backgroundColor white
+skinparam ArrowColor #1F3B63
+skinparam ArrowFontSize 11
+skinparam ArrowFontColor #333333
+skinparam roundCorner 6
+skinparam BorderColor #1F3B63
+skinparam ActorBorderColor #1F3B63
+skinparam ActorBackgroundColor #EEF2F7
+skinparam UsecaseBorderColor #1F3B63
+skinparam UsecaseBackgroundColor #EEF2F7
+skinparam ComponentBorderColor #1F3B63
+skinparam ComponentBackgroundColor #EEF2F7
+skinparam NodeBorderColor #1F3B63
+skinparam NodeBackgroundColor #FAFBFC
+skinparam DatabaseBorderColor #1F3B63
+skinparam DatabaseBackgroundColor #EEF2F7
+skinparam CloudBorderColor #1F3B63
+skinparam CloudBackgroundColor #FAFBFC
+skinparam PackageBorderColor #55606B
+skinparam PackageBackgroundColor #FAFBFC
+skinparam RectangleBorderColor #1F3B63
+skinparam RectangleBackgroundColor #FAFBFC
+skinparam ClassBorderColor #1F3B63
+skinparam ClassBackgroundColor #EEF2F7
+skinparam ClassHeaderBackgroundColor #DCE4EE
+skinparam ClassAttributeIconSize 0
+skinparam NoteBorderColor #8A939C
+skinparam NoteBackgroundColor #FFFBEA
+skinparam ActivityBorderColor #1F3B63
+skinparam ActivityBackgroundColor #EEF2F7
+skinparam ActivityDiamondBorderColor #1F3B63
+skinparam ActivityDiamondBackgroundColor #FAFBFC
+skinparam PartitionBorderColor #55606B
+skinparam StateBorderColor #1F3B63
+skinparam StateBackgroundColor #EEF2F7
+skinparam SequenceLifeLineBorderColor #8A939C
+skinparam ParticipantBorderColor #1F3B63
+skinparam ParticipantBackgroundColor #EEF2F7
+skinparam SequenceGroupBorderColor #55606B
+skinparam SequenceBoxBorderColor #55606B
+skinparam SequenceBoxBackgroundColor #FAFBFC
+hide stereotype

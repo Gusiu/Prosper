@@ -25,7 +25,7 @@ from collections import defaultdict
 import numpy as np
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
@@ -92,6 +92,15 @@ try:
 except Exception as _figure_error:  # matplotlib absent, or no artifacts yet
     print(f"[figury] pominięte: {_figure_error}")
     _FIGURES = {}
+
+try:
+    from documentation_diagrams import render_all as _render_diagrams
+    from documentation_diagrams import size_cm as _diagram_size
+
+    _DIAGRAMS = _render_diagrams()
+except Exception as _diagram_error:  # Java or PlantUML absent and nothing rendered before
+    print(f"[diagrams] skipped: {_diagram_error}")
+    _DIAGRAMS = {}
 
 
 # ── results read from the artifacts ──────────────────────────────────────────
@@ -160,6 +169,7 @@ def plain_dashes(text: str) -> str:
 
 def add_heading(doc: Document, text: str, level: int) -> None:
     heading = doc.add_heading(plain_dashes(text), level=level)
+    _start_page_if_pending(doc, heading)
     for run in heading.runs:
         run.font.color.rgb = ACCENT
 
@@ -287,6 +297,7 @@ def add_caption(doc: Document, kind: str, text: str) -> None:
     styled(f". {title}")
     if rest:
         paragraph.paragraph_format.space_after = Pt(2)
+        paragraph.paragraph_format.keep_with_next = True
         follow = doc.add_paragraph()
         follow.paragraph_format.space_after = Pt(12)
         run = follow.add_run(plain_dashes(rest))
@@ -310,8 +321,36 @@ def add_figure(doc: Document, key: str, caption: str) -> None:
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     paragraph.paragraph_format.space_before = Pt(6)
     paragraph.paragraph_format.space_after = Pt(2)
+    paragraph.paragraph_format.keep_with_next = True
     paragraph.add_run().add_picture(path, width=Cm(15.5))
     add_caption(doc, "Rysunek", caption)
+
+# The text block of the page, and the height that still leaves room for a caption.
+DIAGRAM_MAX_WIDTH_CM = 16.0
+DIAGRAM_MAX_HEIGHT_CM = 19.0
+
+
+def add_diagram(doc: Document, key: str, caption: str) -> None:
+    """Place a UML diagram at its natural size, shrunk only as far as the page needs.
+
+    Natural size keeps the diagram's text at the size it was drawn with; scaling
+    every diagram to the full width would blow small ones up and leave large ones
+    no smaller than they must be.
+    """
+    path = _DIAGRAMS.get(key)
+    if not path or not os.path.exists(path):
+        print(f"WARNING: diagram {key} was not rendered; the thesis omits it")
+        return
+    width, height = _diagram_size(path)
+    scale = min(1.0, DIAGRAM_MAX_WIDTH_CM / width, DIAGRAM_MAX_HEIGHT_CM / height)
+    paragraph = doc.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_before = Pt(6)
+    paragraph.paragraph_format.space_after = Pt(2)
+    paragraph.paragraph_format.keep_with_next = True
+    paragraph.add_run().add_picture(str(path), width=Cm(width * scale))
+    add_caption(doc, "Rysunek", caption)
+
 
 def add_toc(doc: Document, switches: str = '\\o "1-3" \\h \\z \\u') -> None:
     """A field Word fills in on open; python-docx cannot compute page numbers."""
@@ -335,6 +374,7 @@ def add_toc(doc: Document, switches: str = '\\o "1-3" \\h \\z \\u') -> None:
 def add_front_heading(doc: Document, text: str) -> None:
     """A heading for front and back matter that stays out of the table of contents."""
     paragraph = doc.add_paragraph()
+    _start_page_if_pending(doc, paragraph)
     paragraph.paragraph_format.space_after = Pt(12)
     run = paragraph.add_run(text)
     run.bold = True
@@ -342,8 +382,33 @@ def add_front_heading(doc: Document, text: str) -> None:
     run.font.color.rgb = ACCENT
 
 
+# Where the next heading must start a new page: the index its paragraph will
+# take in the document body, or None when no break is pending.
+_page_break_at: int | None = None
+
+
 def page_break(doc: Document) -> None:
-    doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+    """Start what follows on a new page.
+
+    The break is carried by the next heading (page_break_before) rather than by
+    an empty paragraph holding one: a chapter that ends at the foot of a page
+    would push that paragraph onto a page of its own and leave the page blank.
+    """
+    global _page_break_at
+    # The body ends with the section properties, and new paragraphs go before them.
+    _page_break_at = len(doc.element.body) - 1
+
+
+def _start_page_if_pending(doc: Document, paragraph) -> None:
+    global _page_break_at
+    if _page_break_at is None:
+        return
+    position = list(doc.element.body).index(paragraph._p)
+    if position != _page_break_at:
+        print(f"WARNING: a page break meant for body element {_page_break_at} "
+              f"landed on element {position}")
+    paragraph.paragraph_format.page_break_before = True
+    _page_break_at = None
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1200,6 +1265,18 @@ def _chapter_2_requirements(doc: Document) -> None:
         "Weryfikacja - moduł testowy, który sprawdza spełnienie. Pełny inwentarz testów wraz z "
         "opisem każdego przypadku zawiera załącznik A.",
     )
+    add_body(
+        doc,
+        "Rysunek poniżej zestawia te same wymagania jako przypadki użycia: pokazuje, które "
+        "czynności inicjuje badacz, które sięgają do zewnętrznych źródeł danych i które są "
+        "częścią innych.",
+    )
+    add_diagram(
+        doc, "przypadki_uzycia",
+        "Diagram przypadków użycia. W nawiasach numery wymagań funkcjonalnych z tabeli "
+        "powyżej. Relacja «include» oznacza czynność wykonywaną zawsze w ramach innej, a "
+        "«extend» - wykonywaną opcjonalnie.",
+    )
 
     add_heading(doc, "2.3. Wymagania niefunkcjonalne", 2)
     add_body(
@@ -1694,6 +1771,17 @@ def _chapter_3_theory(doc: Document) -> None:
 
 def _chapter_4_architecture(doc: Document) -> None:
     add_heading(doc, "4. Architektura systemu", 1)
+    add_body(
+        doc,
+        "System działa na jednym komputerze i korzysta z dwóch publicznych usług giełdy "
+        "Binance. Badacz obsługuje go z przeglądarki albo bezpośrednio z wiersza poleceń; obie "
+        "drogi prowadzą do tych samych poleceń i tego samego jeziora danych.",
+    )
+    add_diagram(
+        doc, "kontekst",
+        "Kontekst systemu. Panel nie wykonuje obliczeń: serwer przekłada formularze na "
+        "polecenia wiersza poleceń i uruchamia je kolejno jako podprocesy.",
+    )
 
     add_heading(doc, "4.1. Potok przetwarzania", 2)
     add_body(
@@ -1725,6 +1813,11 @@ def _chapter_4_architecture(doc: Document) -> None:
         [2.3, 3.4, 5.0, 5.6],
     )
     add_caption(doc, "Tabela", "Etapy potoku, ich wejścia i artefakty.")
+    add_diagram(
+        doc, "potok",
+        "Diagram aktywności potoku przetwarzania. Cztery etapy weryfikacji czytają ten sam "
+        "przebieg niezależnie od siebie; ranking zestawia przebiegi, które przeszły ocenę.",
+    )
 
     add_heading(doc, "4.2. Warstwy", 2)
     add_bullets(
@@ -1755,6 +1848,12 @@ def _chapter_4_architecture(doc: Document) -> None:
             "jeden moduł walidacji (api/validation.py); aplikacja nie zezwala na zapytania z "
             "innych domen i odrzuca nagłówek Host wskazujący inną maszynę.",
         ],
+    )
+    add_diagram(
+        doc, "komponenty",
+        "Diagram komponentów. Strzałka oznacza zależność wywołania. Serwer HTTP woła "
+        "bezpośrednio tylko lekkie operacje - stabilność, symulację i inwentarz - a wszystko, "
+        "co trwa dłużej, uruchamia przez wiersz poleceń.",
     )
 
     add_heading(doc, "4.3. Decyzje technologiczne", 2)
@@ -1791,6 +1890,11 @@ def _chapter_4_architecture(doc: Document) -> None:
         [3.6, 7.4, 5.0],
     )
     add_caption(doc, "Tabela", "Decyzje architektoniczne wraz z ich kosztem.")
+    add_diagram(
+        doc, "wdrozenie",
+        "Diagram wdrożenia. Serwer i wątek roboczy kolejki działają w jednym procesie, a każde "
+        "polecenie z kolejki - w osobnym podprocesie, jedno po drugim.",
+    )
 
     add_heading(doc, "4.4. Wersjonowanie artefaktów", 2)
     add_body(
@@ -1819,6 +1923,12 @@ def _chapter_4_architecture(doc: Document) -> None:
         "Usunięcie przebiegu usuwa wszystkie jego artefakty pochodne. W przeciwnym razie "
         "narzędzie przeglądające drzewo ocen raportowałoby wyniki przebiegu, którego predykcje "
         "już nie istnieją, obok wyników bieżących.",
+    )
+    add_diagram(
+        doc, "artefakty",
+        "Model artefaktów. Romb oznacza kompozycję: artefakt pochodny istnieje tylko razem z "
+        "przebiegiem, z którego powstał. Linie przerywane wskazują, z czego dany artefakt "
+        "wyznaczono.",
     )
     page_break(doc)
 
@@ -2060,7 +2170,7 @@ def _chapter_8_models(doc: Document) -> None:
     add_body(
         doc,
         "Porównywanych jest pięć rodzin o rosnącej pojemności i rosnącym koszcie obliczeniowym. "
-        "Wszystkie realizują ten sam protokół kroczący (7.6) i wystawiają identyczny interfejs, "
+        "Wszystkie realizują ten sam protokół kroczący (8.6) i wystawiają identyczny interfejs, "
         "dzięki czemu różnice w wynikach można przypisać architekturze, a nie sposobowi jej "
         "uruchomienia.",
     )
@@ -2077,6 +2187,12 @@ def _chapter_8_models(doc: Document) -> None:
         [2.4, 6.0, 4.0, 3.6],
     )
     add_caption(doc, "Tabela", "Porównywane rodziny modeli. Czasy zmierzone na 16 rdzeniach CPU.")
+    add_diagram(
+        doc, "prognosty",
+        "Diagram klas prognostów. Pętla krocząca zna wyłącznie protokół Forecaster; części "
+        "wspólne modeli tablicowych i sekwencyjnych leżą w klasach abstrakcyjnych, a "
+        "konkretne architektury dostarczają tylko dopasowania i prognozy.",
+    )
 
     add_heading(doc, "8.1. Model odniesienia", 2)
     add_body(
@@ -2178,6 +2294,12 @@ def _chapter_8_models(doc: Document) -> None:
         "najwcześniejsze okna sięgają tak daleko, więc ujednolicenie zmieniłoby opublikowane "
         "wyniki jednej z sieci i wymagałoby ponownego przeliczenia.",
     )
+    add_diagram(
+        doc, "petla_kroczaca",
+        "Diagram aktywności protokołu kroczącego. Horyzont, którego nie dało się wytrenować, "
+        "nie znika z wyniku, lecz zostaje jawnie oznaczony, więc liczba wierszy przebiegu nie "
+        "zależy od modelu.",
+    )
 
     add_heading(doc, "8.7. Okno treningowe wyprowadzane z horyzontu", 2)
     add_body(
@@ -2236,6 +2358,12 @@ def _chapter_9_methodology(doc: Document) -> None:
         "błędem kalibracji. Żadna z tych miar nie ma parametru, który dałoby się dobrać tak, aby "
         "wynik wyglądał lepiej. Jest to własność celowa i odróżnia je od symulacji handlowej, "
         "której wynik zależy od kilkunastu decyzji wykonawczych.",
+    )
+    add_diagram(
+        doc, "ocena",
+        "Diagram aktywności oceny przebiegu. Świeca, której wynik nie jest jeszcze znany albo "
+        "której zwrot wynosi dokładnie zero, nie dostaje oceny; ma osobny status, aby nie "
+        "zniekształcać średnich.",
     )
 
     add_heading(doc, "9.2. Przedziały ufności przy nakładających się etykietach", 2)
@@ -2325,6 +2453,26 @@ def _chapter_9_methodology(doc: Document) -> None:
         "wyłącznie jej ułożenie w czasie. Jeżeli rzeczywiste ułożenie nie wypada lepiej niż "
         "dowolne przesunięte, prognoza nie wnosi wyczucia momentu, a osiągnięty wynik pochodzi z "
         "poziomu zaangażowania.",
+    )
+    add_body(
+        doc,
+        "Symulacja nie ocenia prognozy własną regułą. Każdą świecę klasyfikuje ten sam "
+        "oceniacz, który wyznacza rekomendacje (pierwszy rysunek poniżej), dzięki czemu werdykt "
+        "w raporcie rekomendacji i w symulacji nie może się rozejść. Symulacja przekłada "
+        "werdykt na docelową ekspozycję i dopiero na końcu zestawia wynik z czterema punktami "
+        "odniesienia (drugi rysunek).",
+    )
+    add_diagram(
+        doc, "rekomendacje",
+        "Diagram aktywności wyznaczania rekomendacji. Progi przewagi są stałe, ponieważ "
+        "przewaga jest różnicą dwóch prawdopodobieństw; progi ryzyka są kwantylami ryzyka "
+        "zaobserwowanego wcześniej, więc żadna świeca nie wpływa na własny werdykt.",
+    )
+    add_diagram(
+        doc, "symulacja",
+        "Diagram aktywności symulacji handlowej. Transakcja następuje po cenie otwarcia dnia "
+        "następującego po sygnale, więc symulacja nie korzysta z ceny, której w chwili "
+        "decyzji nie znano.",
     )
 
     add_heading(doc, "9.6. Odtwarzalność i ziarnowanie", 2)
@@ -3396,6 +3544,25 @@ def _chapter_12_interfaces(doc: Document) -> None:
         "strony. Wcześniejsza wersja zawierała je wpisane wprost w znaczniku, przez co ten sam "
         "model uruchamiany z panelu wykonywał inną liczbę epok niż uruchamiany z wiersza "
         "poleceń - wartość domyślna obowiązuje bowiem wyłącznie przy nieobecności flagi.",
+    )
+    add_body(
+        doc,
+        "Długie zadania nie są wykonywane w procesie serwera. Panel zgłasza je do kolejki, "
+        "którą obsługuje jeden wątek roboczy uruchamiający polecenia wiersza poleceń jako "
+        "podprocesy, a postęp i dziennik odczytuje cyklicznie (pierwszy rysunek poniżej). "
+        "Kolejka żyje po stronie serwera, więc przeładowanie przeglądarki nie gubi zadań "
+        "oczekujących; stany zadania pokazuje drugi rysunek.",
+    )
+    add_diagram(
+        doc, "zadanie_sekwencja",
+        "Diagram sekwencji zadania zgłoszonego z panelu. Odpowiedź na zgłoszenie wraca od "
+        "razu, a wynik panel poznaje z odpytywania stanu kolejki.",
+    )
+    add_diagram(
+        doc, "zadanie_stany",
+        "Diagram stanów zadania w kolejce. Zadanie oczekujące można przesunąć albo usunąć; "
+        "wykonywane kończy się sukcesem dopiero wtedy, gdy wszystkie jego polecenia zwrócą "
+        "kod 0.",
     )
 
     add_heading(doc, "12.4. Konfiguracja", 2)

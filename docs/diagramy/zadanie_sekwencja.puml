@@ -1,0 +1,36 @@
+@startuml
+!include _styl.iuml
+autonumber
+hide footbox
+
+actor "Badacz" as badacz
+participant "Panel\n(przeglądarka)" as panel
+participant "API\n(FastAPI)" as api
+participant "TaskRunner\n(wątek roboczy)" as runner
+participant "Podproces\nCLI" as cli
+database "./data" as data
+
+badacz -> panel : Train & Predict
+panel -> api : POST, parametry\nformularza
+api -> api : walidacja wartości,\nzłożenie poleceń CLI
+api -> runner : submit(nazwa,\npolecenia)
+api --> panel : stan kolejki
+loop dopóki kolejka niepusta
+  runner -> runner : pobranie zadania
+  loop dla każdego polecenia zadania
+    runner -> cli : uruchomienie
+    cli -> data : odczyt cech\ni świec
+    cli -> data : zapis nowego\nprzebiegu
+    cli --> runner : wyjście wiersz\npo wierszu
+    runner -> runner : dziennik\ni postęp
+    alt kod wyjścia różny od zera
+      runner -> runner : zadanie\nprzerwane
+    end
+  end
+end
+loop co kilka sekund
+  panel -> api : GET stan kolejki\ni dziennik
+  api --> panel : postęp, nowe\nwiersze dziennika
+end
+panel -> badacz : nowy przebieg\nw inwentarzu
+@enduml

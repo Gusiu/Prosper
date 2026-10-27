@@ -1,0 +1,72 @@
+@startuml
+!include _styl.iuml
+hide empty members
+
+interface "Forecaster" as Forecaster <<Protocol>> {
+  name: str
+  fit_month(plan, month, bars)
+  predict(bar, horizon): dict | None
+  summary(): dict
+  after_write(run_dir)
+}
+
+class "walk_forward.py" as wf << (M,#B5C7DB) >> {
+  plan_run(...): RunPlan
+  walk_forward(model, plan)
+  finish_run(model, plan, ...)
+}
+
+class RunPlan {
+  symbol, interval, start, end
+  horizons, selected
+  windows: okna horyzontów
+  months: miesiąc → świece
+}
+
+
+class BaselineForecaster {
+  częstości kierunków
+  z wygładzeniem Laplace'a
+}
+
+abstract class TabularForecaster {
+  pool: TrainingPool
+  {abstract} fit_horizon(...)
+  {abstract} predict_horizon(...)
+}
+class MLForecaster {
+  HistGradientBoostingClassifier
+}
+class XGBoostForecaster {
+  XGBClassifier
+}
+class TrainingPool {
+  wiersze kilku symboli
+  dobrane po chwili, nie indeksie
+}
+
+abstract class SequenceForecaster {
+  calibrators: TemperatureCalibrator
+  failures: WindowFailures
+  {abstract} normalise(window)
+  {abstract} fit_horizon(...)
+  {abstract} probabilities(bar, horizon)
+}
+class GRUForecaster {
+  GRUClassifier (PyTorch)
+}
+class TFTForecaster {
+  Temporal Fusion Transformer
+}
+
+wf ..> Forecaster : wywołuje
+wf ..> RunPlan : tworzy
+Forecaster <|.. BaselineForecaster
+Forecaster <|.. TabularForecaster
+Forecaster <|.. SequenceForecaster
+TabularForecaster <|-- MLForecaster
+TabularForecaster <|-- XGBoostForecaster
+TabularForecaster o-left- TrainingPool
+SequenceForecaster <|-- GRUForecaster
+SequenceForecaster <|-- TFTForecaster
+@enduml

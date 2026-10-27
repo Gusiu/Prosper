@@ -1,0 +1,36 @@
+@startuml
+!include _styl.iuml
+
+start
+:Przewaga e = P(wzrost) - P(spadek);
+:Ryzyko r z rozkładów głębokości
+po obu stronach;
+:Bramki ryzyka g1 < g2 < g3: kwantyle
+ryzyka zaobserwowanego wcześniej;
+if (|e| <= 0,05?) then (tak)
+  :Hold;
+  stop
+else (nie)
+endif
+if (Oczekiwany ruch pokrywa koszt
+transakcji w obie strony?) then (nie)
+  :Hold;
+  stop
+else (tak)
+endif
+if (|e| > 0,30 i r < g1?) then (tak)
+  :Strong Buy / Strong Sell;
+  note right: znak e wybiera stronę:\ne > 0 - kupno, e < 0 - sprzedaż
+  stop
+elseif (|e| > 0,15 i r < g2?) then (tak)
+  :Buy / Sell;
+  stop
+elseif (|e| > 0,05 i r < g3?) then (tak)
+  :Accumulate / Reduce;
+  stop
+else (nie)
+  :Hold - przekonanie,
+  którego ryzyko nie wspiera;
+  stop
+endif
+@enduml

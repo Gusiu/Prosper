@@ -1,0 +1,29 @@
+@startuml
+!include _styl.iuml
+
+node "Komputer badacza (Python 3.12)" {
+  node "Przeglądarka" {
+    artifact "Panel\nfrontend/ (moduły ES)" as spa
+  }
+  node "Proces uvicorn" {
+    component "Aplikacja FastAPI\nprosper.api.server:app" as app
+    component "TaskRunner\njeden wątek roboczy" as runner
+  }
+  node "Podproces\npython -m prosper.cli ..." as sub
+  folder "./data" as data {
+    folder "raw/" as raw
+    folder "processed/" as processed
+    folder "reports/" as reports
+    folder "meta/" as meta
+  }
+}
+
+cloud "Binance" as binance
+
+spa --> app : HTTP, localhost:8000
+app --> runner : zgłoszenie zadania
+runner --> sub : uruchamia kolejno,\nczyta wyjście
+sub --> data : odczyt i zapis
+app --> data : odczyt
+sub --> binance : HTTPS
+@enduml

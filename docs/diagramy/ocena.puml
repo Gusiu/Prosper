@@ -1,0 +1,35 @@
+@startuml
+!include _styl.iuml
+
+start
+:Wczytanie predictions.jsonl przebiegu
+oraz świec symbolu;
+repeat
+  :Rekomendacja świecy: przewaga, ryzyko,
+  oczekiwany ruch (SequenceGrader horyzontu);
+  if (Świeca docelowa t + F istnieje?) then (tak)
+    if (Zwrot różny od zera?) then (tak)
+      :status <b>scored</b>: trafność kierunku,
+      Brier, logloss, entropia, błąd głębokości;
+    else (nie)
+      :status <b>unclassifiable_outcome</b>:
+      zwrot bez kierunku nie jest oceniany;
+    endif
+  else (nie)
+    :status <b>missing_target</b>:
+    wynik jeszcze nieznany;
+  endif
+repeat while (Kolejna świeca lub horyzont?) is (tak) not (nie)
+:Dla każdego horyzontu: średnie miar,
+kalibracja (ECE), częstość klasy liczniejszej;
+:Przedziały ufności: bootstrap
+blokowy, blok = F świec;
+note right
+  poniżej 10 bloków przedział
+  jest odmawiany, nie zawężany
+end note
+:Zapis: metrics.json, calibration.json,
+predictions_quality.parquet,
+worst_predictions.csv, recommendations.json;
+stop
+@enduml

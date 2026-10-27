@@ -1,0 +1,63 @@
+@startuml
+!include _styl.iuml
+left to right direction
+
+actor "Badacz" as badacz
+actor "Binance Public Data" as bpd <<system>>
+actor "Binance REST API" as rest <<system>>
+
+  package "Dane" {
+    usecase "Pobierz notowania 1m\n(WF-01, WF-02)" as UC_pobierz
+    usecase "Agreguj świece\n(WF-03)" as UC_agreguj
+    usecase "Sprawdź jakość danych\n(WF-04)" as UC_qa
+    usecase "Przeglądaj inwentarz,\nusuń symbol (WF-22)" as UC_inwentarz
+    usecase "Pobierz listę symboli" as UC_symbole
+  }
+  package "Przygotowanie" {
+    usecase "Wyznacz cechy\n(WF-05)" as UC_cechy
+    usecase "Wyznacz etykiety\n(WF-06)" as UC_etykiety
+  }
+  package "Modele" {
+    usecase "Wytrenuj model i zapisz\nprognozy (WF-07 - WF-09)" as UC_trening
+    usecase "Dołącz symbole\ndo puli (WF-10)" as UC_pula
+    usecase "Skalibruj\nprawdopodobieństwa (WF-11)" as UC_kalibracja
+  }
+  package "Ocena" {
+    usecase "Oceń przebieg\n(WF-12)" as UC_ocena
+    usecase "Zbadaj stabilność\nw czasie (WF-13)" as UC_stabilnosc
+    usecase "Porównaj przebiegi\nw rankingu (WF-14)" as UC_ranking
+  }
+  package "Decyzje" {
+    usecase "Wyznacz rekomendacje\n(WF-15)" as UC_rekomendacje
+    usecase "Przeprowadź symulację\nhandlową (WF-16)" as UC_symulacja
+    usecase "Porównaj z hipotezami\nzerowymi (WF-17)" as UC_zerowe
+  }
+  package "Zarządzanie" {
+    usecase "Zarządzaj kolejką\nzadań (WF-21)" as UC_kolejka
+    usecase "Usuń przebieg z artefaktami\n(WF-18)" as UC_usun
+  }
+
+UC_pobierz -- badacz
+UC_agreguj -- badacz
+UC_qa -- badacz
+UC_inwentarz -- badacz
+UC_symbole -- badacz
+UC_cechy -- badacz
+UC_etykiety -- badacz
+UC_trening -- badacz
+badacz -- UC_ocena
+badacz -- UC_stabilnosc
+badacz -- UC_ranking
+badacz -- UC_rekomendacje
+badacz -- UC_symulacja
+badacz -- UC_kolejka
+badacz -- UC_usun
+
+bpd -- UC_pobierz
+rest -- UC_symbole
+
+UC_pula .> "«extend»" UC_trening
+UC_trening .> "«include»" UC_kalibracja
+UC_symulacja .> "«include»" UC_zerowe
+UC_symulacja .> "«include»" UC_rekomendacje
+@enduml
