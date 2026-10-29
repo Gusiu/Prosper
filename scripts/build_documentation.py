@@ -78,7 +78,6 @@ REPORT_ROOT = "data/reports"
 # Which runs are the study is decided in one place: documentation_sources.
 SYMBOLS = STUDY_SYMBOLS
 MODELS = STUDY_MODELS
-ACCENT = RGBColor(0x1F, 0x3B, 0x63)
 MUTED = RGBColor(0x55, 0x5F, 0x6B)
 BLACK = RGBColor(0, 0, 0)
 # PJATK's publishing requirements for theses ("Wymogi wydawnicze prac
@@ -93,23 +92,23 @@ HEADING_SIZES = {1: 14, 2: 12, 3: 12}
 _counters: dict[str, int] = defaultdict(int)
 
 # The formal details of the thesis. The title is a working one until the
-# supervisor approves it; the title page layout follows the PJATK template
-# once it is supplied.
+# supervisor approves it.
 THESIS_TITLE = (
     "Platforma badawcza do porównania architektur uczenia maszynowego w prognozowaniu "
     "kierunku zmian cen kryptowalut na podstawie historii notowań"
-)
-THESIS_TITLE_EN = (
-    "A research platform for comparing machine learning architectures in forecasting the "
-    "direction of cryptocurrency price changes from historical quotes"
 )
 AUTHOR = "Adrian Budzich"
 ALBUM_NUMBER = "30076"
 SUPERVISOR = "dr inż. Michał Majewski"
 UNIVERSITY = "Polsko-Japońska Akademia Technik Komputerowych"
-FIELD = "Informatyka"
+FACULTY = "Wydział Informatyki"
+# The PJATK template names the department after the faculty; the line is left
+# out until it is known.
+DEPARTMENT = ""
 SPECIALISATION = "Robotyka i Inteligentne Systemy Autonomiczne"
-YEAR = "2028"
+# The template's last line: place, month and year of the defence. The year
+# alone until the date is set.
+DEFENCE = "2028"
 # A working draft says so on its title page, dated by the build, so that the
 # versions sent for review can be told apart. False for the final version.
 DRAFT = True
@@ -910,6 +909,7 @@ def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
     add_front_heading(doc, "Spis treści")
     add_toc(doc)
     page_break(doc)
+    _abbreviations(doc)
 
     _chapter_1_introduction(doc)
     _chapter_2_requirements(doc)
@@ -928,8 +928,8 @@ def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
     _chapter_12b_screenshots(doc)
     _chapter_13_limits(doc)
     _chapter_14_summary(doc, runs)
-    _bibliography(doc)
     _lists_of_tables_and_figures(doc)
+    _bibliography(doc)
     _appendix_tests(doc)
     _appendix_cli(doc)
     _appendix_api(doc)
@@ -1009,33 +1009,36 @@ def _document_properties(doc: Document) -> None:
 
 
 def _title_page(doc: Document) -> None:
-    """Until the PJATK template arrives: the usual fields, in the usual order."""
+    """The PJATK title page template, field by field and in its order: faculty,
+    department, specialisation, author, album number, title, kind of thesis,
+    supervisor, and place, month and year of the defence. The university's
+    name stands where the template has its logo."""
 
     def line(text: str, size: float, *, bold: bool = False, italic: bool = False,
-             before: float = 0, after: float = 4, colour=None) -> None:
+             before: float = 0, after: float = 4) -> None:
         paragraph = doc.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         paragraph.paragraph_format.space_before = Pt(before)
         paragraph.paragraph_format.space_after = Pt(after)
+        paragraph.paragraph_format.line_spacing = 1.0
         run = paragraph.add_run(text)
         run.font.size = Pt(size)
         run.bold = bold
         run.italic = italic
-        if colour is not None:
-            run.font.color.rgb = colour
 
-    line(UNIVERSITY, 14, bold=True, before=30)
-    line(f"Kierunek: {FIELD}", 11)
-    line(f"Specjalizacja: {SPECIALISATION}", 11, after=70)
+    line(UNIVERSITY, 15, bold=True, before=20, after=30)
+    line(FACULTY, 13, bold=True)
+    if DEPARTMENT:
+        line(DEPARTMENT, 12)
+    line(f"Specjalizacja: {SPECIALISATION}", 12, after=80)
     line(AUTHOR, 14, bold=True)
-    line(f"Nr albumu {ALBUM_NUMBER}", 11, after=50)
-    line(THESIS_TITLE, 18, bold=True, colour=ACCENT, after=10)
-    line(THESIS_TITLE_EN, 11, italic=True, colour=MUTED, after=50)
+    line(f"Nr albumu {ALBUM_NUMBER}", 12, after=70)
+    line(THESIS_TITLE, 16, bold=True, after=70)
     line("Praca inżynierska", 13, after=4)
     if DRAFT:
-        line(f"Wersja robocza z {date.today():%d.%m.%Y}", 10, italic=True, colour=MUTED)
-    line(f"Promotor: {SUPERVISOR}", 12, after=110)
-    line(YEAR, 11)
+        line(f"Wersja robocza z {date.today():%d.%m.%Y}", 11, italic=True)
+    line(f"Promotor: {SUPERVISOR}", 12, before=12, after=120)
+    line(DEFENCE, 12)
 
 
 # PJATK: three to five keywords, in alphabetical order, lowercase unless a proper
@@ -1394,17 +1397,77 @@ def _abstract(doc: Document, runs: dict) -> None:
 
 
 def _lists_of_tables_and_figures(doc: Document) -> None:
-    add_front_heading(doc, "Spis rysunków")
-    add_toc(doc, '\\h \\z \\c "Rysunek"')
-    add_front_heading(doc, "Spis tabel")
+    """The two lists PJATK places after the summary, tables first."""
+    add_heading(doc, "Wykaz tabel", 1)
     add_toc(doc, '\\h \\z \\c "Tabela"')
+    page_break(doc)
+    add_heading(doc, "Wykaz rysunków", 1)
+    add_toc(doc, '\\h \\z \\c "Rysunek"')
+    page_break(doc)
+
+
+# The abbreviations the text uses, for the list PJATK puts after the contents.
+ABBREVIATIONS = {
+    "API": "interfejs programistyczny aplikacji (ang. Application Programming Interface)",
+    "CLI": "interfejs wiersza poleceń (ang. Command-Line Interface)",
+    "CORS": "mechanizm zezwoleń na zapytania z innych domen (ang. Cross-Origin Resource "
+            "Sharing)",
+    "CPU": "procesor główny (ang. Central Processing Unit)",
+    "CSS": "kaskadowe arkusze stylów (ang. Cascading Style Sheets)",
+    "CSV": "plik tekstowy z wartościami rozdzielonymi przecinkami (ang. Comma-Separated "
+           "Values)",
+    "CUDA": "platforma obliczeń na procesorach graficznych firmy NVIDIA",
+    "DNS": "system nazw domenowych (ang. Domain Name System)",
+    "ECE": "oczekiwany błąd kalibracji (ang. Expected Calibration Error)",
+    "ES": "ECMAScript, standard języka JavaScript; moduły ES to jego natywne moduły",
+    "GRU": "rekurencyjna sieć z bramkami (ang. Gated Recurrent Unit)",
+    "HTTP": "protokół przesyłania dokumentów hipertekstowych (ang. Hypertext Transfer "
+            "Protocol)",
+    "IP": "protokół internetowy (ang. Internet Protocol); adres IP to adres maszyny w sieci",
+    "ISO": "Międzynarodowa Organizacja Normalizacyjna; data ISO to zapis RRRR-MM-DD",
+    "JS": "dywergencja Jensena-Shannona",
+    "JSON": "tekstowy format wymiany danych (ang. JavaScript Object Notation)",
+    "KL": "dywergencja Kullbacka-Leiblera",
+    "MACD": "wskaźnik zbieżności i rozbieżności średnich kroczących (ang. Moving Average "
+            "Convergence Divergence)",
+    "OBV": "wolumen skumulowany (ang. On-Balance Volume)",
+    "OHLC": "cena otwarcia, maksimum, minimum i zamknięcia świecy (ang. Open, High, Low, "
+            "Close)",
+    "OHLCV": "OHLC wraz z wolumenem (ang. Volume)",
+    "REST": "styl budowy interfejsów sieciowych (ang. Representational State Transfer)",
+    "ROI": "stopa zwrotu z inwestycji (ang. Return on Investment)",
+    "SHA-256": "kryptograficzna funkcja skrótu o długości 256 bitów",
+    "SPOT": "rynek kasowy: transakcje z natychmiastową dostawą aktywa",
+    "TFT": "Temporal Fusion Transformer",
+    "UML": "zunifikowany język modelowania (ang. Unified Modeling Language)",
+    "USDT": "Tether, kryptowaluta powiązana z dolarem amerykańskim; waluta kwotowana par "
+            "badanych instrumentów",
+    "UTC": "uniwersalny czas koordynowany (ang. Coordinated Universal Time)",
+    "WF": "wymaganie funkcjonalne (rozdział 2.2)",
+    "WN": "wymaganie niefunkcjonalne (rozdział 2.3)",
+    "ZIP": "format archiwum z kompresją",
+}
+
+
+def _abbreviations(doc: Document) -> None:
+    add_heading(doc, "Wykaz skrótów", 1)
+    for abbreviation, meaning in sorted(ABBREVIATIONS.items()):
+        paragraph = doc.add_paragraph()
+        paragraph.paragraph_format.left_indent = Cm(2.2)
+        paragraph.paragraph_format.first_line_indent = Cm(-2.2)
+        paragraph.paragraph_format.space_after = Pt(2)
+        paragraph.paragraph_format.tab_stops.add_tab_stop(Cm(2.2))
+        term = paragraph.add_run(abbreviation)
+        term.bold = True
+        term.font.size = Pt(BODY_SIZE)
+        paragraph.add_run("\t" + plain_dashes(meaning)).font.size = Pt(BODY_SIZE)
     page_break(doc)
 
 
 # ── 1 ────────────────────────────────────────────────────────────────────────
 
 def _chapter_1_introduction(doc: Document) -> None:
-    add_heading(doc, "1. Wprowadzenie", 1)
+    add_heading(doc, "1. Wstęp", 1)
 
     add_heading(doc, "1.1. Kontekst", 2)
     add_body(
