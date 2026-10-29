@@ -60,6 +60,21 @@ def _save(fig, name: str) -> str:
     return path
 
 
+def _study_paths(pattern: str) -> list[str]:
+    """Files under a run directory, sorted, kept only where the run belongs to the study.
+
+    The pattern's last two directories are the symbol and the run slug. A figure
+    drawn from one run per model would otherwise take whichever run sorts first,
+    study or not.
+    """
+    kept = []
+    for path in sorted(glob.glob(pattern)):
+        symbol, slug = path.replace("\\", "/").split("/")[-3:-1]
+        if is_study_run(symbol, slug):
+            kept.append(path)
+    return kept
+
+
 def _runs() -> dict[tuple[str, str], list[dict]]:
     found: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/metrics.json")):
@@ -125,7 +140,7 @@ def stability_over_time() -> str | None:
     for path in sorted(glob.glob(f"{REPORT_ROOT}/eval/*/*/stability_summary.json")):
         parts = path.replace("\\", "/").split("/")
         symbol, model = parts[-3], parts[-2].split("_")[0]
-        if symbol != "BTCUSDT" or model in series:
+        if symbol != "BTCUSDT" or model in series or not is_study_run(symbol, parts[-2]):
             continue
         try:
             payload = json.load(open(path, encoding="utf-8"))
@@ -303,7 +318,7 @@ def equity_curves() -> str | None:
     fig, axis = plt.subplots(figsize=(9.5, 3.0))
     drawn = 0
     for model in MODELS:
-        matches = sorted(glob.glob(f"{REPORT_ROOT}/backtests/BTCUSDT/{model}_1d_*/backtest.json"))
+        matches = _study_paths(f"{REPORT_ROOT}/backtests/BTCUSDT/{model}_1d_*/backtest.json")
         if not matches:
             continue
         try:
@@ -336,8 +351,8 @@ def equity_curves() -> str | None:
 
 def feature_importance() -> str | None:
     """Which columns the gradient model leaned on."""
-    matches = sorted(glob.glob(
-        f"{REPORT_ROOT}/predictions/BTCUSDT/xgboost_1d_*/feature_importances.json"))
+    matches = _study_paths(
+        f"{REPORT_ROOT}/predictions/BTCUSDT/xgboost_1d_*/feature_importances.json")
     if not matches:
         return None
     try:
