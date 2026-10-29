@@ -820,8 +820,13 @@ def _embed_diagram(doc: Document, path, caption: str) -> None:
     add_caption(doc, "Rysunek", caption)
 
 
-def add_toc(doc: Document, switches: str = '\\o "1-3" \\h \\z \\u') -> None:
-    """A field Word fills in on open; python-docx cannot compute page numbers."""
+def add_toc(doc: Document, switches: str = '\\o "1-2" \\h \\z \\u') -> None:
+    """A field Word fills in on open; python-docx cannot compute page numbers.
+
+    The contents list chapters and sections, as PJATK asks. The third level
+    holds the appendices' test modules and commands and the screenshots of
+    section 12.6, and with it the contents ran to seven pages.
+    """
     paragraph = doc.add_paragraph()
     run = paragraph.add_run()
     begin = OxmlElement("w:fldChar")
