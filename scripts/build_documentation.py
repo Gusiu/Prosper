@@ -4086,11 +4086,16 @@ def _route_text(route) -> str:
 
 def _appendix_settings(doc: Document) -> None:
     add_heading(doc, "Załącznik D. Konfiguracja", 1)
+    from prosper.config import Settings
+
     fields = settings_reference()
+    prefix = Settings.model_config.get("env_prefix", "")
     add_body(
         doc,
         f"Zestawienie {len(fields)} pól konfiguracji odczytane z definicji modelu ustawień. "
-        "Każde pole można nadpisać zmienną środowiskową o tej samej nazwie.",
+        "Każde pole można nadpisać zmienną środowiskową o nazwie pola poprzedzonej "
+        f"przedrostkiem {prefix}, na przykład {prefix}DATA_ROOT; wielkość liter nie ma "
+        "znaczenia.",
     )
     add_table(
         doc,
