@@ -164,9 +164,13 @@ def stability_over_time() -> str | None:
         return None
 
     fig, axis = plt.subplots(figsize=(9.5, 3.0))
-    for model, points in sorted(series.items()):
-        values = [v for _, v in points]
-        axis.plot(range(len(values)), values, linewidth=1.0, label=MODEL_LABEL[model], alpha=0.85)
+    # In the study's model order and colours, so a model looks the same in every figure.
+    for index, model in enumerate(MODELS):
+        if model not in series:
+            continue
+        values = [v for _, v in series[model]]
+        axis.plot(range(len(values)), values, linewidth=1.0, color=f"C{index}",
+                  label=MODEL_LABEL[model], alpha=0.85)
     axis.axhline(0.5, color="#C0392B", linewidth=1.0, linestyle="--", label="poziom losowy")
     axis.set_xlabel("kolejny miesiąc okresu oceny")
     axis.set_ylabel("trafność w miesiącu")
