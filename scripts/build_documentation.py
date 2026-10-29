@@ -4107,13 +4107,17 @@ def _chapter_12_interfaces(doc: Document) -> None:
         "a przeglądarka odpytuje o jej stan. Kolejka żyje po stronie serwera, więc przeładowanie "
         "strony nie gubi zadań oczekujących.",
     )
-    add_table(
+    groups: dict[str, int] = {}
+    for route in routes:
+        segment = route.path.split("/")[2] if route.path.count("/") > 1 else route.path
+        name = ROUTE_GROUP.get(segment, segment)
+        groups[name] = groups.get(name, 0) + 1
+    add_body(
         doc,
-        ["Metoda", "Ścieżka", "Opis"],
-        [[r.methods, r.path, _route_text(r)] for r in routes],
-        [2.0, 6.4, 7.6],
+        "Trasy dzielą się według zasobu, którego dotyczą: "
+        + ", ".join(f"{name} ({count})" for name, count in groups.items())
+        + ". Każdą z nich, z metodą i opisem, wymienia załącznik C.",
     )
-    add_caption(doc, "Tabela", "Trasy interfejsu HTTP.")
 
     add_heading(doc, "12.3. Panel przeglądarkowy", 2)
     add_body(
@@ -4490,6 +4494,14 @@ def _appendix_api(doc: Document) -> None:
     )
     add_caption(doc, "Tabela", "Pełne zestawienie tras interfejsu HTTP.")
     page_break(doc)
+
+
+# The resources the HTTP routes are grouped by, named by the segment after /api.
+ROUTE_GROUP = {"ai": "przebiegi i ich oceny", "runs": "przebiegi i ich oceny",
+               "backtest": "symulacja", "data": "dane", "eval": "ocena",
+               "meta": "wartości domyślne formularzy", "pipeline": "potok przetwarzania",
+               "stability": "stabilność", "status": "stan serwera", "task": "kolejka zadań",
+               "train": "trening"}
 
 
 def _route_text(route) -> str:
