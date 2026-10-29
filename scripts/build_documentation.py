@@ -72,6 +72,15 @@ SYMBOLS = STUDY_SYMBOLS
 MODELS = STUDY_MODELS
 ACCENT = RGBColor(0x1F, 0x3B, 0x63)
 MUTED = RGBColor(0x55, 0x5F, 0x6B)
+BLACK = RGBColor(0, 0, 0)
+# PJATK's publishing requirements for theses ("Wymogi wydawnicze prac
+# dyplomowych"): Times New Roman, text at 12 pt with 1.5 line spacing, 2.5 cm
+# margins, chapter headings at 14 pt and sections at 12 pt, both bold.
+FONT = "Times New Roman"
+BODY_SIZE = 12
+LINE_SPACING = 1.5
+MARGIN_CM = 2.5
+HEADING_SIZES = {1: 14, 2: 12, 3: 12}
 
 _counters: dict[str, int] = defaultdict(int)
 
@@ -182,13 +191,16 @@ def plain_dashes(text: str) -> str:
 def add_heading(doc: Document, text: str, level: int) -> None:
     heading = doc.add_heading(plain_dashes(text), level=level)
     _start_page_if_pending(doc, heading)
-    for run in heading.runs:
-        run.font.color.rgb = ACCENT
 
 
-def add_body(doc: Document, text: str, *, italic: bool = False, size: float = 10) -> None:
+def add_body(doc: Document, text: str, *, italic: bool = False, size: float = BODY_SIZE,
+             compact: bool = False) -> None:
+    """A justified paragraph. Compact ones, for the reference appendices, are set
+    single-spaced: the 1.5 spacing PJATK asks for is the spacing of the text."""
     paragraph = doc.add_paragraph()
     paragraph.paragraph_format.space_after = Pt(6)
+    if compact:
+        paragraph.paragraph_format.line_spacing = 1.0
     paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     run = paragraph.add_run(plain_dashes(text))
     run.italic = italic
@@ -202,15 +214,16 @@ def add_quote(doc: Document, text: str) -> None:
     paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     run = paragraph.add_run(plain_dashes(text))
     run.bold = True
-    run.font.size = Pt(10.5)
+    run.font.size = Pt(BODY_SIZE)
 
 
 def add_bullets(doc: Document, items: list[str]) -> None:
     for item in items:
         paragraph = doc.add_paragraph(plain_dashes(item), style="List Bullet")
         paragraph.paragraph_format.space_after = Pt(3)
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         for run in paragraph.runs:
-            run.font.size = Pt(10)
+            run.font.size = Pt(BODY_SIZE)
 
 
 def add_label(doc: Document, text: str) -> None:
@@ -221,22 +234,24 @@ def add_label(doc: Document, text: str) -> None:
     paragraph.paragraph_format.keep_with_next = True
     run = paragraph.add_run(plain_dashes(text))
     run.bold = True
-    run.font.size = Pt(10)
-    run.font.color.rgb = ACCENT
+    run.font.size = Pt(BODY_SIZE)
 
 
-def add_definition(doc: Document, term: str, text: str, *, size: float = 9.5) -> None:
+def add_definition(doc: Document, term: str, text: str, *, size: float = 11,
+                   compact: bool = False) -> None:
     """A term in monospace and what it means, with a hanging indent - a list
     where a two-column table would only add rules. An empty text leaves the
-    term on its own."""
+    term on its own. Compact definitions are single-spaced, as in add_body."""
     paragraph = doc.add_paragraph()
     paragraph.paragraph_format.left_indent = Cm(0.6)
     paragraph.paragraph_format.first_line_indent = Cm(-0.6)
     paragraph.paragraph_format.space_after = Pt(2)
+    if compact:
+        paragraph.paragraph_format.line_spacing = 1.0
     term_run = paragraph.add_run(plain_dashes(term))
     term_run.bold = True
     term_run.font.name = "Consolas"
-    term_run.font.size = Pt(size - 0.5)
+    term_run.font.size = Pt(size - 1)
     if text:
         text_run = paragraph.add_run(" - " + plain_dashes(text))
         text_run.font.size = Pt(size)
@@ -247,21 +262,31 @@ def add_code(doc: Document, lines: list[str]) -> None:
         paragraph = doc.add_paragraph()
         paragraph.paragraph_format.left_indent = Cm(0.8)
         paragraph.paragraph_format.space_after = Pt(0)
+        paragraph.paragraph_format.line_spacing = 1.0
         run = paragraph.add_run(plain_dashes(line))
         run.font.name = "Consolas"
-        run.font.size = Pt(8.5)
-    doc.add_paragraph()
+        run.font.size = Pt(9)
+    _spacer(doc)
+
+
+def _spacer(doc: Document) -> None:
+    """A small gap after a table or a code block; an empty line at 1.5 spacing
+    would leave a hole as tall as two lines of text."""
+    paragraph = doc.add_paragraph()
+    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.line_spacing = Pt(8)
 
 
 def add_table(
     doc: Document, header: list[str], rows: list[list[str]], widths: list[float],
-    *, font: float = 8.5,
+    *, font: float = 10,
 ) -> None:
     """A table with explicit column widths, set on every cell.
 
     Word ignores a width set only on the column, so it has to go on each cell or
     the layout collapses to equal columns. The header row repeats on every page,
-    which matters here: several of these tables run for pages.
+    which matters here: several of these tables run for pages. Cells are set
+    single-spaced; the text's 1.5 spacing would double the height of every row.
     """
     table = doc.add_table(rows=1, cols=len(header))
     table.style = "Table Grid"
@@ -270,6 +295,7 @@ def add_table(
     for index, label in enumerate(header):
         cell = table.rows[0].cells[index]
         cell.text = ""
+        cell.paragraphs[0].paragraph_format.line_spacing = 1.0
         run = cell.paragraphs[0].add_run(plain_dashes(label))
         run.bold = True
         run.font.size = Pt(font)
@@ -287,12 +313,13 @@ def add_table(
             cells[index].text = ""
             paragraph = cells[index].paragraphs[0]
             paragraph.paragraph_format.space_after = Pt(0)
+            paragraph.paragraph_format.line_spacing = 1.0
             run = paragraph.add_run(plain_dashes(str(value)))
             run.font.size = Pt(font)
     for row in table.rows:
         for index, cell in enumerate(row.cells):
             cell.width = Cm(widths[index])
-    doc.add_paragraph()
+    _spacer(doc)
 
 
 # Colours of the table rules: the accent for the frame, a light grey between rows.
@@ -497,8 +524,7 @@ def add_front_heading(doc: Document, text: str) -> None:
     paragraph.paragraph_format.space_after = Pt(12)
     run = paragraph.add_run(text)
     run.bold = True
-    run.font.size = Pt(16)
-    run.font.color.rgb = ACCENT
+    run.font.size = Pt(HEADING_SIZES[1])
 
 
 # Where the next heading must start a new page: the index its paragraph will
@@ -539,12 +565,19 @@ def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
 
     section = doc.sections[0]
     section.page_width, section.page_height = Cm(21.0), Cm(29.7)
-    section.left_margin = section.right_margin = Cm(2.3)
-    section.top_margin = section.bottom_margin = Cm(2.0)
+    section.left_margin = section.right_margin = Cm(MARGIN_CM)
+    section.top_margin = section.bottom_margin = Cm(MARGIN_CM)
+    _page_numbers(section)
 
     normal = doc.styles["Normal"]
-    normal.font.name = "Calibri"
-    normal.font.size = Pt(10)
+    _set_typeface(normal, BODY_SIZE)
+    normal.paragraph_format.line_spacing = LINE_SPACING
+    for level, size in HEADING_SIZES.items():
+        heading = doc.styles[f"Heading {level}"]
+        _set_typeface(heading, size, bold=True)
+        heading.font.italic = False
+        heading.paragraph_format.space_before = Pt({1: 24, 2: 18, 3: 12}[level])
+        heading.paragraph_format.space_after = Pt({1: 12, 2: 6, 3: 4}[level])
 
     _title_page(doc)
     page_break(doc)
@@ -584,6 +617,52 @@ def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
     doc.save(path)
     translations.report()
     return path
+
+
+def _set_typeface(style, size: float, *, bold: bool | None = None) -> None:
+    """Set a style in the thesis typeface, black, at *size*, for every script.
+
+    Word prefers a theme font or colour over a named one, so the theme
+    attributes the template puts on its styles are removed, not overridden.
+    """
+    style.font.name = FONT
+    style.font.size = Pt(size)
+    if bold is not None:
+        style.font.bold = bold
+    style.font.color.rgb = BLACK
+    properties = style.element.get_or_add_rPr()
+    fonts = properties.get_or_add_rFonts()
+    for script in ("ascii", "hAnsi", "eastAsia", "cs"):
+        fonts.set(qn(f"w:{script}"), FONT)
+    for theme in ("asciiTheme", "hAnsiTheme", "eastAsiaTheme", "cstheme"):
+        fonts.attrib.pop(qn(f"w:{theme}"), None)
+    colour = properties.find(qn("w:color"))
+    if colour is not None:
+        for theme in ("themeColor", "themeShade", "themeTint"):
+            colour.attrib.pop(qn(f"w:{theme}"), None)
+
+
+def _page_numbers(section) -> None:
+    """A centred page number at the foot of every page but the title page, which
+    is counted without showing its number."""
+    section.different_first_page_header_footer = True
+    paragraph = section.footer.paragraphs[0]
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for kind, value in (("begin", None), ("instr", "PAGE"), ("separate", None),
+                        ("text", "1"), ("end", None)):
+        if kind == "instr":
+            element = OxmlElement("w:instrText")
+            element.set(qn("xml:space"), "preserve")
+            element.text = f" {value} "
+        elif kind == "text":
+            element = OxmlElement("w:t")
+            element.text = value
+        else:
+            element = OxmlElement("w:fldChar")
+            element.set(qn("w:fldCharType"), kind)
+        run = paragraph.add_run()
+        run.font.size = Pt(11)
+        run._r.append(element)
 
 
 # ── front matter ─────────────────────────────────────────────────────────────
@@ -1031,9 +1110,9 @@ def _abstracts(doc: Document, runs: dict) -> None:
         keywords.paragraph_format.space_before = Pt(8)
         lead = keywords.add_run(f"{label}: ")
         lead.bold = True
-        lead.font.size = Pt(10)
+        lead.font.size = Pt(BODY_SIZE)
         rest = keywords.add_run(", ".join(words))
-        rest.font.size = Pt(10)
+        rest.font.size = Pt(BODY_SIZE)
         page_break(doc)
 
 
@@ -1389,7 +1468,7 @@ def _chapter_2_requirements(doc: Document) -> None:
              _verified_by("test_data_manager.py", "test_inventory_cache.py")],
         ],
         [1.5, 5.2, 4.4, 4.4],
-        font=8,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
@@ -1522,7 +1601,7 @@ def _chapter_2_requirements(doc: Document) -> None:
              _verified_by("test_walk_forward.py", "test_train_window.py")],
         ],
         [1.5, 5.2, 4.6, 4.2],
-        font=8,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
@@ -1596,7 +1675,7 @@ def _chapter_2_requirements(doc: Document) -> None:
              "11.2"],
         ],
         [4.4, 3.4, 6.0, 1.7],
-        font=8,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
@@ -1660,7 +1739,7 @@ def _chapter_2_requirements(doc: Document) -> None:
              "zwiększyłaby objętość kodu bez związku z pytaniem badawczym."],
         ],
         [5.2, 10.8],
-        font=8.5,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
@@ -1727,7 +1806,7 @@ def _acceptance_criteria(doc: Document) -> None:
              "spełnione"],
         ],
         [6.4, 6.2, 3.4],
-        font=8.5,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
@@ -2764,7 +2843,7 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
                            ("rozrzut ziarna", "noise")):
             rows.append([label] + [fmt(spread[h][key]) for h in tested])
         add_table(doc, ["Architektura", *(HORIZON_LABEL[h] for h in tested)], rows,
-                  [4.4] + [2.9] * len(tested), font=9)
+                  [4.4] + [2.9] * len(tested), font=10)
         counts = []
         for model in models:
             taken = sum(len(horizon_values(runs.get((s, model), []), tested[0], "accuracy"))
@@ -3088,7 +3167,7 @@ def _results_max_vs_mean(doc: Document) -> None:
           f"{bounds[0]:.3f}-{bounds[1]:.3f}" if bounds else "odmówiony"]
          for horizon, (acc, sym, model, eff, bounds) in best.items()],
         [2.4, 4.0, 2.4, 3.4, 3.4],
-        font=8.5,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
@@ -3231,7 +3310,7 @@ def _results_departures(doc: Document, runs: dict) -> None:
           fmt(m["p"], 4), fmt(m["q"])]
          for m in nominal],
         [1.8, 2.0, 1.5, 2.0, 1.8, 2.8, 1.6, 1.4],
-        font=8.5,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
@@ -3274,7 +3353,7 @@ def _results_departures(doc: Document, runs: dict) -> None:
             [[y["year"], _percent(y["predicted_long"]), _percent(y["actual_long"]),
               fmt(y["accuracy"]), str(y["bars"])] for y in lag["by_year"]],
             [1.8, 3.4, 3.4, 2.4, 1.8],
-            font=8.5,
+            font=9,
         )
         partial = [y["year"] for y in lag["by_year"] if y["bars"] < 360]
         add_caption(
@@ -4022,13 +4101,13 @@ def _appendix_tests(doc: Document) -> None:
     for module in modules:
         add_heading(doc, module.path, 3)
         add_body(doc, translations.polish(translations.MODULES, module.path, module.purpose),
-                 italic=True, size=9)
+                 italic=True, size=10, compact=True)
         for case in module.cases:
             name = case.name.removeprefix("test_")
             add_definition(
                 doc, name,
                 translations.polish(translations.CASES, f"{module.path}::{name}", case.intent),
-                size=9,
+                size=10, compact=True,
             )
     page_break(doc)
 
@@ -4045,9 +4124,9 @@ def _appendix_cli(doc: Document) -> None:
     for command in commands:
         add_heading(doc, command.path, 3)
         add_body(doc, translations.polish(translations.COMMANDS, command.path, command.summary),
-                 italic=True, size=9)
+                 italic=True, size=10, compact=True)
         if not command.options:
-            add_body(doc, "Polecenie nie przyjmuje opcji.", size=9)
+            add_body(doc, "Polecenie nie przyjmuje opcji.", size=10, compact=True)
             continue
         add_table(
             doc,
@@ -4056,7 +4135,7 @@ def _appendix_cli(doc: Document) -> None:
               o.default, translations.polish_help(o.help)]
              for o in command.options],
             [4.0, 1.8, 1.2, 2.4, 6.6],
-            font=8,
+            font=9,
         )
     page_break(doc)
 
@@ -4240,7 +4319,7 @@ def _appendix_glossary(doc: Document) -> None:
              "generator liczb losowych tego okna."],
         ],
         [4.2, 11.8],
-        font=9,
+        font=10,
     )
     add_caption(doc, "Tabela", "Słownik pojęć używanych w pracy.")
 
@@ -4298,7 +4377,7 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
          "Mies. > 0,5"],
         rows,
         [1.6, 1.8, 1.4, 1.8, 1.6, 1.7, 2.8, 1.4, 1.9],
-        font=7.5,
+        font=8.5,
     )
     add_caption(
         doc, "Tabela",
@@ -4330,7 +4409,7 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
          "vs momentum", "Obsun. %"],
         table_rows,
         [1.7, 1.9, 1.4, 1.8, 1.9, 1.9, 2.0, 2.2, 1.8],
-        font=8,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
@@ -4378,7 +4457,7 @@ def _data_quality_results(doc: Document) -> None:
         ["Symbol", "Partycji", "Wierszy", "Nieposort.", "Duplikaty", "Luki", "OHLC"],
         rows,
         [2.6, 2.0, 2.4, 2.4, 2.2, 1.8, 2.0],
-        font=8.5,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
@@ -4441,7 +4520,7 @@ def _chapter_3_equations(doc: Document) -> None:
              "M - liczba przesunięć cyklicznych; 50 oznacza przypadek"],
         ],
         [3.6, 6.0, 6.4],
-        font=8.5,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
@@ -4679,7 +4758,7 @@ def _results_rank_stability(doc: Document, runs: dict) -> None:
         [[HORIZON_LABEL[horizon], *(MODEL_LABEL[m] for m in order[horizon])]
          for horizon in order],
         [2.8, 3.2, 3.2, 3.2, 3.2],
-        font=9,
+        font=10,
     )
 
     ranks = {h: {m: i for i, m in enumerate(o)} for h, o in order.items()}
@@ -4700,7 +4779,7 @@ def _results_rank_stability(doc: Document, runs: dict) -> None:
         [[MODEL_LABEL[m], ", ".join(str(p) for p in positions[m]), str(min(positions[m])),
           str(max(positions[m]))] for m in learners],
         [4.0, 5.0, 3.2, 3.2],
-        font=9,
+        font=10,
     )
     add_caption(
         doc, "Tabela",
