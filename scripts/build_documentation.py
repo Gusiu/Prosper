@@ -371,7 +371,7 @@ def _horizontal_rules(table) -> None:
         cell_properties.append(shading)
 
 
-def _field(paragraph, instruction: str, shown: str) -> None:
+def _field(paragraph, instruction: str, shown: str, *, size: float, bold: bool) -> None:
     """A Word field: *instruction* computed by Word, *shown* until it updates."""
     parts = []
     for kind in ("begin", "instr", "separate", "text", "end"):
@@ -388,64 +388,86 @@ def _field(paragraph, instruction: str, shown: str) -> None:
         parts.append(element)
     for element in parts:
         run = paragraph.add_run()
-        run.italic = True
-        run.font.size = Pt(8.5)
-        run.font.color.rgb = MUTED
+        run.bold = bold
+        run.font.size = Pt(size)
         run._r.append(element)
 
 
-def add_caption(doc: Document, kind: str, text: str) -> None:
-    """"Tabela N. text", where N is a SEQ field: the lists of tables and figures
-    at the end of the document are built by Word from these fields."""
-    _counters[kind] += 1
-    paragraph = doc.add_paragraph()
-    paragraph.paragraph_format.space_after = Pt(12)
-
-    def styled(fragment: str) -> None:
-        run = paragraph.add_run(plain_dashes(fragment))
-        run.italic = True
-        run.font.size = Pt(8.5)
-        run.font.color.rgb = MUTED
-
-    # Only the first sentence goes in the numbered caption, so the lists of
-    # tables and figures stay one line per entry; the rest follows beneath.
-    match = re.search(r"(?<=[^\s.]{2})\. (?=[A-ZĄĆĘŁŃÓŚŹŻ„])", text)
-    title, rest = (text[: match.start() + 1], text[match.end():]) if match else (text, "")
-    styled(f"{kind} ")
-    _field(paragraph, f"SEQ {kind} \\* ARABIC", str(_counters[kind]))
-    styled(f". {title}")
-    paragraphs = [paragraph]
-    if rest:
-        paragraph.paragraph_format.space_after = Pt(2)
-        paragraph.paragraph_format.keep_with_next = True
-        follow = doc.add_paragraph()
-        follow.paragraph_format.space_after = Pt(12)
-        run = follow.add_run(plain_dashes(rest))
-        run.italic = True
-        run.font.size = Pt(8.5)
-        run.font.color.rgb = MUTED
-        paragraphs.append(follow)
-    if kind == "Tabela":
-        _place_above_table(paragraphs)
+# The caption sizes: the title as in PJATK's example, the note and the source smaller.
+CAPTION_SIZE = 11
+NOTE_SIZE = 10
+DEFAULT_SOURCE = "opracowanie własne"
 
 
-def _place_above_table(paragraphs: list) -> None:
-    """Move a table's caption above it, as Polish theses set them.
+def add_caption(doc: Document, kind: str, text: str, *, source: str = DEFAULT_SOURCE) -> None:
+    """Caption the table or figure just added, the way PJATK asks for it.
 
-    Captions are written after the table they describe, so the table is found as
-    the nearest preceding element, past the spacing paragraph `add_table` leaves.
+    The title - "Tabela N. Title", bold, with no full stop - goes above the
+    element; under it go the rest of *text* as a note and the line "Źródło:
+    source." N is a SEQ field, so Word builds the lists of tables and figures
+    from the titles, one line per entry.
     """
-    previous = paragraphs[0]._p.getprevious()
-    while (previous is not None and previous.tag == qn("w:p")
-           and not "".join(previous.itertext()).strip()):
-        previous = previous.getprevious()
-    if previous is None or previous.tag != qn("w:tbl"):
+    _counters[kind] += 1
+    match = re.search(r"(?<=[^\s.]{2})\. (?=[A-ZĄĆĘŁŃÓŚŹŻ„])", text)
+    title, rest = (text[: match.start()], text[match.end():]) if match else (text, "")
+    title = title.rstrip(".")
+
+    heading = _caption_paragraph(doc, space_before=6, space_after=4)
+    heading.paragraph_format.keep_with_next = True
+    for fragment, is_field in ((f"{kind} ", False), (None, True), (f". {title}", False)):
+        if is_field:
+            _field(heading, f"SEQ {kind} \\* ARABIC", str(_counters[kind]),
+                   size=CAPTION_SIZE, bold=True)
+            continue
+        run = heading.add_run(plain_dashes(fragment))
+        run.bold = True
+        run.font.size = Pt(CAPTION_SIZE)
+
+    below = []
+    if rest:
+        note = _caption_paragraph(doc, space_before=4, space_after=2)
+        note.paragraph_format.keep_with_next = True
+        run = note.add_run(plain_dashes(rest))
+        run.italic = True
+        run.font.size = Pt(NOTE_SIZE)
+        below.append(note)
+    origin = _caption_paragraph(doc, space_before=2 if rest else 4, space_after=12)
+    origin.add_run(plain_dashes(f"Źródło: {source}.")).font.size = Pt(NOTE_SIZE)
+    below.append(origin)
+
+    element = _captioned_element(heading)
+    if element is None:
         return
-    for paragraph in paragraphs:
-        previous.addprevious(paragraph._p)
-        paragraph.paragraph_format.keep_with_next = True
-    paragraphs[0].paragraph_format.space_before = Pt(6)
-    paragraphs[-1].paragraph_format.space_after = Pt(4)
+    element.addprevious(heading._p)
+    for paragraph in reversed(below):
+        element.addnext(paragraph._p)
+
+
+def _caption_paragraph(doc: Document, *, space_before: float, space_after: float):
+    paragraph = doc.add_paragraph()
+    paragraph.paragraph_format.space_before = Pt(space_before)
+    paragraph.paragraph_format.space_after = Pt(space_after)
+    paragraph.paragraph_format.line_spacing = 1.0
+    # A caption is never split across pages; it moves with its table or figure.
+    paragraph.paragraph_format.keep_together = True
+    return paragraph
+
+
+def _captioned_element(caption):
+    """The table, picture or placeholder a caption belongs to.
+
+    Captions are written after the element, so it is the nearest element before
+    the caption that is not an empty paragraph - a table, or a paragraph holding
+    a picture. None when there is neither, and the caption then stays put.
+    """
+    previous = caption._p.getprevious()
+    while previous is not None and previous.tag == qn("w:p"):
+        if previous.find(f".//{qn('w:drawing')}") is not None:
+            return previous
+        if "".join(previous.itertext()).strip():
+            return None
+        previous = previous.getprevious()
+    return previous if previous is not None and previous.tag == qn("w:tbl") else None
 
 
 def add_figure(doc: Document, key: str, caption: str) -> None:
@@ -1847,7 +1869,8 @@ def _chapter_3_theory(doc: Document) -> None:
         ],
         [2.2, 4.5, 5.0, 4.3],
     )
-    add_caption(doc, "Tabela", "Trzy formy hipotezy efektywności rynku wg Famy (1970).")
+    add_caption(doc, "Tabela", "Trzy formy hipotezy efektywności rynku.",
+                source="opracowanie własne na podstawie: Fama (1970)")
     add_body(
         doc,
         "Badanie ograniczone do historii notowań testuje formę słabą, która pyta, czy w samym "
@@ -2460,7 +2483,7 @@ def _chapter_8_models(doc: Document) -> None:
     )
 
     add_heading(doc, "8.2. Modele gradientowe", 2)
-    add_figure(doc, "waznosc", "Względna ważność cech w modelu gradientowym. Rozkład jest płaski - żadna cecha nie dominuje, co jest spójne z brakiem wykrywalnej struktury w danych wejściowych.")
+    add_figure(doc, "waznosc", "Względna ważność cech w modelu XGBoost. Osiemnaście najważniejszych cech jednego przebiegu na BTCUSDT, horyzont tygodniowy. Rozkład jest płaski - żadna cecha nie dominuje, co jest spójne z brakiem wykrywalnej struktury w danych wejściowych.")
     add_body(
         doc,
         "Dwie implementacje wzmacniania gradientowego - z biblioteki scikit-learn i z XGBoost "
@@ -2682,7 +2705,7 @@ def _chapter_9_methodology(doc: Document) -> None:
     )
 
     add_heading(doc, "9.5. Symulacja handlowa i cztery hipotezy zerowe", 2)
-    add_figure(doc, "kapital", "Przebieg wartości portfela dla pięciu architektur wobec strategii kup i trzymaj, skala logarytmiczna. Żadna strategia oparta na prognozie nie zbliża się do prostego trzymania pozycji w badanym okresie.")
+    add_figure(doc, "kapital", "Przebieg wartości portfela na BTCUSDT dla pięciu architektur wobec strategii kup i trzymaj. Po jednym przebiegu każdej architektury, skala logarytmiczna. Żadna strategia oparta na prognozie nie zbliża się do prostego trzymania pozycji w badanym okresie.")
     add_body(
         doc,
         "Symulacja nie jest oceną prognozy. Ten sam przebieg odtworzony pod pięcioma politykami "
@@ -4137,6 +4160,7 @@ def _appendix_cli(doc: Document) -> None:
             [4.0, 1.8, 1.2, 2.4, 6.6],
             font=9,
         )
+        add_caption(doc, "Tabela", f"Flagi polecenia {command.path}.")
     page_break(doc)
 
 
@@ -4155,6 +4179,7 @@ def _appendix_api(doc: Document) -> None:
         [[r.methods, r.path, _route_text(r)] for r in routes],
         [2.0, 6.0, 8.0],
     )
+    add_caption(doc, "Tabela", "Pełne zestawienie tras interfejsu HTTP.")
     page_break(doc)
 
 
@@ -4186,6 +4211,7 @@ def _appendix_settings(doc: Document) -> None:
          for f in fields],
         [4.6, 2.6, 3.0, 5.8],
     )
+    add_caption(doc, "Tabela", "Pola konfiguracji.")
 
 
 # ── 11a: worked example ──────────────────────────────────────────────────────
@@ -4759,6 +4785,11 @@ def _results_rank_stability(doc: Document, runs: dict) -> None:
          for horizon in order],
         [2.8, 3.2, 3.2, 3.2, 3.2],
         font=10,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Kolejność architektur uczących się na każdym horyzoncie, od najwyższej średniej "
+        "trafności.",
     )
 
     ranks = {h: {m: i for i, m in enumerate(o)} for h, o in order.items()}
