@@ -1685,10 +1685,7 @@ def _chapter_2_requirements(doc: Document) -> None:
         "Wymagania funkcjonalne opisują, co system ma robić. Uporządkowano je zgodnie z "
         "kolejnością etapów potoku przetwarzania, ponieważ taka jest też kolejność zależności: "
         "żaden etap nie może zostać zrealizowany przed poprzednim. Kolumna Weryfikacja wskazuje "
-        "moduł testowy, na podstawie którego można stwierdzić spełnienie wymagania. Nazwy w tej "
-        "kolumnie sprawdzane są przy generowaniu dokumentu wobec zawartości katalogu testów: "
-        "odwołanie do modułu, którego nie ma, przerywa budowę, ponieważ wymaganie wskazujące "
-        "nieistniejący test czyta się jako pokryte i jest gorsze od wymagania bez testu.",
+        "moduł testowy, na podstawie którego można stwierdzić spełnienie wymagania.",
     )
     add_table(
         doc,
@@ -2155,7 +2152,7 @@ def _acceptance_criteria(doc: Document) -> None:
     )
     add_caption(
         doc, "Tabela",
-        "Kryteria akceptacji wraz ze stanem na dzień wygenerowania dokumentu. Odtwarzalność "
+        "Kryteria akceptacji wraz z ich obecnym stanem. Odtwarzalność "
         "co do bajtu zweryfikowano dla każdej architektury, w tym obu sieci neuronowych, na "
         "procesorze CPU, na którym policzono wszystkie wyniki, przy stałej liczbie wątków "
         "(rozdział 9.6). Na procesorze "
@@ -2443,8 +2440,8 @@ def _chapter_4_architecture(doc: Document) -> None:
              "ekosystemu pakietów JavaScript.",
              "Brak transpilacji ogranicza użycie najnowszej składni."],
             ["Typer jako warstwa wiersza poleceń",
-             "Deklaratywne definicje poleceń z typowaniem; pomoc generowana z sygnatur, dzięki "
-             "czemu referencja w załączniku B jest odczytem, a nie przepisaniem.",
+             "Deklaratywne definicje poleceń z typowaniem; pomoc i walidacja argumentów "
+             "wynikają z sygnatur funkcji.",
              "Domyślne wartości obowiązują tylko przy nieobecności flagi, co wymaga ostrożności "
              "w warstwie API."],
         ],
@@ -2574,7 +2571,7 @@ def _chapter_5_data(doc: Document) -> None:
         )
         add_caption(
             doc, "Tabela",
-            "Zakres danych dziennych w jeziorze danych, zmierzony w chwili budowania dokumentu. "
+            "Zakres danych dziennych w jeziorze danych. "
             "Symbole o krótszej historii ograniczają horyzont roczny (rozdział 9.3).",
         )
     else:
@@ -2614,8 +2611,7 @@ def _chapter_6_features(doc: Document) -> None:
     add_body(
         doc,
         f"Model odczytuje {len(catalogue)} kolumn w {len(by_group)} grupach według rodzaju "
-        "informacji. Nazwy pochodzą wprost z definicji w kodzie, więc katalog nie może "
-        "rozminąć się z tym, co modele faktycznie czytają.",
+        "informacji.",
     )
     try:
         from documentation_diagrams import render_source
@@ -3130,7 +3126,7 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
     seeds = sorted({r["seed"] for v in runs.values() for r in v if r["seed"] is not None})
     add_body(
         doc,
-        f"Podstawą tabel jest {total} przebiegów odczytanych z artefaktów projektu"
+        f"Podstawą tabel jest {total} przebiegów badania"
         + (f", pod ziarnami: {', '.join(str(s) for s in seeds)}." if seeds else ".")
         + " Wszystkie policzono na czterech wątkach procesora (rozdział 9.6). Każdą konfigurację "
         "uruchomiono wielokrotnie, ponieważ pojedynczy przebieg niesie szum inicjalizacji, "
@@ -3150,8 +3146,7 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
     if not runs:
         add_body(
             doc,
-            "UWAGA: w katalogu artefaktów nie znaleziono ocenionych przebiegów. Tabele wyników "
-            "wypełnią się po zakończeniu przeliczeń; dokument należy wtedy wygenerować ponownie.",
+            "UWAGA: brak ocenionych przebiegów, więc tabele wyników są puste.",
             italic=True,
         )
         page_break(doc)
@@ -4427,12 +4422,10 @@ def _appendix_tests(doc: Document) -> None:
     cases = sum(len(m.cases) for m in modules)
     add_body(
         doc,
-        f"Zestawienie {cases} przypadków testowych w {len(modules)} modułach, odczytane wprost "
-        "z kodu. Jest to specyfikacja systemu w jedynej postaci, która nie może się "
-        "zdezaktualizować: każdej pozycji odpowiada asercja, która wykonuje się przy każdym "
-        "uruchomieniu pakietu. Przy każdym przypadku podano jego nazwę w kodzie i opis tego, "
-        "czego pilnuje, przetłumaczony z nazwy i dokumentacji testu; generator ostrzega, gdy "
-        "opis w kodzie zmieni się, a tłumaczenie nie.",
+        f"Zestawienie {cases} przypadków testowych w {len(modules)} modułach. Jest to "
+        "specyfikacja systemu w jedynej postaci, która nie może się zdezaktualizować: każdej "
+        "pozycji odpowiada asercja, która wykonuje się przy każdym uruchomieniu pakietu. Przy "
+        "każdym przypadku podano jego nazwę w kodzie i opis tego, czego pilnuje.",
     )
     for module in modules:
         add_heading(doc, module.path, 3)
@@ -4454,8 +4447,8 @@ def _appendix_cli(doc: Document) -> None:
     add_body(
         doc,
         f"Pełna referencja {len(commands)} poleceń wraz z "
-        f"{sum(len(c.options) for c in commands)} flagami, odczytana z definicji poleceń. "
-        "Kolumna „domyślnie” podaje wartość obowiązującą przy nieobecności flagi.",
+        f"{sum(len(c.options) for c in commands)} flagami. Kolumna „Domyślnie” podaje wartość "
+        "obowiązującą przy nieobecności flagi.",
     )
     for command in commands:
         add_heading(doc, command.path, 3)
@@ -4485,7 +4478,7 @@ OPTION_KIND = {"text": "tekst", "integer": "liczba całkowita", "float": "liczba
 def _appendix_api(doc: Document) -> None:
     add_heading(doc, "Załącznik C. Referencja interfejsu HTTP", 1)
     routes = api_reference()
-    add_body(doc, f"Zestawienie {len(routes)} tras odczytane z definicji serwera.")
+    add_body(doc, f"Zestawienie wszystkich {len(routes)} tras interfejsu HTTP.")
     add_table(
         doc,
         ["Metoda", "Ścieżka", "Opis"],
@@ -4517,7 +4510,7 @@ def _appendix_settings(doc: Document) -> None:
     prefix = Settings.model_config.get("env_prefix", "")
     add_body(
         doc,
-        f"Zestawienie {len(fields)} pól konfiguracji odczytane z definicji modelu ustawień. "
+        f"Zestawienie {len(fields)} pól konfiguracji. "
         "Każde pole można nadpisać zmienną środowiskową o nazwie pola poprzedzonej "
         f"przedrostkiem {prefix}, na przykład {prefix}DATA_ROOT; wielkość liter nie ma "
         "znaczenia.",
@@ -4711,9 +4704,9 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
     add_heading(doc, "Załącznik E. Wyniki wszystkich przebiegów", 1)
     add_body(
         doc,
-        f"Zestawienie {len(rows)} par (przebieg, horyzont) odczytane wprost z plików oceny. "
-        "Tabele rozdziału 10 podają wielkości zagregowane; ta pozwala prześledzić każdą z nich "
-        "do pojedynczego artefaktu. Kolumna „Przedział” zawiera wpis „odmówiony” tam, gdzie "
+        f"Zestawienie {len(rows)} par (przebieg, horyzont). Tabele rozdziału 10 podają "
+        "wielkości zagregowane; ta pozwala prześledzić każdą z nich do pojedynczego przebiegu. "
+        "Kolumna „Przedział” zawiera wpis „odmówiony” tam, gdzie "
         "liczba obserwacji niezależnych była zbyt mała, aby przedział nie był artefaktem "
         "losowania. Kolumna „Mies. > 0,5” podaje, w ilu miesiącach z ocenionych trafność "
         "przekroczyła poziom losowy (rozdział 10.6).",
@@ -4954,8 +4947,8 @@ SCREENSHOTS: list[tuple[str, str, str, str]] = [
      "ocenionych przebiegów według wyniku złożonego, karty miar zbiorczych (wynik złożony, "
      "trafność, Brier, ECE), rozkład pewności prognoz w przedziałach kalibracji i ostrość "
      "prognozy na każdym horyzoncie. Przedziały ufności i liczbę obserwacji niezależnych "
-     "ocena zapisuje w artefaktach przebiegu i wypisuje w wierszu poleceń; z artefaktów "
-     "pochodzą tabele rozdziału 10.",
+     "ocena zapisuje w artefaktach przebiegu i wypisuje w wierszu poleceń; te same wartości "
+     "podaje rozdział 10.",
      "zakładka „Evaluation” z tabelą metryk dla wybranego przebiegu"),
     ("08-ocena-stabilnosc.png", "Ocena - stabilność w czasie",
      "Strata logarytmiczna przebiegu badania GRU na BTCUSDT (ziarno 42) miesiąc po "
@@ -5021,16 +5014,7 @@ def _screenshot_width_cm(path: str) -> float:
 
 def _chapter_12b_screenshots(doc: Document) -> None:
     add_heading(doc, "12.6. Panel przeglądarkowy - widoki", 2)
-    present = sum(
-        1 for name, *_ in SCREENSHOTS if os.path.exists(os.path.join(SCREENSHOT_DIR, name))
-    )
-    add_body(
-        doc,
-        "Poniżej zebrano widoki panelu odpowiadające etapom potoku. Pliki leżą w katalogu "
-        f"{SCREENSHOT_DIR}/ pod ustalonymi nazwami i są osadzane przy generowaniu dokumentu"
-        + ("." if present == len(SCREENSHOTS)
-           else f"; obecnie dostępnych jest {present} z {len(SCREENSHOTS)}."),
-    )
+    add_body(doc, "Poniżej zebrano widoki panelu odpowiadające etapom potoku.")
     for name, heading, caption, expected in SCREENSHOTS:
         add_heading(doc, heading, 3)
         path = os.path.join(SCREENSHOT_DIR, name)
