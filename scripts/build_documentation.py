@@ -1697,7 +1697,8 @@ def _acceptance_criteria(doc: Document) -> None:
         ["Kryterium", "Miara", "Stan"],
         [
             ["Komplet testów przechodzi bez błędów.",
-             f"pytest; {len(modules)} modułów, {cases} udokumentowanych przypadków",
+             f"pytest; {len(modules)} {_plural(len(modules), 'moduł', 'moduły', 'modułów')}, "
+             f"{cases} {_plural(cases, 'udokumentowany przypadek', 'udokumentowane przypadki', 'udokumentowanych przypadków')}",
              "spełnione"],
             ["Kontrola statyczna nie zgłasza uwag.",
              "ruff check .",
@@ -3488,7 +3489,9 @@ def _chapter_11_verification(doc: Document) -> None:
     cases = sum(len(m.cases) for m in modules)
     add_body(
         doc,
-        f"Pakiet liczy {cases} przypadków testowych w {len(modules)} modułach. Nie są to testy "
+        f"Pakiet liczy {cases} "
+        f"{_plural(cases, 'przypadek testowy', 'przypadki testowe', 'przypadków testowych')} "
+        f"w {len(modules)} {_plural(len(modules), 'module', 'modułach', 'modułach')}. Nie są to testy "
         "pokrycia: każdy moduł odpowiada konkretnej klasie błędów, a znaczna część przypadków "
         "opisuje w dokumentacji defekt, którego wystąpieniu zapobiega. Pełny inwentarz zawiera "
         "załącznik A.",
