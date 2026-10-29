@@ -1,6 +1,6 @@
 # Zrzuty ekranu do pracy
 
-Praca ma w rozdziale 11.6 jedenaście gniazd na zrzuty panelu.
+Praca ma w podrozdziale 12.6 jedenaście gniazd na zrzuty panelu.
 Dopóki pliku nie ma, generator wstawia widoczną ramkę z opisem tego, co powinno
 się w niej znaleźć. Gdy plik się pojawi - osadza go automatycznie.
 

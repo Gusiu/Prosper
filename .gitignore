@@ -95,7 +95,7 @@ docs/*.docx
 # script is the source; the PNGs are outputs, like the document itself.
 data/_figures/
 
-# Screenshots supplied by hand for chapter 11.6. Material for the document, not
+# Screenshots supplied by hand for section 12.6. Material for the document, not
 # code; the slots in scripts/build_documentation.py are the tracked part.
 docs/zrzuty/*.png
 docs/zrzuty/*.jpg
