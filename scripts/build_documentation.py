@@ -81,7 +81,7 @@ THESIS_TITLE_EN = (
 )
 AUTHOR = "Adrian Budzich"
 ALBUM_NUMBER = "30076"
-SUPERVISOR = "dr Michał Majewski"
+SUPERVISOR = "dr inż. Michał Majewski"
 UNIVERSITY = "Polsko-Japońska Akademia Technik Komputerowych"
 FIELD = "Informatyka"
 SPECIALISATION = "Robotyka i Inteligentne Systemy Autonomiczne"
