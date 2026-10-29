@@ -21,15 +21,22 @@ import math
 import os
 import re
 import sys
+import unicodedata
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 import numpy as np
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.image.image import Image as DocxImage
-from docx.oxml import OxmlElement
+from docx.opc.constants import CONTENT_TYPE as CT
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.opc.packuri import PackURI
+from docx.opc.part import XmlPart
+from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
@@ -203,9 +210,7 @@ def add_body(doc: Document, text: str, *, italic: bool = False, size: float = BO
     if compact:
         paragraph.paragraph_format.line_spacing = 1.0
     paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    run = paragraph.add_run(plain_dashes(text))
-    run.italic = italic
-    run.font.size = Pt(size)
+    _write(doc, paragraph, text, size=size, italic=italic)
 
 
 def add_quote(doc: Document, text: str) -> None:
@@ -213,18 +218,15 @@ def add_quote(doc: Document, text: str) -> None:
     paragraph.paragraph_format.left_indent = Cm(1.0)
     paragraph.paragraph_format.space_after = Pt(10)
     paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    run = paragraph.add_run(plain_dashes(text))
-    run.bold = True
-    run.font.size = Pt(BODY_SIZE)
+    _write(doc, paragraph, text, size=BODY_SIZE, bold=True)
 
 
 def add_bullets(doc: Document, items: list[str]) -> None:
     for item in items:
-        paragraph = doc.add_paragraph(plain_dashes(item), style="List Bullet")
+        paragraph = doc.add_paragraph(style="List Bullet")
         paragraph.paragraph_format.space_after = Pt(3)
         paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-        for run in paragraph.runs:
-            run.font.size = Pt(BODY_SIZE)
+        _write(doc, paragraph, item, size=BODY_SIZE)
 
 
 def add_label(doc: Document, text: str) -> None:
@@ -268,6 +270,257 @@ def add_code(doc: Document, lines: list[str]) -> None:
         run.font.name = "Consolas"
         run.font.size = Pt(9)
     _spacer(doc)
+
+
+# ── citations ───────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Reference:
+    """One work the thesis cites. Authors are (surname, given names) pairs; *where*
+    is everything after the title - journal, volume, issue and pages, the
+    proceedings, or the publisher - with *asterisks* around what is set in italics."""
+
+    authors: tuple[tuple[str, str], ...]
+    title: str
+    where: str
+
+    def names(self, *, full: bool) -> str:
+        """"Fama, Eugene F." for the bibliography, "E. F. Fama" for a footnote,
+        where more than three authors shorten to the first and "i in."."""
+        if full:
+            (surname, given), *others = self.authors
+            return ", ".join([f"{surname}, {given}", *(f"{g} {s}" for s, g in others)])
+        shown = self.authors if len(self.authors) <= 3 else self.authors[:1]
+        initials = [" ".join(f"{part[0]}." for part in given.split()) + f" {surname}"
+                    for surname, given in shown]
+        return ", ".join(initials) + (" i in." if len(self.authors) > 3 else "")
+
+    def segments(self, *, full: bool) -> list[tuple[str, bool]]:
+        """The entry as (text, italic) pieces: names, the title in italics, the rest."""
+        pieces = [(f"{self.names(full=full)}, ", False), (self.title, True), (", ", False)]
+        for index, part in enumerate(re.split(r"\*([^*]+)\*", self.where)):
+            if part:
+                pieces.append((part, bool(index % 2)))
+        pieces.append((".", False))
+        return pieces
+
+    def sort_key(self) -> tuple[str, str]:
+        """Alphabetical by the first author's surname, then by title, as PJATK asks."""
+        folded = unicodedata.normalize("NFKD", self.authors[0][0])
+        return ("".join(c for c in folded if not unicodedata.combining(c)).lower(),
+                self.title.lower())
+
+
+# Every work cited, checked against the publishers' records on 2026-10-29.
+REFERENCES: dict[str, Reference] = {
+    "bailey2014": Reference(
+        (("Bailey", "David H."), ("López de Prado", "Marcos")),
+        "The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting, and "
+        "Non-Normality",
+        "„The Journal of Portfolio Management” 2014, t. 40, nr 5, s. 94-107"),
+    "benjamini1995": Reference(
+        (("Benjamini", "Yoav"), ("Hochberg", "Yosef")),
+        "Controlling the False Discovery Rate: A Practical and Powerful Approach to Multiple "
+        "Testing",
+        "„Journal of the Royal Statistical Society: Series B (Methodological)” 1995, t. 57, "
+        "nr 1, s. 289-300"),
+    "benjamini2001": Reference(
+        (("Benjamini", "Yoav"), ("Yekutieli", "Daniel")),
+        "The Control of the False Discovery Rate in Multiple Testing under Dependency",
+        "„The Annals of Statistics” 2001, t. 29, nr 4, s. 1165-1188"),
+    "brier1950": Reference(
+        (("Brier", "Glenn W."),),
+        "Verification of Forecasts Expressed in Terms of Probability",
+        "„Monthly Weather Review” 1950, t. 78, nr 1, s. 1-3"),
+    "chen2016": Reference(
+        (("Chen", "Tianqi"), ("Guestrin", "Carlos")),
+        "XGBoost: A Scalable Tree Boosting System",
+        "[w:] *Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge "
+        "Discovery and Data Mining*, San Francisco 2016, s. 785-794"),
+    "cho2014": Reference(
+        (("Cho", "Kyunghyun"), ("van Merriënboer", "Bart"), ("Gulcehre", "Caglar"),
+         ("Bahdanau", "Dzmitry"), ("Bougares", "Fethi"), ("Schwenk", "Holger"),
+         ("Bengio", "Yoshua")),
+        "Learning Phrase Representations using RNN Encoder-Decoder for Statistical Machine "
+        "Translation",
+        "[w:] *Proceedings of the 2014 Conference on Empirical Methods in Natural Language "
+        "Processing (EMNLP)*, Doha 2014, s. 1724-1734"),
+    "cont2001": Reference(
+        (("Cont", "Rama"),),
+        "Empirical Properties of Asset Returns: Stylized Facts and Statistical Issues",
+        "„Quantitative Finance” 2001, t. 1, nr 2, s. 223-236"),
+    "efron1993": Reference(
+        (("Efron", "Bradley"), ("Tibshirani", "Robert J.")),
+        "An Introduction to the Bootstrap",
+        "Chapman & Hall, New York 1993"),
+    "fama1970": Reference(
+        (("Fama", "Eugene F."),),
+        "Efficient Capital Markets: A Review of Theory and Empirical Work",
+        "„The Journal of Finance” 1970, t. 25, nr 2, s. 383-417"),
+    "gneiting2007": Reference(
+        (("Gneiting", "Tilmann"), ("Raftery", "Adrian E.")),
+        "Strictly Proper Scoring Rules, Prediction, and Estimation",
+        "„Journal of the American Statistical Association” 2007, t. 102, nr 477, s. 359-378"),
+    "guo2017": Reference(
+        (("Guo", "Chuan"), ("Pleiss", "Geoff"), ("Sun", "Yu"), ("Weinberger", "Kilian Q.")),
+        "On Calibration of Modern Neural Networks",
+        "[w:] *Proceedings of the 34th International Conference on Machine Learning*, PMLR 70, "
+        "Sydney 2017, s. 1321-1330"),
+    "kunsch1989": Reference(
+        (("Künsch", "Hans R."),),
+        "The Jackknife and the Bootstrap for General Stationary Observations",
+        "„The Annals of Statistics” 1989, t. 17, nr 3, s. 1217-1241"),
+    "lim2021": Reference(
+        (("Lim", "Bryan"), ("Arık", "Sercan Ö."), ("Loeff", "Nicolas"), ("Pfister", "Tomas")),
+        "Temporal Fusion Transformers for Interpretable Multi-horizon Time Series Forecasting",
+        "„International Journal of Forecasting” 2021, t. 37, nr 4, s. 1748-1764"),
+    "lopezdeprado2018": Reference(
+        (("López de Prado", "Marcos"),),
+        "Advances in Financial Machine Learning",
+        "Wiley, Hoboken 2018"),
+    "politis1994": Reference(
+        (("Politis", "Dimitris N."), ("Romano", "Joseph P.")),
+        "The Stationary Bootstrap",
+        "„Journal of the American Statistical Association” 1994, t. 89, nr 428, "
+        "s. 1303-1313"),
+}
+
+# A citation in the text: [@key] becomes a footnote naming REFERENCES[key].
+_CITATION = re.compile(r"\[@([a-z0-9]+)\]")
+_FOOTNOTES_XML = (
+    '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:footnote w:type="separator" w:id="-1"><w:p><w:pPr><w:spacing w:after="0" '
+    'w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:separator/></w:r></w:p></w:footnote>'
+    '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:pPr><w:spacing w:after="0" '
+    'w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:continuationSeparator/></w:r></w:p>'
+    '</w:footnote></w:footnotes>'
+)
+FOOTNOTE_SIZE = 10
+# What has been cited so far, in document order: a first citation is given in
+# full, a later one as "op. cit.", and one repeating the previous as "Ibidem.".
+_citations: dict = {"cited": set(), "last": None, "count": 0, "root": None, "styles": None}
+
+
+def _reset_citations() -> None:
+    _citations.update(cited=set(), last=None, count=0, root=None, styles=None)
+
+
+def _footnote_part(doc: Document):
+    """The footnotes part with its two separators, and the styles footnotes use.
+
+    The python-docx template has neither, so both are made on first use: the
+    part, its relationship, the settings entry naming the separators, and a
+    footnote text and footnote reference style.
+    """
+    if _citations["root"] is not None:
+        return _citations["root"], _citations["styles"]
+    part = XmlPart(PackURI("/word/footnotes.xml"), CT.WML_FOOTNOTES,
+                   parse_xml(_FOOTNOTES_XML), doc.part.package)
+    doc.part.relate_to(part, RT.FOOTNOTES)
+    settings = doc.settings.element
+    listed = OxmlElement("w:footnotePr")
+    for note_id in ("-1", "0"):
+        separator = OxmlElement("w:footnote")
+        separator.set(qn("w:id"), note_id)
+        listed.append(separator)
+    # Schema order: footnotePr comes right before compat in w:settings.
+    compat = settings.find(qn("w:compat"))
+    if compat is not None:
+        compat.addprevious(listed)
+    else:
+        settings.append(listed)
+
+    text_style = doc.styles.add_style("Footnote Text", WD_STYLE_TYPE.PARAGRAPH)
+    text_style.base_style = doc.styles["Normal"]
+    text_style.font.size = Pt(FOOTNOTE_SIZE)
+    text_style.paragraph_format.line_spacing = 1.0
+    text_style.paragraph_format.space_after = Pt(0)
+    text_style.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    mark_style = doc.styles.add_style("Footnote Reference", WD_STYLE_TYPE.CHARACTER)
+    mark_style.font.superscript = True
+    _citations["root"], _citations["styles"] = part.element, (text_style.style_id,
+                                                              mark_style.style_id)
+    return _citations["root"], _citations["styles"]
+
+
+def _footnote(doc: Document, paragraph, key: str) -> None:
+    """Cite REFERENCES[key] with a footnote marked at the end of *paragraph*."""
+    reference = REFERENCES[key]
+    if key == _citations["last"]:
+        segments = [("Ibidem.", False)]
+    elif key in _citations["cited"]:
+        segments = [(f"{reference.names(full=False)}, op. cit.", False)]
+    else:
+        segments = reference.segments(full=False)
+    _citations["cited"].add(key)
+    _citations["last"] = key
+    _citations["count"] += 1
+    note_id = str(_citations["count"])
+    root, (text_style, mark_style) = _footnote_part(doc)
+
+    def mark() -> OxmlElement:
+        run = OxmlElement("w:r")
+        properties = OxmlElement("w:rPr")
+        style = OxmlElement("w:rStyle")
+        style.set(qn("w:val"), mark_style)
+        properties.append(style)
+        run.append(properties)
+        return run
+
+    note = OxmlElement("w:footnote")
+    note.set(qn("w:id"), note_id)
+    body = OxmlElement("w:p")
+    paragraph_properties = OxmlElement("w:pPr")
+    style = OxmlElement("w:pStyle")
+    style.set(qn("w:val"), text_style)
+    paragraph_properties.append(style)
+    body.append(paragraph_properties)
+    number = mark()
+    number.append(OxmlElement("w:footnoteRef"))
+    body.append(number)
+    for text, italic in [(" ", False), *segments]:
+        run = OxmlElement("w:r")
+        if italic:
+            properties = OxmlElement("w:rPr")
+            properties.append(OxmlElement("w:i"))
+            run.append(properties)
+        content = OxmlElement("w:t")
+        content.set(qn("xml:space"), "preserve")
+        content.text = plain_dashes(text)
+        run.append(content)
+        body.append(run)
+    note.append(body)
+    root.append(note)
+
+    reference_run = mark()
+    pointer = OxmlElement("w:footnoteReference")
+    pointer.set(qn("w:id"), note_id)
+    reference_run.append(pointer)
+    paragraph._p.append(reference_run)
+
+
+def _write(doc: Document, paragraph, text: str, *, size: float, italic: bool = False,
+           bold: bool = False) -> None:
+    """Add *text* to *paragraph*, every [@key] in it becoming a footnote."""
+    for index, part in enumerate(_CITATION.split(plain_dashes(text))):
+        if index % 2:
+            _footnote(doc, paragraph, part)
+        elif part:
+            run = paragraph.add_run(part)
+            run.italic = italic
+            run.bold = bold
+            run.font.size = Pt(size)
+
+
+def _cited_inline(text: str) -> str:
+    """*text* with every [@key] spelled out where a footnote cannot go, such as a
+    caption's source line: in short when the work was cited before, else in full."""
+    def spelled(match: re.Match) -> str:
+        reference = REFERENCES[match.group(1)]
+        if match.group(1) in _citations["cited"]:
+            return f"{reference.names(full=False)}, op. cit."
+        return "".join(text for text, _ in reference.segments(full=False)).rstrip(".")
+    return _CITATION.sub(spelled, text)
 
 
 def _spacer(doc: Document) -> None:
@@ -315,8 +568,7 @@ def add_table(
             paragraph = cells[index].paragraphs[0]
             paragraph.paragraph_format.space_after = Pt(0)
             paragraph.paragraph_format.line_spacing = 1.0
-            run = paragraph.add_run(plain_dashes(str(value)))
-            run.font.size = Pt(font)
+            _write(doc, paragraph, str(value), size=font)
     for row in table.rows:
         for index, cell in enumerate(row.cells):
             cell.width = Cm(widths[index])
@@ -478,12 +730,10 @@ def add_caption(doc: Document, kind: str, text: str, *, source: str = DEFAULT_SO
     if rest:
         note = _caption_paragraph(doc, space_before=4, space_after=2)
         note.paragraph_format.keep_with_next = True
-        run = note.add_run(plain_dashes(rest))
-        run.italic = True
-        run.font.size = Pt(NOTE_SIZE)
+        _write(doc, note, rest, size=NOTE_SIZE, italic=True)
         below.append(note)
     origin = _caption_paragraph(doc, space_before=2 if rest else 4, space_after=12)
-    origin.add_run(plain_dashes(f"Źródło: {source}.")).font.size = Pt(NOTE_SIZE)
+    origin.add_run(plain_dashes(f"Źródło: {_cited_inline(source)}.")).font.size = Pt(NOTE_SIZE)
     below.append(origin)
 
     element = _captioned_element(heading)
@@ -631,6 +881,7 @@ def _start_page_if_pending(doc: Document, paragraph) -> None:
 
 # ═════════════════════════════════════════════════════════════════════════════
 def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
+    _reset_citations()
     runs = load_runs()
     _check_thesis_against_data(runs)
     doc = Document()
@@ -677,7 +928,7 @@ def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
     _chapter_12b_screenshots(doc)
     _chapter_13_limits(doc)
     _chapter_14_summary(doc, runs)
-    _chapter_14_bibliography(doc)
+    _bibliography(doc)
     _lists_of_tables_and_figures(doc)
     _appendix_tests(doc)
     _appendix_cli(doc)
@@ -1229,8 +1480,8 @@ def _chapter_1_introduction(doc: Document) -> None:
     add_body(
         doc,
         "Ograniczenie do samych notowań wynika z pytania badawczego. Pytanie, czy z historii "
-        "cen da się przewidzieć cenę, jest treścią słabej formy hipotezy efektywności rynku "
-        "(Fama, 1970), jednej z jej trzech postaci (rozdział 3.1). Praca testuje formę słabą "
+        "cen da się przewidzieć cenę, jest treścią słabej formy hipotezy efektywności "
+        "rynku[@fama1970], jednej z jej trzech postaci (rozdział 3.1). Praca testuje formę słabą "
         "przy użyciu architektur, które w chwili jej sformułowania nie istniały.",
     )
 
@@ -1902,7 +2153,8 @@ def _chapter_3_theory(doc: Document) -> None:
         doc,
         "Hipoteza efektywności rynku orzeka, że ceny odzwierciedlają dostępne informacje, przez "
         "co systematyczne osiąganie ponadprzeciętnych stóp zwrotu na podstawie tych informacji "
-        "jest niemożliwe. Fama wyróżnił trzy formy, różniące się zakresem zbioru informacyjnego.",
+        "jest niemożliwe. Fama[@fama1970] wyróżnił trzy formy, różniące się zakresem zbioru "
+        "informacyjnego.",
     )
     add_table(
         doc,
@@ -1921,7 +2173,7 @@ def _chapter_3_theory(doc: Document) -> None:
         [2.2, 4.5, 5.0, 4.3],
     )
     add_caption(doc, "Tabela", "Trzy formy hipotezy efektywności rynku.",
-                source="opracowanie własne na podstawie: Fama (1970)")
+                source="opracowanie własne na podstawie: [@fama1970]")
     add_body(
         doc,
         "Badanie ograniczone do historii notowań testuje formę słabą, która pyta, czy w samym "
@@ -1936,7 +2188,7 @@ def _chapter_3_theory(doc: Document) -> None:
     add_body(
         doc,
         "Szeregi zwrotów aktywów wykazują zbiór własności powtarzalnych na różnych rynkach i "
-        "w różnych okresach, zebranych i usystematyzowanych przez Conta (2001). Cztery z nich "
+        "w różnych okresach, zebranych i usystematyzowanych przez Conta[@cont2001]. Cztery z nich "
         "mają bezpośredni wpływ na konstrukcję opisywanego systemu.",
     )
     add_bullets(
@@ -1975,12 +2227,12 @@ def _chapter_3_theory(doc: Document) -> None:
     add_heading(doc, "3.4. Reguły oceny właściwej", 2)
     add_body(
         doc,
-        "Regułą właściwą (Gneiting i Raftery, 2007) nazywamy funkcję oceny prognozy "
+        "Regułą właściwą[@gneiting2007] nazywamy funkcję oceny prognozy "
         "probabilistycznej, która osiąga "
         "optimum wtedy i tylko wtedy, gdy prognoza podaje prawdziwe prawdopodobieństwo. Reguła "
         "niewłaściwa nagradza zniekształcanie prognozy - na przykład sama trafność nagradza "
-        "deklarowanie skrajnej pewności. System stosuje dwie reguły właściwe: wynik Briera "
-        "(Brier, 1950), czyli średni kwadrat różnicy między prognozowanym prawdopodobieństwem a "
+        "deklarowanie skrajnej pewności. System stosuje dwie reguły właściwe: wynik "
+        "Briera[@brier1950], czyli średni kwadrat różnicy między prognozowanym prawdopodobieństwem a "
         "wynikiem, oraz stratę logarytmiczną, nazywaną też entropią krzyżową - średnią ujemnego "
         "logarytmu prawdopodobieństwa, które model przypisał klasie, która wystąpiła. Obok nich "
         "raportuje trafność i oczekiwany błąd kalibracji.",
@@ -2016,8 +2268,8 @@ def _chapter_3_theory(doc: Document) -> None:
         doc,
         "Kalibracja to zgodność deklarowanej pewności z rzeczywistą częstością: spośród świec, "
         "którym model przypisał prawdopodobieństwo 0,6, mniej więcej sześćdziesiąt procent "
-        "powinno zrealizować prognozowany kierunek. System stosuje skalowanie temperaturą "
-        "(Guo i in., 2017). Działa ono na logitach, czyli surowych wynikach modelu sprzed "
+        "powinno zrealizować prognozowany kierunek. System stosuje skalowanie "
+        "temperaturą[@guo2017]. Działa ono na logitach, czyli surowych wynikach modelu sprzed "
         "zamiany na prawdopodobieństwa; dla dwóch klas logit to logarytm ilorazu szans, "
         "ln(p / (1 − p)). Skalowanie dzieli logity przez jeden parametr, temperaturę T: przy "
         "T > 1 rozkład spłaszcza się w stronę równych prawdopodobieństw, przy T < 1 wyostrza "
@@ -2044,11 +2296,12 @@ def _chapter_3_theory(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Bootstrap blokowy (Künsch, 1989) losuje ciągi kolejnych obserwacji o stałej długości - "
+        "Bootstrap blokowy[@kunsch1989] losuje ciągi kolejnych obserwacji o stałej długości - "
         "w tym systemie równej rozpiętości horyzontu - dzięki czemu zachowuje zależność "
-        "wewnątrz bloku i szacuje wariancję, która nie jest zaniżona. Odmiana stacjonarna "
-        "(Politis i Romano, 1994) losuje bloki o losowej długości; system stosuje bloki stałe, "
-        "ponieważ zasięg zależności między etykietami jest znany i równy rozpiętości horyzontu. Efektywna liczba obserwacji wynosi w przybliżeniu liczbę świec "
+        "wewnątrz bloku i szacuje wariancję, która nie jest zaniżona. Odmiana "
+        "stacjonarna[@politis1994] losuje bloki o losowej długości; system stosuje bloki stałe, "
+        "ponieważ zasięg zależności między etykietami jest znany i równy rozpiętości "
+        "horyzontu. Efektywna liczba obserwacji wynosi w przybliżeniu liczbę świec "
         "podzieloną przez rozpiętość horyzontu; poniżej dziesięciu bloków system odmawia podania "
         "przedziału zamiast podać przedział fałszywie wąski.",
     )
@@ -2537,8 +2790,8 @@ def _chapter_8_models(doc: Document) -> None:
     add_figure(doc, "waznosc", "Względna ważność cech w modelu XGBoost. Osiemnaście najważniejszych cech jednego przebiegu na BTCUSDT, horyzont tygodniowy. Rozkład jest płaski - żadna cecha nie dominuje, co jest spójne z brakiem wykrywalnej struktury w danych wejściowych.")
     add_body(
         doc,
-        "Dwie implementacje wzmacniania gradientowego - z biblioteki scikit-learn i z XGBoost "
-        "(Chen i Guestrin, 2016) - "
+        "Dwie implementacje wzmacniania gradientowego - z biblioteki scikit-learn i z "
+        "XGBoost[@chen2016] - "
         "reprezentują podejście tabelaryczne, w którym każda świeca jest niezależnym wektorem "
         "cech. Nie modelują zależności czasowej wprost; informacja o przeszłości wchodzi "
         "wyłącznie przez cechy liczone na oknach. Są tanie obliczeniowo, co pozwala uruchamiać "
@@ -2548,7 +2801,7 @@ def _chapter_8_models(doc: Document) -> None:
     add_heading(doc, "8.3. Sieć rekurencyjna GRU", 2)
     add_body(
         doc,
-        "Sieć rekurencyjna z bramkami (Cho i in., 2014) przetwarza sekwencję kolejnych świec, "
+        "Sieć rekurencyjna z bramkami[@cho2014] przetwarza sekwencję kolejnych świec, "
         "utrzymując stan "
         "ukryty. Bramki aktualizacji i resetu regulują, jaka część stanu przechodzi dalej, co "
         "łagodzi problem zanikającego gradientu występujący w prostych sieciach rekurencyjnych. "
@@ -2559,7 +2812,7 @@ def _chapter_8_models(doc: Document) -> None:
     add_heading(doc, "8.4. Temporal Fusion Transformer", 2)
     add_body(
         doc,
-        "Architektura (Lim i in., 2021) łącząca kodowanie rekurencyjne z mechanizmem uwagi po "
+        "Architektura[@lim2021] łącząca kodowanie rekurencyjne z mechanizmem uwagi po "
         "osi czasu oraz "
         "sieciami wyboru zmiennych, które uczą się wagi poszczególnych cech. Jest to model o "
         "największej pojemności w zestawieniu i zarazem najdroższy - jeden przebieg na jednym "
@@ -2650,7 +2903,7 @@ def _chapter_8_models(doc: Document) -> None:
     add_heading(doc, "8.8. Kalibracja i kryterium zatrzymania", 2)
     add_body(
         doc,
-        "Prawdopodobieństwa kalibrowane są skalowaniem temperatury (Guo i in., 2017) na "
+        "Prawdopodobieństwa kalibrowane są skalowaniem temperatury[@guo2017] na "
         "wycinku wydzielonym "
         "wewnątrz okna treningowego - nigdy na świecach późniejszych, ponieważ kalibrator "
         "widziałby wtedy etykiety niedostępne prognozie. Wycinek obejmuje najnowsze "
@@ -2703,7 +2956,7 @@ def _chapter_9_methodology(doc: Document) -> None:
     add_body(
         doc,
         "Każda trafność jest średnią po świecach o nakładających się etykietach - problem "
-        "opisany szczegółowo przez López de Prado (2018) w kontekście uczenia maszynowego na "
+        "opisany szczegółowo przez López de Prado[@lopezdeprado2018] w kontekście uczenia maszynowego na "
         "danych finansowych. Naiwny przedział "
         "ufności traktuje je jako niezależne i wychodzi kilkukrotnie za wąski, przez co wynik "
         "nieodróżnialny od losowego wyglądałby na istotny. System stosuje bootstrap blokowy o "
@@ -2721,14 +2974,14 @@ def _chapter_9_methodology(doc: Document) -> None:
         doc,
         "Z tego samego próbkowania odczytywana jest wartość p dla hipotezy, że trafność wynosi "
         "0,5: odsetek wylosowanych trafności leżących po drugiej stronie 0,5 niż większość z "
-        "nich, podwojony. Jest to test, który odwraca przedział percentylowy (Efron i "
-        "Tibshirani, 1993), więc p spada poniżej 0,05 tam, gdzie 95-procentowy przedział nie "
+        "nich, podwojony. Jest to test, który odwraca przedział percentylowy[@efron1993], "
+        "więc p spada poniżej 0,05 tam, gdzie 95-procentowy przedział nie "
         "obejmuje 0,5 - oba odczyty pochodzą z tych samych losowań i nie mogą sobie przeczyć. "
         "Pomiarów jest jednak kilkaset, a przy takiej liczbie próg 0,05 przekracza kilkanaście z "
         "nich nawet wtedy, gdy żaden model nie ma przewagi. Wartości p koryguje się zatem "
-        "procedurą Benjaminiego i Hochberga (1995), która ogranicza oczekiwany odsetek "
+        "procedurą Benjaminiego i Hochberga[@benjamini1995], która ogranicza oczekiwany odsetek "
         "fałszywych odkryć wśród pomiarów uznanych za istotne. Gwarancja ta obowiązuje także "
-        "przy dodatniej zależności między testami (Benjamini i Yekutieli, 2001), a z taką "
+        "przy dodatniej zależności między testami[@benjamini2001], a z taką "
         "zależnością ma się tu do czynienia: ziarna jednej konfiguracji widzą te same dane, a "
         "kursy instrumentów poruszają się razem.",
     )
@@ -3227,8 +3480,8 @@ def _results_max_vs_mean(doc: Document) -> None:
     add_heading(doc, "10.8. Najlepsza komórka a liczba pomiarów", 2)
     add_body(
         doc,
-        "Zestawienie najlepszych komórek jest miarą kuszącą i mylącą (Bailey i López de "
-        "Prado, 2014). Maksimum z wielu "
+        "Zestawienie najlepszych komórek jest miarą kuszącą i mylącą[@bailey2014]. "
+        "Maksimum z wielu "
         "zaszumionych pomiarów rośnie wraz z ich liczbą nawet wtedy, gdy żaden z nich nie "
         "zawiera sygnału - przy kilkudziesięciu komórkach i poziomie istotności 5% "
         "należy oczekiwać kilku przekroczeń progu wyłącznie z przypadku.",
@@ -4117,43 +4370,27 @@ def _check_thesis_against_data(runs: dict) -> None:
         print(f"WARNING: thesis 1.3 / 1.5 no longer matches the data: {problem}")
 
 
-def _chapter_14_bibliography(doc: Document) -> None:
-    add_heading(doc, "15. Bibliografia", 1)
-    add_bullets(
-        doc,
-        [
-            "Fama E. F., Efficient Capital Markets: A Review of Theory and Empirical Work, "
-            "Journal of Finance, 25(2), 1970.",
-            "Brier G. W., Verification of Forecasts Expressed in Terms of Probability, "
-            "Monthly Weather Review, 78(1), 1950.",
-            "Gneiting T., Raftery A. E., Strictly Proper Scoring Rules, Prediction, and "
-            "Estimation, Journal of the American Statistical Association, 102(477), 2007.",
-            "Guo C., Pleiss G., Sun Y., Weinberger K. Q., On Calibration of Modern Neural "
-            "Networks, ICML, 2017.",
-            "Künsch H. R., The Jackknife and the Bootstrap for General Stationary Observations, "
-            "Annals of Statistics, 17(3), 1989.",
-            "Politis D. N., Romano J. P., The Stationary Bootstrap, Journal of the American "
-            "Statistical Association, 89(428), 1994.",
-            "Cho K. i in., Learning Phrase Representations using RNN Encoder-Decoder for "
-            "Statistical Machine Translation, EMNLP, 2014.",
-            "Lim B., Arık S. Ö., Loeff N., Pfister T., Temporal Fusion Transformers for "
-            "Interpretable Multi-horizon Time Series Forecasting, International Journal of "
-            "Forecasting, 37(4), 2021.",
-            "Chen T., Guestrin C., XGBoost: A Scalable Tree Boosting System, KDD, 2016.",
-            "Bailey D. H., López de Prado M., The Deflated Sharpe Ratio, Journal of Portfolio "
-            "Management, 40(5), 2014.",
-            "Efron B., Tibshirani R. J., An Introduction to the Bootstrap, Chapman & Hall, "
-            "1993.",
-            "Benjamini Y., Hochberg Y., Controlling the False Discovery Rate: A Practical and "
-            "Powerful Approach to Multiple Testing, Journal of the Royal Statistical Society: "
-            "Series B, 57(1), 1995.",
-            "Benjamini Y., Yekutieli D., The Control of the False Discovery Rate in Multiple "
-            "Testing under Dependency, Annals of Statistics, 29(4), 2001.",
-            "López de Prado M., Advances in Financial Machine Learning, Wiley, 2018.",
-            "Cont R., Empirical Properties of Asset Returns: Stylized Facts and Statistical "
-            "Issues, Quantitative Finance, 1(2), 2001.",
-        ],
-    )
+def _bibliography(doc: Document) -> None:
+    """Every work in REFERENCES, alphabetically, in the form PJATK's example uses:
+    "Nazwisko, Imię, Tytuł, ..." with the title in italics.
+
+    Built after the chapters, so it can say which works the text never cited:
+    a bibliography should hold exactly what the footnotes point at.
+    """
+    add_heading(doc, "Bibliografia", 1)
+    for key, reference in sorted(REFERENCES.items(), key=lambda item: item[1].sort_key()):
+        paragraph = doc.add_paragraph()
+        paragraph.paragraph_format.left_indent = Cm(1.0)
+        paragraph.paragraph_format.first_line_indent = Cm(-1.0)
+        paragraph.paragraph_format.space_after = Pt(6)
+        paragraph.paragraph_format.line_spacing = 1.0
+        for text, italic in reference.segments(full=True):
+            run = paragraph.add_run(plain_dashes(text))
+            run.italic = italic
+            run.font.size = Pt(BODY_SIZE)
+    uncited = sorted(set(REFERENCES) - _citations["cited"])
+    if uncited:
+        print(f"WARNING: the bibliography lists works the text never cites: {uncited}")
     page_break(doc)
 
 
