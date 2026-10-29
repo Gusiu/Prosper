@@ -1330,7 +1330,8 @@ def _chapter_2_requirements(doc: Document) -> None:
             ["WF-12",
              "Ocena przebiegu regułami oceny właściwej wraz z przedziałami ufności "
              "uwzględniającymi nakładanie się etykiet.",
-             "prosper eval predictions; trafność, Brier, logloss, ECE, bootstrap blokowy",
+             "prosper eval predictions; trafność, wynik Briera, strata logarytmiczna, ECE, "
+             "bootstrap blokowy",
              _verified_by("test_prediction_evaluation.py", "test_significance.py")],
             ["WF-13",
              "Ocena stabilności prognozy w czasie, w podziale na miesiące, z oznaczeniem "
@@ -1823,7 +1824,11 @@ def _chapter_3_theory(doc: Document) -> None:
         "probabilistycznej, która osiąga "
         "optimum wtedy i tylko wtedy, gdy prognoza podaje prawdziwe prawdopodobieństwo. Reguła "
         "niewłaściwa nagradza zniekształcanie prognozy - na przykład sama trafność nagradza "
-        "deklarowanie skrajnej pewności.",
+        "deklarowanie skrajnej pewności. System stosuje dwie reguły właściwe: wynik Briera "
+        "(Brier, 1950), czyli średni kwadrat różnicy między prognozowanym prawdopodobieństwem a "
+        "wynikiem, oraz stratę logarytmiczną, nazywaną też entropią krzyżową - średnią ujemnego "
+        "logarytmu prawdopodobieństwa, które model przypisał klasie, która wystąpiła. Obok nich "
+        "raportuje trafność i oczekiwany błąd kalibracji.",
     )
     add_table(
         doc,
@@ -1831,9 +1836,10 @@ def _chapter_3_theory(doc: Document) -> None:
         [
             ["Trafność", "udział poprawnie wskazanych kierunków", "0-1",
              "niewłaściwa, ale bezpośrednio interpretowalna"],
-            ["Brier", "średni kwadrat różnicy prognozy i wyniku", "0-1",
+            ["Wynik Briera", "średni kwadrat różnicy prognozy i wyniku", "0-1",
              "właściwa; kwadratowa kara za pewność błędną"],
-            ["Logarytmiczna", "średnia ujemnego logarytmu prawdopodobieństwa trafnej klasy",
+            ["Strata logarytmiczna (entropia krzyżowa)",
+             "średnia ujemnego logarytmu prawdopodobieństwa klasy, która wystąpiła",
              "0-∞", "właściwa; kara nieograniczona"],
             ["ECE", "średnia rozbieżność deklarowanej pewności i częstości trafień", "0-1",
              "mierzy kalibrację, nie zdolność rozróżniania"],
@@ -1855,9 +1861,13 @@ def _chapter_3_theory(doc: Document) -> None:
         doc,
         "Kalibracja to zgodność deklarowanej pewności z rzeczywistą częstością: spośród świec, "
         "którym model przypisał prawdopodobieństwo 0,6, mniej więcej sześćdziesiąt procent "
-        "powinno zrealizować prognozowany kierunek. System stosuje skalowanie temperaturą - "
-        "jednoparametrową transformację logitów, która zmienia ostrość rozkładu, nie zmieniając "
-        "porządku klas.",
+        "powinno zrealizować prognozowany kierunek. System stosuje skalowanie temperaturą "
+        "(Guo i in., 2017). Działa ono na logitach, czyli surowych wynikach modelu sprzed "
+        "zamiany na prawdopodobieństwa; dla dwóch klas logit to logarytm ilorazu szans, "
+        "ln(p / (1 − p)). Skalowanie dzieli logity przez jeden parametr, temperaturę T: przy "
+        "T > 1 rozkład spłaszcza się w stronę równych prawdopodobieństw, przy T < 1 wyostrza "
+        "się, a kolejność klas się nie zmienia. Temperaturę wybiera się tak, aby strata "
+        "logarytmiczna na danych odłożonych z uczenia była najmniejsza.",
     )
     add_body(
         doc,
@@ -4143,9 +4153,15 @@ def _appendix_glossary(doc: Document) -> None:
              "Metoda szacowania niepewności losująca ciągi kolejnych obserwacji zamiast "
              "pojedynczych, dzięki czemu zachowuje zależność między nakładającymi się "
              "etykietami."],
+            ["dropout",
+             "Losowe wyłączanie części neuronów sieci w trakcie uczenia, ograniczające "
+             "przeuczenie; które neurony zostaną wyłączone, zależy od ziarna."],
             ["ECE",
              "Oczekiwany błąd kalibracji: średnia rozbieżność między deklarowaną pewnością a "
              "rzeczywistą częstością trafień."],
+            ["entropia krzyżowa",
+             "Strata logarytmiczna liczona w trakcie uczenia: średnia ujemnego logarytmu "
+             "prawdopodobieństwa, które model przypisał klasie, która wystąpiła."],
             ["głębokość",
              "Wielkość ruchu ceny wyrażona jako rozkład prawdopodobieństwa na kubełkach o "
              "granicach z ciągu Fibonacciego."],
@@ -4158,6 +4174,9 @@ def _appendix_glossary(doc: Document) -> None:
             ["liczba obserwacji efektywnych",
              "Liczba świec podzielona przez rozpiętość horyzontu - przybliżenie liczby "
              "wzajemnie niezależnych obserwacji."],
+            ["logit",
+             "Surowy wynik modelu sprzed zamiany na prawdopodobieństwo; dla dwóch klas logarytm "
+             "ilorazu szans, ln(p / (1 − p))."],
             ["okno kroczące",
              "Schemat uczenia, w którym model douczany jest cyklicznie na danych poprzedzających "
              "prognozowany okres."],
@@ -4171,12 +4190,15 @@ def _appendix_glossary(doc: Document) -> None:
              "prognoza podaje prawdziwe prawdopodobieństwo."],
             ["skalowanie temperaturą",
              "Jednoparametrowa kalibracja zmieniająca ostrość rozkładu bez zmiany porządku klas."],
+            ["softmax",
+             "Funkcja zamieniająca wektor logitów na prawdopodobieństwa dodatnie i sumujące się "
+             "do 1."],
             ["symbol efektywny",
              "Miara wartości informacyjnej łączenia instrumentów: n / (1 + (n−1)ρ), gdzie ρ to "
              "średnia korelacja zwrotów."],
-            ["ślepy nawrót",
-             "Symulacja handlowa; w tym systemie traktowana jako kontekst ekonomiczny, nie jako "
-             "ocena prognozy."],
+            ["symulacja handlowa",
+             "Odtworzenie handlu na danych historycznych według prognoz przebiegu; w tym "
+             "systemie kontekst ekonomiczny, a nie ocena prognozy."],
             ["test przesunięcia cyklicznego",
              "Hipoteza zerowa zachowująca sekwencję ekspozycji i zmieniająca wyłącznie jej "
              "ułożenie w czasie; izoluje wyczucie momentu."],
@@ -4340,6 +4362,7 @@ def _chapter_3_equations(doc: Document) -> None:
         doc,
         "Poniżej zebrano definicje wielkości, do których odwołują się kolejne rozdziały. "
         "Notacja: r oznacza zwrot, p prognozowane prawdopodobieństwo, y realizację (0 lub 1), "
+        "z wektor logitów (rozdział 3.5), "
         "F rozpiętość horyzontu w świecach, N liczbę ocenianych wierszy.",
     )
     add_table(
@@ -4366,7 +4389,8 @@ def _chapter_3_equations(doc: Document) -> None:
              "b - kubełki pewności; mierzy kalibrację, nie rozróżnianie"],
             ["Skalowanie temperaturą",
              "p_T = softmax( z / T ), T > 0",
-             "jeden parametr; nie zmienia porządku klas"],
+             "softmax zamienia logity na prawdopodobieństwa sumujące się do 1; jeden parametr; "
+             "nie zmienia porządku klas"],
             ["Liczba obserwacji efektywnych",
              "n_eff = N / F",
              "etykiety nakładają się na F−1 świecach"],
