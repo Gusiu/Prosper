@@ -1085,35 +1085,28 @@ def _chapter_1_introduction(doc: Document) -> None:
     add_heading(doc, "1.3. Teza", 2)
     add_quote(
         doc,
-        "Żadna z badanych architektur uczenia maszynowego nie osiąga w prognozie kierunku ceny "
-        "z samej historii notowań trafności istotnie wyższej od losowej, a wszystkie wypadają "
-        "poniżej reguły opartej na częstości klasy większościowej. Różnice między "
-        "architekturami uczącymi się nie wykraczają wyraźnie poza rozrzut wynikający z losowej "
-        "inicjalizacji, a ich porządek zmienia się wraz z horyzontem, nie odzwierciedlają więc "
-        "właściwości architektury. Orzeczenie tego wymaga warstwy weryfikacji zdolnej odróżnić "
-        "brak różnicy od niedostatecznej dokładności pomiaru.",
+        "Na podstawie samej historii notowań żadna z badanych architektur uczenia maszynowego "
+        "nie prognozuje kierunku zmian cen kryptowalut istotnie trafniej niż losowo, a "
+        "różnice między architekturami są tego samego rzędu co rozrzut wynikający z losowej "
+        "inicjalizacji.",
     )
     add_body(
         doc,
-        "Teza rozstrzyga trzy rzeczy naraz i warto je rozdzielić. Pierwsza dotyczy poziomu: "
-        "żadna architektura nie przekracza progu losowego, a punktem odniesienia nie jest "
-        "0,500, lecz częstość klasy liczniejszej, ponieważ w badanym okresie klasy nie są "
-        "zrównoważone. Druga dotyczy różnic: między architekturami uczącymi się są one tego "
-        "samego rzędu co szum samej inicjalizacji, więc ranking tych architektur nie ma "
-        "podstaw; wyraźnie odróżnia się jedynie model odniesienia, słabszy od nich na "
-        "horyzontach dłuższych niż tydzień. Trzecia dotyczy trwałości: architektura najlepsza "
-        "na jednym horyzoncie bywa najgorsza na innym - czego należy oczekiwać, gdy różnice "
-        "mieszczą się w szumie.",
+        "Tezę obaliłby pomiar, w którym któraś architektura na horyzoncie o wystarczającej "
+        "mocy statystycznej osiąga trafność istotnie wyższą od losowej także po poprawce na "
+        "wielokrotne porównania.",
     )
-
     add_body(
         doc,
-        "Zdanie ostatnie tezy jest metodyczne. Stwierdzenie „architektury nie różnią się "
-        "między sobą” jest nieodróżnialne od stwierdzenia „pomiar był zbyt zaszumiony, aby je "
-        "rozróżnić”, dopóki poziom szumu nie zostanie zmierzony. Z tego powodu każdą "
-        "konfigurację uruchomiono wielokrotnie pod różnymi ziarnami generatora liczb losowych, "
-        "a rozdział 10 raportuje rozstęp między architekturami obok rozrzutu wynikającego z "
-        "samej inicjalizacji oraz stabilność rankingu między horyzontami.",
+        "Trafność losowa to 0,5, a obok niej punktem odniesienia jest częstość klasy "
+        "liczniejszej, ponieważ w badanym okresie wzrosty i spadki nie są równie częste "
+        "(rozdział 10.4). Druga część tezy wymaga zmierzenia szumu: stwierdzenie, że "
+        "architektury nie różnią się między sobą, jest nieodróżnialne od stwierdzenia, że "
+        "pomiar był zbyt zaszumiony, aby je rozróżnić, dopóki poziom szumu nie zostanie "
+        "zmierzony. Dlatego każdą konfigurację uruchomiono pod trzema ziarnami generatora "
+        "liczb losowych, a rozdział 10 zestawia rozstęp między architekturami z rozrzutem "
+        "wynikającym z samej inicjalizacji i sprawdza, czy kolejność architektur utrzymuje się "
+        "między horyzontami.",
     )
 
     add_heading(doc, "1.4. Uzasadnienie wyboru rynku", 2)
@@ -3487,11 +3480,11 @@ def _chapter_11_verification(doc: Document) -> None:
     add_heading(doc, "11. Weryfikacja poprawności implementacji", 1)
     add_body(
         doc,
-        "Rozdział dokumentuje defekty wykryte w trakcie budowy systemu i stanowi materiał "
-        "dowodowy dla ostatniego zdania tezy. Wspólną cechą wszystkich pozycji jest to, że "
-        "defekt dawał wynik wyglądający na poprawny i nie ujawniał się w samej trafności "
-        "prognozy - porównanie architektur przeprowadzone bez warstwy weryfikacji porównywałoby "
-        "zatem artefakty.",
+        "Rozdział dokumentuje defekty wykryte w trakcie budowy systemu i pokazuje, dlaczego "
+        "porównanie architektur wymaga warstwy weryfikacji. Wspólną cechą wszystkich pozycji "
+        "jest to, że defekt dawał wynik wyglądający na poprawny i nie ujawniał się w samej "
+        "trafności prognozy - porównanie przeprowadzone bez tej warstwy porównywałoby zatem "
+        "artefakty.",
     )
     add_table(doc, ["Defekt", "Objaw bez weryfikacji", "Wykryty przez"], DEFECTS,
               [4.6, 6.2, 5.2])
