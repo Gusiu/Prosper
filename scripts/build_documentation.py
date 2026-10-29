@@ -21,6 +21,7 @@ import os
 import re
 import sys
 from collections import defaultdict
+from datetime import UTC, datetime
 
 import numpy as np
 from docx import Document
@@ -524,6 +525,7 @@ def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
     runs = load_runs()
     _check_thesis_against_data(runs)
     doc = Document()
+    _document_properties(doc)
 
     section = doc.sections[0]
     section.page_width, section.page_height = Cm(21.0), Cm(29.7)
@@ -574,6 +576,23 @@ def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
 
 
 # ── front matter ─────────────────────────────────────────────────────────────
+
+def _document_properties(doc: Document) -> None:
+    """What a file browser or a PDF viewer shows before the thesis is opened.
+
+    Word carries these into the exported PDF. Left alone, the python-docx
+    template names the library as the author and dates the file 2013.
+    """
+    properties = doc.core_properties
+    properties.title = THESIS_TITLE
+    properties.subject = "Praca inżynierska"
+    properties.author = AUTHOR
+    properties.keywords = ", ".join(KEYWORDS_PL)
+    properties.comments = ""
+    built = datetime.now(UTC)
+    properties.created = built
+    properties.modified = built
+
 
 def _title_page(doc: Document) -> None:
     """Until the PJATK template arrives: the usual fields, in the usual order."""
