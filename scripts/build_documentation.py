@@ -34,6 +34,7 @@ from docx.shared import Cm, Pt, RGBColor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import documentation_pl as translations  # noqa: E402
 from documentation_sources import (  # noqa: E402
     HORIZON_LABEL,
     MODEL_LABEL,
@@ -581,6 +582,7 @@ def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     doc.save(path)
+    translations.report()
     return path
 
 
@@ -3634,7 +3636,8 @@ def _chapter_11_verification(doc: Document) -> None:
     add_table(
         doc,
         ["Moduł", "Przypadków", "Czego pilnuje"],
-        [[m.path, str(len(m.cases)), m.purpose[:160]] for m in modules[:20]],
+        [[m.path, str(len(m.cases)),
+          translations.polish(translations.MODULES, m.path, m.purpose)] for m in modules[:20]],
         [4.4, 2.0, 9.6],
     )
     add_caption(
@@ -3663,7 +3666,8 @@ def _chapter_12_interfaces(doc: Document) -> None:
     add_table(
         doc,
         ["Polecenie", "Opis", "Flag"],
-        [[c.path, c.summary[:110], str(len(c.options))] for c in commands],
+        [[c.path, translations.polish(translations.COMMANDS, c.path, c.summary),
+          str(len(c.options))] for c in commands],
         [4.6, 9.4, 2.0],
     )
     add_caption(doc, "Tabela", "Polecenia wiersza poleceń.")
@@ -3679,7 +3683,7 @@ def _chapter_12_interfaces(doc: Document) -> None:
     add_table(
         doc,
         ["Metoda", "Ścieżka", "Opis"],
-        [[r.methods, r.path, r.summary[:90]] for r in routes],
+        [[r.methods, r.path, _route_text(r)] for r in routes],
         [2.0, 6.4, 7.6],
     )
     add_caption(doc, "Tabela", "Trasy interfejsu HTTP.")
@@ -4011,14 +4015,21 @@ def _appendix_tests(doc: Document) -> None:
         f"Zestawienie {cases} przypadków testowych w {len(modules)} modułach, odczytane wprost "
         "z kodu. Jest to specyfikacja systemu w jedynej postaci, która nie może się "
         "zdezaktualizować: każdej pozycji odpowiada asercja, która wykonuje się przy każdym "
-        "uruchomieniu pakietu. Pakiet nazywa przypadki zdaniami, więc sama nazwa mówi, czego "
-        "przypadek pilnuje; jeżeli ma on też dokumentację, jej treść następuje po nazwie.",
+        "uruchomieniu pakietu. Przy każdym przypadku podano jego nazwę w kodzie i opis tego, "
+        "czego pilnuje, przetłumaczony z nazwy i dokumentacji testu; generator ostrzega, gdy "
+        "opis w kodzie zmieni się, a tłumaczenie nie.",
     )
     for module in modules:
         add_heading(doc, module.path, 3)
-        add_body(doc, module.purpose, italic=True, size=9)
+        add_body(doc, translations.polish(translations.MODULES, module.path, module.purpose),
+                 italic=True, size=9)
         for case in module.cases:
-            add_definition(doc, case.name.removeprefix("test_"), case.intent, size=9)
+            name = case.name.removeprefix("test_")
+            add_definition(
+                doc, name,
+                translations.polish(translations.CASES, f"{module.path}::{name}", case.intent),
+                size=9,
+            )
     page_break(doc)
 
 
@@ -4033,19 +4044,26 @@ def _appendix_cli(doc: Document) -> None:
     )
     for command in commands:
         add_heading(doc, command.path, 3)
-        add_body(doc, command.summary, italic=True, size=9)
+        add_body(doc, translations.polish(translations.COMMANDS, command.path, command.summary),
+                 italic=True, size=9)
         if not command.options:
             add_body(doc, "Polecenie nie przyjmuje opcji.", size=9)
             continue
         add_table(
             doc,
             ["Flaga", "Typ", "Wym.", "Domyślnie", "Opis"],
-            [[o.flags, o.kind, "tak" if o.required else "-", o.default, o.help]
+            [[o.flags, OPTION_KIND.get(o.kind, o.kind), "tak" if o.required else "-",
+              o.default, translations.polish_help(o.help)]
              for o in command.options],
             [4.0, 1.8, 1.2, 2.4, 6.6],
             font=8,
         )
     page_break(doc)
+
+
+# The type names Click gives a flag's value, as the reference prints them.
+OPTION_KIND = {"text": "tekst", "integer": "liczba całkowita", "float": "liczba",
+               "path": "ścieżka", "choice": "wybór", "boolean": "wartość logiczna"}
 
 
 def _appendix_api(doc: Document) -> None:
@@ -4055,10 +4073,15 @@ def _appendix_api(doc: Document) -> None:
     add_table(
         doc,
         ["Metoda", "Ścieżka", "Opis"],
-        [[r.methods, r.path, r.summary] for r in routes],
+        [[r.methods, r.path, _route_text(r)] for r in routes],
         [2.0, 6.0, 8.0],
     )
     page_break(doc)
+
+
+def _route_text(route) -> str:
+    return translations.polish(translations.ROUTES, f"{route.methods} {route.path}",
+                               route.summary)
 
 
 def _appendix_settings(doc: Document) -> None:
@@ -4072,7 +4095,11 @@ def _appendix_settings(doc: Document) -> None:
     add_table(
         doc,
         ["Pole", "Typ", "Domyślnie", "Opis"],
-        [[f.name, f.kind, f.default, f.description] for f in fields],
+        [[f.name, f.kind,
+          # The four data directories are derived from data_root once it is known.
+          "z data_root" if f.kind == "Path" and f.default == "." else f.default,
+          translations.polish(translations.SETTINGS, f.name, f.description)]
+         for f in fields],
         [4.6, 2.6, 3.0, 5.8],
     )
 
