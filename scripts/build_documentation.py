@@ -60,6 +60,10 @@ from prosper.eval.significance import (  # noqa: E402
     benjamini_hochberg,
     bootstrap_p_value,
 )
+from prosper.predict.calibration import (  # noqa: E402
+    CALIBRATION_FRACTION,
+    MIN_CALIBRATION_SAMPLES,
+)
 
 REPORT_ROOT = "data/reports"
 # Which runs are the study is decided in one place: documentation_sources.
@@ -973,8 +977,8 @@ def abstract_texts(runs: dict) -> tuple[list[str], list[str]]:
         f"horyzontem (średnia korelacja rang {pl(rho, '+.2f')}), więc nie są właściwością "
         "architektury. Wynik jest zgodny ze słabą formą hipotezy efektywności "
         "rynku i stanowi górne ograniczenie przewagi możliwej do uzyskania z samych notowań. "
-        "Pozytywnym wynikiem inżynierskim jest kalibracja: system poprawnie raportuje własną "
-        "niepewność.",
+        "Prognozy wszystkich architektur są przy tym zbyt pewne siebie, najbardziej na długich "
+        "horyzontach.",
     ]
     english = [
         "This thesis asks how well machine learning architectures of different kinds can "
@@ -1004,8 +1008,8 @@ def abstract_texts(runs: dict) -> tuple[list[str], list[str]]:
         f"correlation {rho:+.2f}), so they are not a property of the architecture. The result "
         "is consistent with the weak form of the "
         "efficient market hypothesis and bounds the edge obtainable from prices alone. "
-        "Calibration is a positive engineering result: the system reports its own "
-        "uncertainty correctly.",
+        "The forecasts of every architecture are also overconfident, most of all at the long "
+        "horizons.",
     ]
 
     return polish, english
@@ -1162,8 +1166,10 @@ def _chapter_1_introduction(doc: Document) -> None:
             "konfigurację uruchomiono zatem trzykrotnie, pod różnymi ziarnami. Dla obu modeli "
             "gradientowych ziarno nie zmienia wyniku - uczą się bez podpróbkowania - więc szum "
             "inicjalizacji mierzą wyłącznie GRU i TFT.",
-            "Kalibracja prognoz jest osiągalna tam, gdzie trafność nie jest: system poprawnie "
-            "raportuje własną niepewność, co stanowi osobny, pozytywny wynik inżynierski.",
+            "Prognozy wszystkich architektur są zbyt pewne siebie: na każdym horyzoncie "
+            "deklarowana pewność przewyższa częstość trafień. Rozbieżność jest niewielka tylko "
+            "na horyzoncie tygodniowym, na którym wycinek kalibracyjny zawiera dość obserwacji "
+            "niezależnych, by wyznaczyć temperaturę.",
             "Wiążącym ograniczeniem jest liczba niezależnych obserwacji, nie pojemność modelu. "
             "Wynika ona z arytmetyki nakładających się etykiet i nie podlega strojeniu.",
             "Symulacja handlowa nie jest miarą jakości prognozy. Ten sam przebieg pod różnymi "
@@ -2504,7 +2510,12 @@ def _chapter_8_models(doc: Document) -> None:
         "Prawdopodobieństwa kalibrowane są skalowaniem temperatury (Guo i in., 2017) na "
         "wycinku wydzielonym "
         "wewnątrz okna treningowego - nigdy na świecach późniejszych, ponieważ kalibrator "
-        "widziałby wtedy etykiety niedostępne prognozie.",
+        "widziałby wtedy etykiety niedostępne prognozie. Wycinek obejmuje najnowsze "
+        f"{CALIBRATION_FRACTION:.0%} wierszy, których etykiety są już znane, czyli okres "
+        "najbliższy prognozie; gdy byłoby ich mniej niż "
+        f"{MIN_CALIBRATION_SAMPLES}, prawdopodobieństwa przechodzą bez kalibracji. Liczba "
+        "obserwacji niezależnych w wycinku maleje wraz z horyzontem, czego skutki pokazuje "
+        "rozdział 10.5.",
     )
     add_body(
         doc,
@@ -2860,26 +2871,148 @@ def _results_baserate(doc: Document) -> None:
     )
 
 
+def _training_windows() -> dict[str, tuple[int, int]]:
+    """Per horizon: the median training window and horizon length, in bars, over
+    the study's runs, as each run recorded them in run_summary.json."""
+    found: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for path in glob.glob(f"{REPORT_ROOT}/predictions/*/*/run_summary.json"):
+        symbol, slug = path.replace("\\", "/").split("/")[-3:-1]
+        if not is_study_run(symbol, slug):
+            continue
+        try:
+            windows = json.load(open(path, encoding="utf-8")).get("training_windows") or {}
+        except (OSError, json.JSONDecodeError):
+            continue
+        for horizon, window in windows.items():
+            if window.get("window_bars") and window.get("forward_bars"):
+                found[horizon].append((int(window["window_bars"]), int(window["forward_bars"])))
+    return {
+        horizon: (int(np.median([w for w, _ in pairs])), int(np.median([f for _, f in pairs])))
+        for horizon, pairs in found.items()
+    }
+
+
+def calibration_facts(runs: dict) -> dict:
+    """What the thesis says about calibration, read from the runs.
+
+    Per horizon: the mean ECE of every architecture, its declared confidence and
+    hit rate, and how many independent observations the calibration slice holds.
+    The slice is the most recent share of the rows the window can train on
+    (section 8.8), and its independent observations are those rows over the
+    horizon - the reason the error grows with the horizon.
+    """
+    try:
+        from documentation_figures import calibration_summary
+
+        summary = calibration_summary()
+    except Exception:
+        summary = {}
+    windows = _training_windows()
+    facts: dict = {"by_horizon": {}, "overconfident": bool(summary)}
+    for horizon in HORIZON_NAMES:
+        ece = {}
+        for model in MODELS:
+            values = [v for symbol in SYMBOLS
+                      for v in horizon_values(runs.get((symbol, model), []), horizon, "ece")]
+            if values:
+                ece[model] = float(np.mean(values))
+        cells = {m: summary[(horizon, m)] for m in MODELS if (horizon, m) in summary}
+        if any(c["confidence"] <= c["accuracy"] for c in cells.values()):
+            facts["overconfident"] = False
+        slice_observations = None
+        if horizon in windows:
+            window, forward = windows[horizon]
+            slice_observations = CALIBRATION_FRACTION * (window - forward) / forward
+        facts["by_horizon"][horizon] = {"ece": ece, "cells": cells,
+                                        "slice_observations": slice_observations}
+    return facts
+
+
+def _span(values: list[float], spec: str = ".2f", *, prose: bool = True) -> str:
+    """The range of a few values - "0,04-0,06" in prose, "0.040-0.060" in a table -
+    or the value alone when they all print alike."""
+    low, high = (pl(v, spec) if prose else format(v, spec) for v in (min(values), max(values)))
+    return low if low == high else f"{low}-{high}"
+
+
 def _results_calibration(doc: Document, runs: dict) -> None:
-    """ECE per architecture: the project's one positive engineering result."""
+    """ECE and reliability per architecture: how far the declared confidence lies
+    from the hit rate, and why the gap grows with the horizon."""
     if "kalibracja" not in _FIGURES and "niezawodnosc" not in _FIGURES:
         return
+    facts = calibration_facts(runs)
+    by_horizon = {h: f for h, f in facts["by_horizon"].items() if f["ece"] and f["cells"]}
     add_heading(doc, "10.5. Kalibracja", 2)
     add_body(
         doc,
         "Oczekiwany błąd kalibracji mierzy rozbieżność między deklarowaną pewnością a "
-        "rzeczywistą częstością trafień. Jest to wielkość niezależna od zdolności "
-        "rozróżniania: model pozbawiony przewagi może być doskonale skalibrowany, jeżeli "
-        "poprawnie raportuje, że nic nie wie.",
+        "rzeczywistą częstością trafień, niezależnie od zdolności rozróżniania. Model bez "
+        "przewagi jest dobrze skalibrowany wtedy, gdy deklaruje pewność bliską 50%, bo tyle "
+        "wynosi jego częstość trafień.",
     )
-    add_figure(doc, "kalibracja", "Oczekiwany błąd kalibracji według horyzontu i architektury. Wartości rosną z horyzontem, ponieważ wycinek kalibracyjny kurczy się wraz z liczbą obserwacji niezależnych; błąd każdego przebiegu podaje załącznik E.")
-    add_figure(doc, "niezawodnosc", "Krzywe niezawodności: deklarowana pewność wobec zrealizowanej częstości trafień, zbiorczo po wszystkich przebiegach. Przekątna oznacza kalibrację doskonałą.")
-    add_body(
+    add_figure(doc, "kalibracja", "Oczekiwany błąd kalibracji według horyzontu i architektury. Wartości rosną z horyzontem, ponieważ wycinek kalibracyjny zawiera tym mniej obserwacji niezależnych, im dłuższy jest horyzont; błąd każdego przebiegu podaje załącznik E.")
+    try:
+        from documentation_figures import RELIABILITY_MIN_BIN
+    except Exception:
+        RELIABILITY_MIN_BIN = 0
+    add_figure(
+        doc, "niezawodnosc",
+        "Krzywe niezawodności pięciu architektur na czterech horyzontach, zbiorczo po "
+        "instrumentach i ziarnach. Przekątna oznacza kalibrację doskonałą, a krzywa poniżej "
+        "niej - prognozę bardziej pewną, niż pozwalają na to trafienia. Punkty wyznaczono z "
+        f"przedziałów pewności zawierających co najmniej {RELIABILITY_MIN_BIN} prognoz.",
+    )
+    if not by_horizon:
+        return
+    add_table(
         doc,
-        "Niski błąd kalibracji przy trafności bliskiej poziomowi losowemu oznacza system, "
-        "który poprawnie komunikuje własną niepewność - jest to osobny, pozytywny wynik "
-        "inżynierski, niezależny od braku przewagi prognostycznej.",
+        ["Horyzont", "Deklarowana pewność", "Częstość trafień", "ECE",
+         "Obserwacje niezależne w wycinku kalibracyjnym"],
+        [[HORIZON_LABEL[h],
+          _span([c["confidence"] for c in f["cells"].values()], ".3f", prose=False),
+          _span([c["accuracy"] for c in f["cells"].values()], ".3f", prose=False),
+          _span(list(f["ece"].values()), ".3f", prose=False),
+          "-" if f["slice_observations"] is None else f"{f['slice_observations']:.1f}"]
+         for h, f in by_horizon.items()],
+        [2.4, 3.4, 3.2, 2.6, 4.4],
     )
+    add_caption(
+        doc, "Tabela",
+        "Pewność, trafienia i błąd kalibracji według horyzontu. Każda komórka podaje zakres "
+        "od najniższej do najwyższej średniej spośród pięciu architektur; ostatnia kolumna - "
+        "liczbę obserwacji niezależnych w wycinku, na którym wyznaczana jest temperatura.",
+    )
+    week, year = by_horizon.get("week"), by_horizon.get("year")
+    if week and year and facts["overconfident"]:
+        best = min(week["ece"], key=week["ece"].get)
+        add_body(
+            doc,
+            "Na każdym horyzoncie wszystkie architektury deklarują więcej pewności, niż wynosi "
+            "ich częstość trafień - prognozy są zbyt pewne siebie. Na horyzoncie tygodniowym "
+            f"rozbieżność jest niewielka (ECE {_span(list(week['ece'].values()))}), a "
+            f"najmniejszą ma {MODEL_LABEL[best]}"
+            + (", który niczego się nie uczy" if best == "baseline" else "")
+            + f". Na horyzoncie rocznym rośnie do {_span(list(year['ece'].values()))}. Przyczynę "
+            "pokazuje ostatnia kolumna tabeli: temperaturę wyznacza się na wycinku obejmującym "
+            f"najnowsze {CALIBRATION_FRACTION:.0%} wierszy okna treningowego (rozdział 8.8), "
+            "który na horyzoncie tygodniowym zawiera około "
+            f"{pl(week['slice_observations'], '.0f')} obserwacji niezależnych, a na rocznym - "
+            f"{pl(year['slice_observations'], '.2f')}. Temperatura dopasowana do mniej niż "
+            "jednej obserwacji niezależnej nie przenosi się na okres prognozy.",
+        )
+        add_body(
+            doc,
+            "System zawyża zatem własną pewność: nieznacznie na horyzoncie tygodniowym, "
+            "znacznie na dłuższych. Jest to ograniczenie warstwy kalibracji, a nie skutek braku "
+            "przewagi - model bez przewagi mógłby być skalibrowany doskonale. Kierunek poprawy "
+            "podaje rozdział 13.2.",
+        )
+    elif not facts["overconfident"]:
+        add_body(
+            doc,
+            "Deklarowana pewność nie przewyższa częstości trafień na każdym horyzoncie i w "
+            "każdej architekturze; zakresy obu wielkości podaje tabela powyżej.",
+        )
 
 
 def _results_backtest(doc: Document) -> None:
@@ -3620,6 +3753,24 @@ def _chapter_12_interfaces(doc: Document) -> None:
 
 # ── 12-13 ────────────────────────────────────────────────────────────────────
 
+def _calibration_limit() -> list[str]:
+    """The limitation section 10.5 measures: too few independent observations in
+    the calibration slice of the long horizons. Empty when the windows are unknown."""
+    windows = _training_windows()
+    if "quarter" not in windows or "year" not in windows:
+        return []
+    observations = {
+        horizon: CALIBRATION_FRACTION * (window - forward) / forward
+        for horizon, (window, forward) in windows.items()
+    }
+    return [
+        "Kalibracja skalowaniem temperatury wymaga wycinka z wieloma obserwacjami "
+        "niezależnymi. Na horyzontach kwartalnym i rocznym wycinek zawiera ich około "
+        f"{pl(observations['quarter'], '.1f')} i {pl(observations['year'], '.2f')}, więc "
+        "prognozy tych horyzontów deklarują pewność, której trafienia nie potwierdzają."
+    ]
+
+
 def _chapter_13_limits(doc: Document) -> None:
     add_heading(doc, "13. Ograniczenia i kierunki dalszych prac", 1)
 
@@ -3643,6 +3794,7 @@ def _chapter_13_limits(doc: Document) -> None:
             "modeli bez rozszerzenia danych nie zmieniłoby wyniku.",
             "Badanie obejmuje jeden rynek i jeden reżim regulacyjny. Wyniki nie przenoszą się "
             "automatycznie na rynki o nieciągłym obrocie.",
+            *_calibration_limit(),
         ],
     )
 
@@ -3658,6 +3810,9 @@ def _chapter_13_limits(doc: Document) -> None:
              "hipotezy.", "wysoka"],
             ["Zmiana wielkości prognozowanej",
              "Zmienność jest prognozowalna tam, gdzie kierunek nie jest.", "średnia"],
+            ["Kalibracja długich horyzontów",
+             "Ściąganie prognozy w stronę 50% tam, gdzie wycinek kalibracyjny ma zbyt mało "
+             "obserwacji niezależnych, aby wyznaczyć temperaturę.", "średnia"],
             ["Rozszerzenie na inne rynki",
              "Pierwotny zamiar pracy; wymaga obsługi nieciągłości i zdarzeń korporacyjnych.",
              "średnia"],
@@ -3773,12 +3928,20 @@ def _chapter_14_summary(doc: Document, runs: dict) -> None:
         "który wyprodukował wynik pozornie pozytywny i przeszedł replikację poza próbą, zanim "
         "został obalony.",
     )
-    add_body(
-        doc,
-        "Osobnym, pozytywnym wynikiem inżynierskim jest kalibracja: system poprawnie raportuje "
-        "własną niepewność tam, gdzie nie ma zdolności rozróżniania. Prognoza, która wie, że nie "
-        "wie, jest użyteczna; prognoza pewna siebie i błędna nie jest.",
-    )
+    calibration = calibration_facts(runs)
+    week_ece = list(calibration["by_horizon"].get("week", {}).get("ece", {}).values())
+    year_ece = list(calibration["by_horizon"].get("year", {}).get("ece", {}).values())
+    if calibration["overconfident"] and week_ece and year_ece:
+        add_body(
+            doc,
+            "Osobnym wynikiem jest nadmierna pewność prognoz. Na każdym horyzoncie deklarowana "
+            "pewność przewyższa częstość trafień, a błąd kalibracji rośnie od "
+            f"{_span(week_ece)} na horyzoncie tygodniowym do {_span(year_ece)} na rocznym, "
+            "ponieważ wycinek kalibracyjny długich horyzontów zawiera za mało obserwacji "
+            "niezależnych, by wyznaczyć temperaturę. Prognoza bez przewagi powinna deklarować "
+            "pewność bliską 50%; poprawa warstwy kalibracji jest jednym z kierunków dalszych "
+            "prac.",
+        )
     page_break(doc)
 
 
@@ -3802,6 +3965,8 @@ def _check_thesis_against_data(runs: dict) -> None:
         problems.append(f"{len(higher)} measurements above chance survive Benjamini-Hochberg")
     if found["mismatched"]:
         problems.append(f"{found['mismatched']} recomputed intervals differ from the stored ones")
+    if not calibration_facts(runs)["overconfident"]:
+        problems.append("the forecasts are no longer overconfident on every horizon")
     for problem in problems:
         print(f"WARNING: thesis 1.3 / 1.5 no longer matches the data: {problem}")
 

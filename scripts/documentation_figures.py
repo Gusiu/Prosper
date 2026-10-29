@@ -12,6 +12,7 @@ that would survive printing as noise rather than information.
 
 from __future__ import annotations
 
+import functools
 import glob
 import json
 import os
@@ -225,7 +226,8 @@ def calibration_by_horizon() -> str | None:
                 if by_horizon.get(horizon) and by_horizon[horizon].get("ece") is not None
             ]
             means.append(float(np.mean(values)) if values else np.nan)
-        axis.bar(positions + index * width - 2 * width, means, width * 0.9, label=MODEL_LABEL[model])
+        axis.bar(positions + index * width - 2 * width, means, width * 0.9, color=f"C{index}",
+                 label=MODEL_LABEL[model])
     axis.set_xticks(positions)
     axis.set_xticklabels([HORIZON_LABEL[h] for h in HORIZON_NAMES])
     axis.set_ylabel("ECE (mniej = lepiej)")
@@ -264,58 +266,100 @@ def backtest_percentiles() -> str | None:
     return _save(fig, "backtest_percentyle.png")
 
 
-def reliability_diagram() -> str | None:
-    """Declared confidence against realised frequency.
+# The bins of the reliability curves. Equal widths up to the largest confidence
+# would merge the confident end, where the year horizon puts half its forecasts.
+RELIABILITY_EDGES = (0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 0.9, 1.0001)
+# A bin holding fewer forecasts than this is not drawn: its hit rate is noise, the
+# more so as neighbouring forecasts share most of their outcome.
+RELIABILITY_MIN_BIN = 200
 
-    The picture behind the ECE column: a perfectly calibrated forecast lies on
-    the diagonal. Deviation upward means the model is underconfident, downward
-    that it claims more than it delivers.
+
+@functools.cache
+def confidence_rows() -> dict[tuple[str, str], tuple[np.ndarray, np.ndarray]]:
+    """Per (horizon, model): the declared confidence and the hit (1 or 0) of every
+    scored forecast of the study, pooled over instruments and seeds.
+
+    Read once and shared by the reliability figure and the text of section 10.5.
     """
     import polars as pl
 
-    fig, axes = plt.subplots(1, len(HORIZON_NAMES), figsize=(9.5, 2.6), sharey=True)
+    pooled: dict[tuple[str, str], tuple[list, list]] = defaultdict(lambda: ([], []))
+    for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/predictions_quality.parquet")):
+        symbol, slug = path.replace("\\", "/").split("/")[-3:-1]
+        if not is_study_run(symbol, slug):
+            continue
+        try:
+            frame = pl.read_parquet(
+                path, columns=["horizon", "status", "pred_confidence", "correct"]
+            ).filter(pl.col("status") == "scored")
+        except Exception:
+            continue
+        model = slug.split("_")[0]
+        for horizon in HORIZON_NAMES:
+            sub = frame.filter(pl.col("horizon") == horizon)
+            if sub.is_empty():
+                continue
+            confidence, hits = pooled[(horizon, model)]
+            confidence.extend(sub["pred_confidence"].to_list())
+            hits.extend(float(bool(x)) for x in sub["correct"].to_list())
+    return {key: (np.array(c, dtype=float), np.array(h, dtype=float))
+            for key, (c, h) in pooled.items()}
+
+
+def calibration_summary() -> dict[tuple[str, str], dict[str, float]]:
+    """Per (horizon, model): how many forecasts, their mean declared confidence and
+    the share of them that came true."""
+    return {
+        key: {"forecasts": len(c), "confidence": float(c.mean()), "accuracy": float(h.mean())}
+        for key, (c, h) in confidence_rows().items() if len(c)
+    }
+
+
+def reliability_diagram() -> str | None:
+    """Declared confidence against realised frequency, one curve per architecture.
+
+    The picture behind the ECE figure: a calibrated forecast lies on the
+    diagonal, and a curve below it claims more than it delivers. Each
+    architecture gets its own curve, because pooled into one they would average
+    away errors of opposite sign.
+    """
+    rows = confidence_rows()
+    if not rows:
+        return None
+    fig, axes = plt.subplots(1, len(HORIZON_NAMES), figsize=(9.5, 2.9), sharey=True)
     drawn = False
     for axis, horizon in zip(np.atleast_1d(axes), HORIZON_NAMES, strict=False):
-        confidence, correct = [], []
-        for path in glob.glob(f"{REPORT_ROOT}/evaluations/*/*/predictions_quality.parquet"):
-            symbol, slug = path.replace("\\", "/").split("/")[-3:-1]
-            if not is_study_run(symbol, slug):
+        axis.plot([0.5, 1.0], [0.5, 1.0], color="#C0392B", linewidth=0.9, linestyle="--")
+        for index, model in enumerate(MODELS):
+            if (horizon, model) not in rows:
                 continue
-            try:
-                frame = pl.read_parquet(path).filter(
-                    (pl.col("horizon") == horizon) & (pl.col("status") == "scored")
-                )
-            except Exception:
+            confidence, hits = rows[(horizon, model)]
+            xs, ys = [], []
+            for low, high in zip(RELIABILITY_EDGES[:-1], RELIABILITY_EDGES[1:], strict=False):
+                mask = (confidence >= low) & (confidence < high)
+                if mask.sum() < RELIABILITY_MIN_BIN:
+                    continue
+                xs.append(confidence[mask].mean())
+                ys.append(hits[mask].mean())
+            if not xs:
                 continue
-            if frame.is_empty():
-                continue
-            confidence.extend(frame["pred_confidence"].to_list())
-            correct.extend(bool(x) for x in frame["correct"].to_list())
-        if len(confidence) < 100:
-            continue
-        conf = np.array(confidence, dtype=float)
-        hit = np.array(correct, dtype=float)
-        edges = np.linspace(0.5, min(1.0, conf.max()), 9)
-        xs, ys = [], []
-        for low, high in zip(edges[:-1], edges[1:], strict=False):
-            mask = (conf >= low) & (conf < high)
-            if mask.sum() < 30:
-                continue
-            xs.append(conf[mask].mean())
-            ys.append(hit[mask].mean())
-        if not xs:
-            continue
-        drawn = True
-        axis.plot([0.45, 0.75], [0.45, 0.75], color="#C0392B", linewidth=0.9, linestyle="--")
-        axis.plot(xs, ys, marker="o", markersize=3, linewidth=1.1, color=ACCENT)
+            drawn = True
+            # The colours of the ECE figure, so that a model looks the same in both.
+            axis.plot(xs, ys, marker="o", markersize=2.5, linewidth=1.0, color=f"C{index}",
+                      label=MODEL_LABEL[model])
         axis.set_title(HORIZON_LABEL[horizon])
         axis.set_xlabel("deklarowana pewność")
-        axis.set_xlim(0.47, 0.72)
-        axis.set_ylim(0.30, 0.75)
+        axis.set_xlim(0.48, 1.0)
+        # From zero: the baseline's most confident forecasts come true in under 10%.
+        axis.set_ylim(0.0, 1.0)
     if not drawn:
         plt.close(fig)
         return None
-    np.atleast_1d(axes)[0].set_ylabel("zrealizowana częstość")
+    first = np.atleast_1d(axes)[0]
+    first.set_ylabel("częstość trafień")
+    handles, labels = first.get_legend_handles_labels()
+    fig.legend(handles, labels, frameon=False, ncol=len(labels), fontsize=7,
+               loc="upper center", bbox_to_anchor=(0.5, 0.0))
     return _save(fig, "niezawodnosc.png")
 
 
