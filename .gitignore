@@ -83,7 +83,7 @@ CLAUDE.md
 AGENTS.md
 .claude/
 
-# The technical write-up is generated from the project's own artifacts by
+# The thesis is generated from the project's own artifacts by
 # `scripts/build_documentation.py`, which is the tracked source of truth. The
 # document itself is an output: the previous tracked copy drifted until it
 # described horizons, a feature set and findings that three later fixes

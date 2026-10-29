@@ -33,7 +33,7 @@ mypy = "^1.7.0"
 types-PyYAML = "^6.0"
 types-requests = "^2.32"
 # Used only by scripts/build_documentation.py and scripts/documentation_figures.py,
-# which render the technical write-up from the project's own artifacts. Nothing in
+# which render the thesis from the project's own artifacts. Nothing in
 # src/ imports them, so they are a build dependency rather than a runtime one.
 python-docx = "^1.2.0"
 matplotlib = "^3.11.0"

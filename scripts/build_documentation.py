@@ -1,4 +1,4 @@
-"""Generate the technical documentation as a .docx.
+"""Generate the engineering thesis as a .docx.
 
 The document is *generated*, not written by hand, for the reason the previous one
 was deleted: a hand-written write-up drifts from the code and then contradicts
@@ -9,7 +9,7 @@ artifacts do not contain, nor list a flag the CLI does not have.
 
     .venv/Scripts/python.exe scripts/build_documentation.py
 
-Writes `docs/Prosper_Dokumentacja_Techniczna.docx`, which is gitignored: this
+Writes `docs/Prosper_Praca_Inzynierska.docx`, which is gitignored: this
 script is the source of truth, the document is an artifact.
 """
 
@@ -520,7 +520,7 @@ def _start_page_if_pending(doc: Document, paragraph) -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-def build(path: str = "docs/Prosper_Dokumentacja_Techniczna.docx") -> str:
+def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
     runs = load_runs()
     _check_thesis_against_data(runs)
     doc = Document()
@@ -1146,7 +1146,7 @@ def _chapter_1_introduction(doc: Document) -> None:
         ],
     )
 
-    add_heading(doc, "1.6. Struktura dokumentu", 2)
+    add_heading(doc, "1.6. Struktura pracy", 2)
     add_table(
         doc,
         ["Rozdział", "Zawartość"],
@@ -1170,7 +1170,7 @@ def _chapter_1_introduction(doc: Document) -> None:
         ],
         [2.5, 13.5],
     )
-    add_caption(doc, "Tabela", "Układ dokumentu.")
+    add_caption(doc, "Tabela", "Układ pracy.")
     page_break(doc)
 
 
@@ -2009,7 +2009,7 @@ def _chapter_4_architecture(doc: Document) -> None:
         "Każdy przebieg prognozy zapisywany jest w katalogu o nazwie złożonej z modelu, "
         "interwału i znacznika czasu. Wszystkie artefakty pochodne - ocena, stabilność, "
         "rekomendacje, symulacja - powstają w katalogach o tej samej nazwie, w osobnych "
-        "drzewach. Dzięki temu każda liczba w dokumentacji daje się prześledzić wstecz do "
+        "drzewach. Dzięki temu każda liczba w pracy daje się prześledzić wstecz do "
         "przebiegu, który ją wytworzył.",
     )
     add_code(
@@ -4006,7 +4006,7 @@ def _appendix_glossary(doc: Document) -> None:
         [4.2, 11.8],
         font=9,
     )
-    add_caption(doc, "Tabela", "Słownik pojęć używanych w dokumencie.")
+    add_caption(doc, "Tabela", "Słownik pojęć używanych w pracy.")
 
 
 def _appendix_runs(doc: Document, runs: dict) -> None:
@@ -4209,7 +4209,7 @@ def _chapter_3_equations(doc: Document) -> None:
     )
     add_caption(
         doc, "Tabela",
-        "Definicje formalne wielkości używanych w dokumencie. Wszystkie są zaimplementowane "
+        "Definicje formalne wielkości używanych w pracy. Wszystkie są zaimplementowane "
         "w jednym miejscu i pokryte testami, których wykaz zawiera załącznik A.",
     )
 
