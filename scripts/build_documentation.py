@@ -2938,7 +2938,7 @@ def _results_max_vs_mean(doc: Document) -> None:
     add_heading(doc, "10.8. Dlaczego najlepsza komórka nie jest wynikiem", 2)
     add_body(
         doc,
-        "Zestawienie najlepszych komórek jest miarą kuszącą i myloną (Bailey i López de "
+        "Zestawienie najlepszych komórek jest miarą kuszącą i mylącą (Bailey i López de "
         "Prado, 2014). Maksimum z wielu "
         "zaszumionych pomiarów rośnie wraz z ich liczbą nawet wtedy, gdy żaden z nich nie "
         "zawiera sygnału - przy kilkudziesięciu komórkach i poziomie istotności 5% "
