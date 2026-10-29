@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import glob
 import json
+import math
 import os
 import re
 import sys
@@ -319,7 +320,57 @@ def add_table(
     for row in table.rows:
         for index, cell in enumerate(row.cells):
             cell.width = Cm(widths[index])
+    _hold_together(table, _estimated_height([header, *rows], widths, font))
     _spacer(doc)
+
+
+# A table up to this share of the text block moves to the next page whole,
+# caption included, rather than leave its caption and first rows behind.
+KEEP_TOGETHER_SHARE = 0.55
+TEXT_HEIGHT_PT = (29.7 - 2 * MARGIN_CM) / 2.54 * 72
+# A longer table starts only where its header and this many rows still fit.
+OPENING_ROWS = 2
+
+
+def _estimated_height(rows: list[list[str]], widths: list[float], font: float) -> float:
+    """Rough height of a table in points, from how many lines each cell wraps to.
+
+    A Times New Roman character is about 0.45 of the font size wide; a row is as
+    tall as its tallest cell, plus the cell margins.
+    """
+    height = 0.0
+    for values in rows:
+        lines = max(
+            max(1, math.ceil(len(str(value)) / max(1.0, width / (0.45 * font * 0.03528))))
+            for value, width in zip(values, widths, strict=False)
+        )
+        height += lines * font * 1.2 + 2
+    return height
+
+
+def _hold_together(table, height: float) -> None:
+    """Keep a table's rows whole and its start, end or all of it on one page.
+
+    Every row refuses to break across pages. A table short enough to move
+    whole keeps every row with the next, so it travels with its caption; a
+    longer one keeps its header with the first rows, and its last row with the
+    note and source beneath it.
+    """
+    whole = height <= KEEP_TOGETHER_SHARE * TEXT_HEIGHT_PT
+    last = len(table.rows) - 1
+    for index, row in enumerate(table.rows):
+        properties = row._tr.get_or_add_trPr()
+        no_split = OxmlElement("w:cantSplit")
+        # Schema order: cantSplit comes before tblHeader within w:trPr.
+        header = properties.find(qn("w:tblHeader"))
+        if header is not None:
+            header.addprevious(no_split)
+        else:
+            properties.append(no_split)
+        if whole or index <= OPENING_ROWS or index == last:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    paragraph.paragraph_format.keep_with_next = True
 
 
 # Colours of the table rules: the accent for the frame, a light grey between rows.
