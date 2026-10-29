@@ -21,7 +21,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import numpy as np
 from docx import Document
@@ -86,6 +86,9 @@ UNIVERSITY = "Polsko-Japońska Akademia Technik Komputerowych"
 FIELD = "Informatyka"
 SPECIALISATION = "Robotyka i Inteligentne Systemy Autonomiczne"
 YEAR = "2028"
+# A working draft says so on its title page, dated by the build, so that the
+# versions sent for review can be told apart. False for the final version.
+DRAFT = True
 
 try:
     from documentation_figures import build_all as _build_figures
@@ -618,6 +621,8 @@ def _title_page(doc: Document) -> None:
     line(THESIS_TITLE, 18, bold=True, colour=ACCENT, after=10)
     line(THESIS_TITLE_EN, 11, italic=True, colour=MUTED, after=50)
     line("Praca inżynierska", 13, after=4)
+    if DRAFT:
+        line(f"Wersja robocza z {date.today():%d.%m.%Y}", 10, italic=True, colour=MUTED)
     line(f"Promotor: {SUPERVISOR}", 12, after=110)
     line(YEAR, 11)
 
