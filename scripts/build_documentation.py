@@ -905,7 +905,7 @@ def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
 
     _title_page(doc)
     page_break(doc)
-    _abstracts(doc, runs)
+    _abstract(doc, runs)
 
     add_front_heading(doc, "Spis treści")
     add_toc(doc)
@@ -1001,7 +1001,7 @@ def _document_properties(doc: Document) -> None:
     properties.title = THESIS_TITLE
     properties.subject = "Praca inżynierska"
     properties.author = AUTHOR
-    properties.keywords = ", ".join(KEYWORDS_PL)
+    properties.keywords = ", ".join(KEYWORDS)
     properties.comments = ""
     built = datetime.now(UTC)
     properties.created = built
@@ -1038,15 +1038,11 @@ def _title_page(doc: Document) -> None:
     line(YEAR, 11)
 
 
-KEYWORDS_PL = [
-    "uczenie maszynowe", "prognozowanie szeregów czasowych", "kryptowaluty",
-    "hipoteza efektywności rynku", "walidacja krocząca", "kalibracja prognoz",
-    "Temporal Fusion Transformer",
-]
-KEYWORDS_EN = [
-    "machine learning", "time series forecasting", "cryptocurrencies",
-    "efficient market hypothesis", "walk-forward validation", "forecast calibration",
-    "Temporal Fusion Transformer",
+# PJATK: three to five keywords, in alphabetical order, lowercase unless a proper
+# name, none longer than three words.
+KEYWORDS = [
+    "hipoteza efektywności rynku", "kryptowaluty", "prognozowanie szeregów czasowych",
+    "uczenie maszynowe", "walidacja krocząca",
 ]
 
 
@@ -1339,105 +1335,62 @@ def baseline_lag(runs: dict, horizon: str = "quarter", symbol: str = "BTCUSDT") 
     }
 
 
-def abstract_texts(runs: dict) -> tuple[list[str], list[str]]:
-    """Streszczenie and abstract. Every number in them is read from the runs."""
-    f = study_facts(runs)
-    week = f["by_horizon"].get("week", {})
-    month = f["by_horizon"].get("month", {})
+# PJATK's limits for the abstract: at most 1000 characters with spaces under the
+# university-wide rules (the Gdańsk faculty allows 400-1500).
+ABSTRACT_CHARACTERS = (400, 1000)
 
-    powered_above = week.get("above", 0) + month.get("above", 0)
-    powered = week.get("estimable", 0) + month.get("estimable", 0)
-    # One side of a two-sided 95% interval: what chance alone puts above it.
-    expected = round(powered * 0.025)
-    by_chance = powered_above <= 1.5 * expected + 1
-    rho = f["rank_correlation"]
+
+def abstract_text(runs: dict) -> str:
+    """The streszczenie. Every number in it is read from the runs."""
+    f = study_facts(runs)
     horizons = len(f["spread"])
     within = horizons - len(f["beyond_noise"])
-    deterministic = set(f["seed_invariant"]) == {"ml", "xgboost"}
-
-    polish = [
-        "Praca dotyczy pytania, w jakim stopniu architektury uczenia maszynowego różnego "
-        "rodzaju potrafią przewidzieć kierunek zmiany ceny aktywa wyłącznie na podstawie "
-        "historii jego notowań. W ramach pracy zaprojektowano i zbudowano platformę Prosper, "
-        "obejmującą pozyskiwanie danych giełdy Binance, kontrolę ich jakości, wyznaczanie cech "
-        "i etykiet, trening pięciu architektur - od modelu odniesienia, przez dwie implementacje "
-        "wzmacniania gradientowego (scikit-learn i XGBoost), po sieć rekurencyjną GRU i Temporal "
-        "Fusion Transformer - we wspólnym protokole kroczącym, ocenę regułami oceny właściwej z "
-        "przedziałami ufności uwzględniającymi nakładanie się etykiet oraz symulację handlową "
-        "z czterema hipotezami zerowymi. System udostępnia interfejs wiersza poleceń i panel "
-        "przeglądarkowy.",
-        f"Badanie objęło {f['runs']} przebiegów na {f['symbols']} instrumentach, w czterech "
-        "horyzontach od tygodnia do roku, każdą konfigurację pod trzema ziarnami inicjalizacji"
-        + (". Oba modele gradientowe uczą się deterministycznie, więc różnych pomiarów jest "
-           f"{f['distinct']}. " if deterministic else f"; różnych pomiarów jest {f['distinct']}. ")
-        + "Na horyzontach tygodniowym i miesięcznym, jedynych o wystarczającej mocy "
-        f"statystycznej, trafność istotnie wyższą od losowej dało {powered_above} z {powered} "
-        "pomiarów - "
-        + ("nie więcej, niż przy braku jakiejkolwiek przewagi daje sam przypadek"
-           if by_chance else "więcej, niż przy braku przewagi dałby sam przypadek")
-        + f" (oczekiwanie: około {expected}). Na horyzoncie rocznym liczba obserwacji "
-        "niezależnych nie pozwala na żaden rozstrzygający pomiar. Różnice między "
-        "architekturami uczącymi się mieszczą się w rozrzucie wynikającym z losowej "
-        f"inicjalizacji na {within} z {horizons} horyzontów, a ich ranking zmienia się z "
-        f"horyzontem (średnia korelacja rang {pl(rho, '+.2f')}), więc nie są właściwością "
-        "architektury. Wynik jest zgodny ze słabą formą hipotezy efektywności "
-        "rynku i stanowi górne ograniczenie przewagi możliwej do uzyskania z samych notowań. "
-        "Prognozy wszystkich architektur są przy tym zbyt pewne siebie, najbardziej na długich "
-        "horyzontach.",
-    ]
-    english = [
-        "This thesis asks how well machine learning architectures of different kinds can "
-        "forecast the direction of an asset's price from its quotation history alone. It "
-        "presents Prosper, a platform designed and built for the purpose: it acquires Binance "
-        "market data and checks its quality, derives features and labels, trains five "
-        "architectures - a frequency baseline, gradient-boosted trees from scikit-learn and "
-        "from XGBoost, a GRU recurrent network and a Temporal Fusion Transformer - under one "
-        "walk-forward "
-        "protocol, evaluates them with proper scoring rules and confidence intervals that "
-        "account for overlapping labels, and simulates trading against four null hypotheses. "
-        "It is operated from a command line and a browser dashboard.",
-        f"The study comprises {f['runs']} runs on {f['symbols']} instruments, over four "
-        "horizons from a week to a year, each configuration under three initialisation seeds"
-        + (". Both gradient-boosting models learn deterministically, which leaves "
-           f"{f['distinct']} distinct measurements. " if deterministic
-           else f"; {f['distinct']} of the measurements are distinct. ")
-        + "On the weekly and monthly horizons, the only ones with enough statistical power, "
-        f"{powered_above} of {powered} measurements reached an accuracy significantly above "
-        "chance - "
-        + ("no more than chance alone produces without any edge"
-           if by_chance else "more than chance alone would produce")
-        + f" (about {expected} expected). At the yearly horizon the number of independent "
-        "observations allows no conclusive measurement. The differences between the learning "
-        f"architectures stay within the spread of random initialisation on {within} of "
-        f"{horizons} horizons, and their ranking changes with the horizon (mean rank "
-        f"correlation {rho:+.2f}), so they are not a property of the architecture. The result "
-        "is consistent with the weak form of the "
-        "efficient market hypothesis and bounds the edge obtainable from prices alone. "
-        "The forecasts of every architecture are also overconfident, most of all at the long "
-        "horizons.",
-    ]
-
-    return polish, english
+    higher = [m for m in departures(runs)["measurements"]
+              if m["q"] < FALSE_DISCOVERY_RATE and m["accuracy"] > CHANCE]
+    defects = len(DEFECTS)
+    text = (
+        "Praca bada, czy architektury uczenia maszynowego przewidują kierunek zmiany ceny "
+        "kryptowaluty na podstawie samej historii notowań. W tym celu zbudowano platformę "
+        "Prosper, która pobiera dane giełdy Binance, kontroluje ich jakość, wyznacza cechy i "
+        "etykiety, trenuje pięć architektur - od modelu odniesienia po Temporal Fusion "
+        "Transformer - we wspólnym protokole kroczącym i ocenia prognozy regułami oceny "
+        f"właściwej. W {f['runs']} przebiegach na {f['symbols']} kryptowalutach i czterech "
+        "horyzontach "
+        + ("żadna architektura nie osiągnęła trafności istotnie wyższej od losowej po "
+           "poprawce na wielokrotne porównania" if not higher else
+           f"{len(higher)} "
+           + _plural(len(higher), "pomiar przekroczył", "pomiary przekroczyły",
+                     "pomiarów przekroczyło")
+           + " losowość także po poprawce na wielokrotne porównania")
+        + ", a różnice między architekturami mieściły się w rozrzucie wynikającym z losowej "
+        f"inicjalizacji na {COUNT_LOCATIVE.get(within, str(within))} z "
+        f"{COUNT_LOCATIVE.get(horizons, str(horizons))} horyzontów. Wynik jest zgodny ze "
+        "słabą formą hipotezy efektywności rynku."
+        + (" Prognozy okazały się przy tym zbyt pewne siebie."
+           if calibration_facts(runs)["overconfident"] else "")
+        + f" Warstwa weryfikacji wykryła {COUNT_WORDS.get(defects, str(defects))} "
+        + _plural(defects, "defekt", "defekty", "defektów")
+        + ", w tym jeden dający pozornie pozytywny wynik."
+    )
+    low, high = ABSTRACT_CHARACTERS
+    if not low <= len(text) <= high:
+        print(f"WARNING: the abstract has {len(text)} characters; PJATK allows {low}-{high}")
+    return text
 
 
-def _abstracts(doc: Document, runs: dict) -> None:
-    """Streszczenie and abstract, each with keywords, before the table of contents."""
-    polish, english = abstract_texts(runs)
-    for heading, text, label, words in (
-        ("Streszczenie", polish, "Słowa kluczowe", KEYWORDS_PL),
-        ("Abstract", english, "Keywords", KEYWORDS_EN),
-    ):
-        add_front_heading(doc, heading)
-        for paragraph_text in text:
-            add_body(doc, paragraph_text)
-        keywords = doc.add_paragraph()
-        keywords.paragraph_format.space_before = Pt(8)
-        lead = keywords.add_run(f"{label}: ")
-        lead.bold = True
-        lead.font.size = Pt(BODY_SIZE)
-        rest = keywords.add_run(", ".join(words))
-        rest.font.size = Pt(BODY_SIZE)
-        page_break(doc)
+def _abstract(doc: Document, runs: dict) -> None:
+    """The streszczenie with its keywords, before the table of contents. PJATK asks
+    for an abstract in a second language only when the thesis is written in one."""
+    add_front_heading(doc, "Streszczenie")
+    add_body(doc, abstract_text(runs))
+    keywords = doc.add_paragraph()
+    keywords.paragraph_format.space_before = Pt(8)
+    lead = keywords.add_run("Słowa kluczowe: ")
+    lead.bold = True
+    lead.font.size = Pt(BODY_SIZE)
+    rest = keywords.add_run(", ".join(KEYWORDS))
+    rest.font.size = Pt(BODY_SIZE)
+    page_break(doc)
 
 
 def _lists_of_tables_and_figures(doc: Document) -> None:
