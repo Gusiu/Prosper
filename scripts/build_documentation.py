@@ -1074,12 +1074,10 @@ def _chapter_1_introduction(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Ograniczenie do samych notowań nie jest uproszczeniem przyjętym dla wygody. Pytanie "
-        "„czy z historii cen da się przewidzieć cenę” jest treścią słabej formy hipotezy "
-        "efektywności rynku (Fama, 1970) i stanowi jedną z trzech kanonicznych postaci tej "
-        "hipotezy. Analiza fundamentalna należy do formy półsilnej i odpowiada na inne pytanie; "
-        "nie jest bogatszą wersją pytania zadanego tutaj. Praca testuje formę słabą przy użyciu "
-        "architektur, które w chwili jej sformułowania nie istniały.",
+        "Ograniczenie do samych notowań wynika z pytania badawczego. Pytanie, czy z historii "
+        "cen da się przewidzieć cenę, jest treścią słabej formy hipotezy efektywności rynku "
+        "(Fama, 1970), jednej z jej trzech postaci (rozdział 3.1). Praca testuje formę słabą "
+        "przy użyciu architektur, które w chwili jej sformułowania nie istniały.",
     )
 
     add_heading(doc, "1.3. Teza", 2)
@@ -1112,10 +1110,8 @@ def _chapter_1_introduction(doc: Document) -> None:
     add_heading(doc, "1.4. Uzasadnienie wyboru rynku", 2)
     add_body(
         doc,
-        "Pierwotnym zamiarem był system uniwersalny, obejmujący rynek akcji, walutowy i "
-        "kryptowalut. Zakres ograniczono do kryptowalut z powodów metodologicznych, a nie "
-        "wyłącznie z powodu złożoności implementacji: rynki różnią się w sposób, który wprowadza "
-        "do pomiaru zmienne niezwiązane z badanym modelem.",
+        "Badanie prowadzono na rynku kryptowalut, ponieważ jego budowa pozwala mierzyć "
+        "zachowanie modelu bez zmiennych, które wprowadza sam system obrotu:",
     )
     add_bullets(
         doc,
@@ -1137,9 +1133,8 @@ def _chapter_1_introduction(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Wybrano zatem rynek, na którym mierzone jest zachowanie modelu, a nie artefakty "
-        "specyficzne dla danego systemu obrotu. Rozszerzenie na pozostałe rynki pozostaje "
-        "kierunkiem dalszych prac (rozdział 13).",
+        "Rozszerzenie badania na inne rynki wymaga osobnej obsługi każdej z tych różnic i "
+        "należy do kierunków dalszych prac (rozdział 13.2).",
     )
 
     add_heading(doc, "1.5. Twierdzenia szczegółowe", 2)
@@ -1147,8 +1142,9 @@ def _chapter_1_introduction(doc: Document) -> None:
         doc,
         [
             "Żadna z pięciu badanych architektur nie osiąga trafności kierunkowej istotnie "
-            "większej od losowej na horyzoncie o wystarczającej mocy statystycznej. Jest to "
-            "wynik ograniczony od góry, a nie twierdzenie o niemożliwości prognozowania.",
+            "większej od losowej na horyzoncie o wystarczającej mocy statystycznej. Wynik "
+            "ogranicza od góry przewagę osiągalną z samych notowań przy dostępnej liczbie "
+            "obserwacji.",
             "Różnice między architekturami uczącymi się są tego samego rzędu co rozrzut "
             "wynikający z ziarna inicjalizacji, a ranking architektur zmienia się wraz z "
             "horyzontem, przy korelacji rang bliskiej zeru. Wybór architektury na podstawie tych "
@@ -1252,7 +1248,7 @@ def _chapter_2_requirements(doc: Document) -> None:
         "Rozdział ten podaje zatem wymagania w trzech zestawieniach: funkcjonalne "
         "(podrozdział 2.2), niefunkcjonalne (2.3) oraz osobno te, które wyprowadzono w trakcie "
         "badania wraz ze wskazaniem, co je wymusiło (2.4). Podrozdział 2.5 wyznacza granice "
-        "zakresu, czyli zadania świadomie pozostawione poza systemem, a 2.6 podaje kryteria "
+        "zakresu, czyli zadania, które nie należą do systemu, a 2.6 podaje kryteria "
         "akceptacji wraz z ich obecnym stanem. Numeracja wymagań jest przywoływana w dalszych "
         "rozdziałach tam, gdzie opisywana jest realizacja.",
     )
@@ -1536,10 +1532,9 @@ def _chapter_2_requirements(doc: Document) -> None:
     add_body(
         doc,
         "Poniższe zestawienie podaje wymagania, których nie dało się sformułować przed "
-        "uruchomieniem systemu, wraz z obserwacją, która je wymusiła. Zestawienie to jest "
-        "elementem metodyki, nie kroniką pomyłek: w każdym z tych przypadków wcześniejsze "
-        "brzmienie wymagania było wewnętrznie spójne i dawało wyniki wyglądające poprawnie. "
-        "Właśnie dlatego wykrycie wymagało pomiaru, a nie przeglądu kodu.",
+        "uruchomieniem systemu, wraz z obserwacją, która je wymusiła. W każdym z tych "
+        "przypadków wcześniejsze brzmienie wymagania było wewnętrznie spójne i dawało wyniki "
+        "wyglądające poprawnie, dlatego wykrycie wymagało pomiaru, a nie przeglądu kodu.",
     )
     add_table(
         doc,
@@ -1620,10 +1615,8 @@ def _chapter_2_requirements(doc: Document) -> None:
     add_heading(doc, "2.5. Granice zakresu", 2)
     add_body(
         doc,
-        "Poniższe zadania pozostawiono świadomie poza systemem. Każde z nich jest wykonalne, a "
-        "część była rozważana na wczesnym etapie; podanie powodu rezygnacji jest istotniejsze "
-        "od samej listy, ponieważ w kilku przypadkach powodem jest wynik pomiaru, nie brak "
-        "czasu.",
+        "Tabela poniżej wymienia zadania, które nie należą do systemu, wraz z powodem każdej "
+        "z tych decyzji.",
     )
     add_table(
         doc,
@@ -1639,12 +1632,10 @@ def _chapter_2_requirements(doc: Document) -> None:
              "podejmowania na jej podstawie decyzji finansowych, a moduł wykonawczy "
              "sugerowałby, że jest odwrotnie."],
             ["Obsługa rynków innych niż kryptowaluty: akcje, kontrakty terminowe, waluty.",
-             "Zamierzenie pierwotne obejmowało system uniwersalny. Zrezygnowano z niego, gdy "
-             "okazało się, że różnice w kalendarzu notowań, godzinach sesji, podziałach akcji "
-             "i dostępności danych historycznych wymagają osobnej warstwy pozyskiwania dla "
-             "każdego rynku. Wykonanie jednego rynku rzetelnie ma większą wartość niż czterech "
-             "powierzchownie. Sam potok jest jednak od rynku niezależny - opisano to jako "
-             "kierunek dalszych prac w rozdziale 13.2."],
+             "Różnice w kalendarzu notowań, godzinach sesji, podziałach akcji i dostępności "
+             "danych historycznych wymagają osobnej warstwy pozyskiwania danych dla każdego "
+             "rynku (rozdział 1.4). Sam potok jest od rynku niezależny, więc rozszerzenie "
+             "dotyczy tylko tej warstwy (rozdział 13.2)."],
             ["Dane z arkusza zleceń i mikrostruktura rynku.",
              "Binance Public Data udostępnia archiwa arkusza w rozdzielczości, przy której "
              "kilka lat historii dla jednego symbolu przekracza rozmiar całego obecnego "
@@ -1670,19 +1661,17 @@ def _chapter_2_requirements(doc: Document) -> None:
     )
     add_caption(
         doc, "Tabela",
-        "Granice zakresu wraz z uzasadnieniem. Trzy pierwsze pozycje odpowiadają decyzjom "
-        "podjętym w trakcie projektu, pozostałe - przyjętym od początku.",
+        "Granice zakresu wraz z uzasadnieniem.",
     )
 
     add_heading(doc, "2.6. Kryteria akceptacji", 2)
     add_body(
         doc,
         "Kryteria akceptacji sformułowano tak, aby dało się je rozstrzygnąć pomiarem, a nie "
-        "oceną. Warto zwrócić uwagę, że żadne z nich nie odnosi się do trafności prognozy. "
-        "Byłoby to kryterium nierozstrzygalne w chwili formułowania i zarazem zachęta do "
-        "powtarzania pomiaru aż do uzyskania wartości oczekiwanej - czyli dokładnie ten sposób "
-        "pracy, którego cała metodyka rozdziału 9 ma unikać. System jest zdatny wtedy, gdy "
-        "mierzy poprawnie, niezależnie od tego, co zmierzy.",
+        "oceną. Dotyczą one poprawności pomiaru, a nie jego wyniku: system jest zdatny wtedy, "
+        "gdy mierzy poprawnie, niezależnie od tego, co zmierzy. Dzięki temu wynik badania nie "
+        "wpływa na ocenę systemu i nie ma powodu powtarzać pomiaru do uzyskania oczekiwanej "
+        "wartości, czego metodyka rozdziału 9 ma unikać.",
     )
     _acceptance_criteria(doc)
     page_break(doc)
@@ -1779,9 +1768,9 @@ def _chapter_3_theory(doc: Document) -> None:
     add_caption(doc, "Tabela", "Trzy formy hipotezy efektywności rynku wg Famy (1970).")
     add_body(
         doc,
-        "Badanie ograniczone do historii notowań testuje formę słabą. Nie jest to wersja uboższa "
-        "badania fundamentalnego, lecz inne pytanie: forma słaba pyta, czy w samym szeregu "
-        "cenowym pozostaje struktura możliwa do wykorzystania. Odrzucenie tej hipotezy wymagałoby "
+        "Badanie ograniczone do historii notowań testuje formę słabą, która pyta, czy w samym "
+        "szeregu cenowym pozostaje struktura możliwa do wykorzystania. Odrzucenie tej hipotezy "
+        "wymagałoby "
         "wykazania przewagi istotnie większej od losowej; jej nieodrzucenie - co jest wynikiem "
         "niniejszej pracy - nie dowodzi jej prawdziwości, lecz wyznacza górne ograniczenie na "
         "wielkość ewentualnej przewagi.",
@@ -1821,10 +1810,10 @@ def _chapter_3_theory(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Nie wprowadzono klasy „bez zmiany”. Próg oddzielający ruch istotny od nieistotnego "
-        "byłby dodatkowym, arbitralnym parametrem badania, a jego wartość wpływałaby na "
-        "raportowaną trafność. Wielkość ruchu jest natomiast prognozowana osobno, jako rozkład "
-        "na kubełkach głębokości (rozdział 7).",
+        "Klasy są dwie, ponieważ każdy próg oddzielający ruch istotny od nieistotnego byłby "
+        "dodatkowym, arbitralnym parametrem badania, a jego wartość wpływałaby na raportowaną "
+        "trafność. Wielkość ruchu prognozowana jest osobno, jako rozkład na kubełkach "
+        "głębokości (rozdział 7).",
     )
 
     add_heading(doc, "3.4. Reguły oceny właściwej", 2)
@@ -1920,10 +1909,9 @@ def _chapter_4_architecture(doc: Document) -> None:
     add_body(
         doc,
         "System realizuje potok o ośmiu etapach. Każdy etap zapisuje wersjonowany artefakt na "
-        "dysku, a każdy kolejny etap wskazuje artefakt źródłowy po nazwie. Nie istnieje "
-        "współdzielony katalog „najnowszych” wyników - wcześniejsza wersja systemu taki katalog "
-        "miała i skutkowało to przypisywaniem wyników ostatnio uruchomionego modelu wszystkim "
-        "pozostałym (rozdział 11).",
+        "dysku, a każdy kolejny etap wskazuje artefakt źródłowy po nazwie, więc wynik zawsze "
+        "należy do przebiegu, który go wytworzył. Wspólny katalog najnowszych wyników "
+        "przypisywał wyniki ostatnio uruchomionego modelu wszystkim pozostałym (rozdział 11.3).",
     )
     add_table(
         doc,
@@ -2162,9 +2150,10 @@ def _chapter_6_features(doc: Document) -> None:
     add_heading(doc, "6.1. Zasada: niezmienniczość względem skali", 2)
     add_body(
         doc,
-        "Zbiór cech treningowych jest listą włączającą, nie wykluczającą. Wcześniejsza wersja "
-        "przekazywała modelowi każdą kolumnę poza kilkoma nazwanymi wyjątkami, przez co do "
-        "wejścia trafiały bezwzględne poziomy cen. Przy jednym instrumencie było to nieszkodliwe, "
+        "Zbiór cech treningowych jest listą włączającą: model widzi tylko kolumny wymienione "
+        "z nazwy. Lista wykluczająca, przekazująca modelowi każdą kolumnę poza kilkoma "
+        "nazwanymi wyjątkami, wpuszczała do wejścia bezwzględne poziomy cen. Przy jednym "
+        "instrumencie było to nieszkodliwe, "
         "ponieważ normalizacja usuwa poziom; przy uczeniu na kilku instrumentach naraz stawało "
         "się etykietą instrumentu - zmierzone różnice sięgały 553-krotności dla średniej "
         "kroczącej i 387-krotności dla histogramu MACD.",
@@ -2247,11 +2236,9 @@ def _chapter_7_labels(doc: Document) -> None:
         doc,
         "Etykieta opisuje, co rynek zrobił w horyzoncie: stronę zwrotu w przód i przedział jego "
         "wielkości. Jej definicja istnieje w systemie w jednym miejscu (labels/forward.py) i "
-        "korzysta z niej każdy z pięciu modeli oraz plik etykiet, który rysuje panel. Nie zawsze "
-        "tak było: ta sama pętla znajdowała się w czterech modelach, a osobny etap potoku "
-        "zapisywał piątą wersję - jeden horyzont, przesunięty o wiersze zamiast o okres "
-        "kalendarzowy - której nie czytał żaden model. Kopie dawały zgodne wyniki, ale nic nie "
-        "gwarantowało, że zgodność przetrwa następną zmianę. Scalenie zweryfikowano porównaniem "
+        "korzysta z niej każdy z pięciu modeli oraz plik etykiet, który rysuje panel, więc "
+        "zgodność etykiet między modelami wynika z budowy systemu i przetrwa każdą zmianę "
+        "definicji. Scalenie wcześniejszych kopii tej pętli zweryfikowano porównaniem "
         "bajtowym prognoz wszystkich modeli przed zmianą i po niej.",
     )
 
@@ -2259,11 +2246,9 @@ def _chapter_7_labels(doc: Document) -> None:
     add_body(
         doc,
         "Etykieta kierunku jest znakiem zwrotu w przód na zadanym horyzoncie i przyjmuje dwie "
-        "wartości. Nie istnieje klasa pośrednia ani próg oddzielający ruch istotny od "
-        "nieistotnego: taki próg byłby dodatkowym parametrem badania, wpływającym na raportowaną "
-        "trafność, a jego uzasadnienie musiałoby odwoływać się do kosztów transakcyjnych, czyli "
-        "do warstwy decyzyjnej, a nie do danych. Zwrot dokładnie zerowy nie ma strony i jest "
-        "wykluczany z oceny.",
+        "wartości (rozdział 3.3). Próg oddzielający ruch istotny od nieistotnego zależy od "
+        "kosztów transakcyjnych, więc należy do warstwy decyzyjnej, a nie do etykiety. Zwrot "
+        "dokładnie zerowy nie ma strony i jest wykluczany z oceny.",
     )
 
     add_heading(doc, "7.2. Głębokość", 2)
@@ -2311,8 +2296,8 @@ def _chapter_7_labels(doc: Document) -> None:
                     "najkrótszy horyzont zachowujący pełną moc statystyczną przy dostępnej "
                     "historii",
                     "cztery tygodnie; podstawowy horyzont decyzyjny",
-                    "trzynaście tygodni; zastąpił półrocze, ponieważ okno dwuletnie zawiera 7,0 "
-                    "obserwacji niezależnych dla kwartału wobec 3,0 dla półrocza",
+                    "trzynaście tygodni; okno dwuletnie zawiera 7,0 obserwacji niezależnych "
+                    "dla kwartału, a dla półrocza zawierałoby 3,0",
                     "cztery kwartały dokładnie; 364 dni zamiast 365, ponieważ 365 nie dzieli się "
                     "przez 7 i zaokrąglało się odmiennie przy różnych interwałach",
                 ],
@@ -2418,8 +2403,8 @@ def _chapter_8_models(doc: Document) -> None:
     add_body(
         doc,
         "Prognoza całego miesiąca douczania powstaje w jednym przebiegu wsadowym, z historią "
-        "celu zamaskowaną na granicy miesiąca. Konstrukcja osobnego zbioru dla każdej świecy "
-        "była pierwotną przyczyną wielogodzinnego czasu wykonania i została zastąpiona.",
+        "celu zamaskowaną na granicy miesiąca, ponieważ budowa osobnego zbioru dla każdej "
+        "świecy wydłużała przebieg do wielu godzin.",
     )
 
     add_heading(doc, "8.5. Trening wielosymbolowy", 2)
@@ -2464,7 +2449,7 @@ def _chapter_8_models(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Jedna rozbieżność została świadomie zachowana. GRU i TFT normalizują cechy medianą i "
+        "Jedna rozbieżność pozostała. GRU i TFT normalizują cechy medianą i "
         "rozstępem międzykwartylowym, lecz brakującą wartość traktują inaczej: GRU zastępuje ją "
         "zerem po przeskalowaniu, czyli medianą okna, a TFT zerem przed przeskalowaniem. "
         "Pierwsze 89 świec każdego symbolu ma braki wynikające z rozruchu wskaźników, a "
@@ -2481,8 +2466,8 @@ def _chapter_8_models(doc: Document) -> None:
     add_heading(doc, "8.7. Okno treningowe wyprowadzane z horyzontu", 2)
     add_body(
         doc,
-        "Szerokość okna nie jest parametrem konfiguracyjnym, lecz wynika z horyzontu i "
-        "dostępnej historii. Kolidują tu dwa wymagania. Model potrzebuje wierszy - kilkuset, aby "
+        "Szerokość okna wynika z horyzontu i dostępnej historii. Kolidują tu dwa "
+        "wymagania. Model potrzebuje wierszy - kilkuset, aby "
         "dopasowanie kilkudziesięciu cech nie było rysowaniem krzywej przez punkty. Statystyka "
         "potrzebuje obserwacji niezależnych, których okno o szerokości W zawiera (W − F) / F. "
         "Pierwsze wymaganie wiąże na horyzontach krótkich, drugie na długich.",
@@ -2490,9 +2475,8 @@ def _chapter_8_models(doc: Document) -> None:
     add_body(
         doc,
         "Okno wynosi zatem F + max(minimalna liczba wierszy, 3F) i jest przycinane przez długość "
-        "historii. Poszerzanie okna dla wszystkich horyzontów nie jest rozwiązaniem: historia "
-        "jest skończona, więc każda świeca oddana treningowi to świeca, której nie da się "
-        "ocenić. Dla najdłuższego dostępnego szeregu maksimum tego, co można osiągnąć po obu "
+        "historii. Historia jest skończona, więc każda świeca oddana treningowi to świeca, "
+        "której nie da się ocenić. Dla najdłuższego dostępnego szeregu maksimum tego, co można osiągnąć po obu "
         "stronach jednocześnie, wynosi około 3,45 obserwacji - przy oknie równym połowie "
         "historii.",
     )
@@ -2538,8 +2522,9 @@ def _chapter_9_methodology(doc: Document) -> None:
         doc,
         "Model oceniany jest trafnością, wynikiem Briera, stratą logarytmiczną i oczekiwanym "
         "błędem kalibracji. Żadna z tych miar nie ma parametru, który dałoby się dobrać tak, aby "
-        "wynik wyglądał lepiej. Jest to własność celowa i odróżnia je od symulacji handlowej, "
-        "której wynik zależy od kilkunastu decyzji wykonawczych.",
+        "wynik wyglądał lepiej, więc wynik oceny nie zależy od decyzji badacza - w "
+        "odróżnieniu od symulacji handlowej, której wynik zależy od kilkunastu decyzji "
+        "wykonawczych.",
     )
     add_diagram(
         doc, "ocena",
@@ -2561,7 +2546,7 @@ def _chapter_9_methodology(doc: Document) -> None:
     add_body(
         doc,
         "Poniżej dziesięciu bloków przedział nie jest wyznaczany, lecz odmawiany wraz z podaniem "
-        "przyczyny. Próg ten wynika z obserwacji, a nie z konwencji: przy trzech blokach dwa z "
+        "przyczyny. Próg ten wynika z obserwacji: przy trzech blokach dwa z "
         "pięćdziesięciu pięciu wyznaczonych przedziałów nie obejmowały własnej oceny punktowej, "
         "ponieważ cztery bloki losowane z szeregu zawierającego trzy nie są w stanie go "
         "odtworzyć.",
@@ -3073,7 +3058,7 @@ def _results_max_vs_mean(doc: Document) -> None:
     if not best:
         return
 
-    add_heading(doc, "10.8. Dlaczego najlepsza komórka nie jest wynikiem", 2)
+    add_heading(doc, "10.8. Najlepsza komórka a liczba pomiarów", 2)
     add_body(
         doc,
         "Zestawienie najlepszych komórek jest miarą kuszącą i mylącą (Bailey i López de "
@@ -3096,9 +3081,9 @@ def _results_max_vs_mean(doc: Document) -> None:
         doc, "Tabela",
         "Najwyższa trafność na każdym horyzoncie wraz z liczbą obserwacji niezależnych, na "
         "której ją zmierzono, i 95-procentowym przedziałem ufności. Tam, gdzie liczba "
-        "obserwacji jest zbyt mała, system odmawia wyznaczenia przedziału i nie orzeka o "
-        "przewadze - co jest właściwym zachowaniem: wartość punktowa pozostaje raportowana, "
-        "wycofane zostaje wyłącznie twierdzenie o jej precyzji. Przedział wyłączający 0,5 "
+        "obserwacji jest zbyt mała, system odmawia wyznaczenia przedziału: wartość punktowa "
+        "pozostaje raportowana, a wycofane zostaje tylko twierdzenie o jej precyzji. Przedział "
+        "wyłączający 0,5 "
         "nie rozstrzyga jeszcze niczego, ponieważ maksimum wybrano spośród wielu pomiarów; "
         "co z takich wyników zostaje po uwzględnieniu ich liczby, pokazuje podrozdział 10.9.",
     )
@@ -3178,8 +3163,8 @@ def _results_departures(doc: Document, runs: dict) -> None:
     add_heading(doc, "10.9. Odstępstwa od losowości", 2)
     add_body(
         doc,
-        "Podrozdziały 10.1-10.3 porównują architektury między sobą, a 10.8 pokazuje, dlaczego "
-        "wynikiem nie może być najlepsza komórka. Pytanie uzupełniające brzmi: "
+        "Podrozdziały 10.1-10.3 porównują architektury między sobą, a 10.8 pokazuje, jak "
+        "liczba pomiarów zawyża najlepszy z nich. Pytanie uzupełniające brzmi: "
         "które pojedyncze pomiary odbiegają od rzutu monetą i czy którykolwiek z nich "
         "wytrzymuje uwzględnienie liczby wykonanych pomiarów. Wartość p dla hipotezy, że "
         "trafność wynosi 0,5, wyznaczono metodą z rozdziału 9.2 dla każdego z "
@@ -3693,8 +3678,8 @@ def _chapter_12_interfaces(doc: Document) -> None:
         doc,
         "Panel jest aplikacją jednostronicową zbudowaną na natywnych modułach ES, bez kroku "
         "budowania. Zachowanie elementów deklarowane jest atrybutem w znaczniku i obsługiwane "
-        "przez jeden nasłuch delegowany, co eliminuje wstawianie kodu bezpośrednio w atrybutach "
-        "- wcześniejsza wersja interpolowała nazwy symboli prosto do treści atrybutów zdarzeń.",
+        "przez jeden nasłuch delegowany, dzięki czemu żaden kod nie trafia do atrybutów "
+        "zdarzeń i nazwa symbolu nie może zostać wykonana jako kod.",
     )
     add_bullets(
         doc,
@@ -3708,10 +3693,10 @@ def _chapter_12_interfaces(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Formularz treningu pobiera wartości domyślne z interfejsu HTTP, a nie ze znaczników "
-        "strony. Wcześniejsza wersja zawierała je wpisane wprost w znaczniku, przez co ten sam "
-        "model uruchamiany z panelu wykonywał inną liczbę epok niż uruchamiany z wiersza "
-        "poleceń - wartość domyślna obowiązuje bowiem wyłącznie przy nieobecności flagi.",
+        "Formularz treningu pobiera wartości domyślne z interfejsu HTTP, który czyta je z "
+        "tego samego modułu co wiersz poleceń (predict/defaults.py), więc model uruchomiony z "
+        "panelu dostaje te same parametry, na przykład tę samą liczbę epok, co uruchomiony z "
+        "wiersza poleceń.",
     )
     add_body(
         doc,
@@ -3773,9 +3758,9 @@ def _chapter_13_limits(doc: Document) -> None:
         [
             "Zbiór informacyjny obejmuje wyłącznie cechy wyprowadzone z ceny i wolumenu tego "
             "samego instrumentu. Nie uwzględniono danych on-chain, stawek finansowania, "
-            "głębokości arkusza zleceń, danych międzyrynkowych ani sentymentu. Jest to granica "
-            "przyjęta świadomie - praca testuje słabą formę hipotezy efektywności - ale wniosków "
-            "nie wolno rozciągać poza nią.",
+            "głębokości arkusza zleceń, danych międzyrynkowych ani sentymentu. Granica ta "
+            "wynika z pytania badawczego, które dotyczy słabej formy hipotezy efektywności, "
+            "więc wniosków nie wolno rozciągać poza nią.",
             "Prognozowany jest znak zwrotu, czyli sformułowanie najtrudniejsze. Model może nie "
             "mieć przewagi kierunkowej i jednocześnie poprawnie prognozować zmienność, czego "
             "praca nie bada.",
@@ -3807,8 +3792,8 @@ def _chapter_13_limits(doc: Document) -> None:
              "Ściąganie prognozy w stronę 50% tam, gdzie wycinek kalibracyjny ma zbyt mało "
              "obserwacji niezależnych, aby wyznaczyć temperaturę.", "średnia"],
             ["Rozszerzenie na inne rynki",
-             "Pierwotny zamiar pracy; wymaga obsługi nieciągłości i zdarzeń korporacyjnych.",
-             "średnia"],
+             "Wymaga obsługi nieciągłości notowań i zdarzeń korporacyjnych w warstwie "
+             "pozyskiwania danych.", "średnia"],
             ["Zrównoleglenie pętli kroczącej",
              "Możliwe po uniezależnieniu ziaren okien od kolejności wykonania; skraca czas, nie "
              "zmienia wyników.", "wygoda"],
@@ -4313,9 +4298,8 @@ def _data_quality_results(doc: Document) -> None:
 
     add_body(
         doc,
-        "Kontrole uruchomiono na wszystkich partycjach jeziora danych. Wynik podano poniżej, "
-        "ponieważ opis kontroli bez jej rezultatu dokumentuje zdolność, której nikt nie "
-        "widział w działaniu.",
+        "Kontrole uruchomiono na wszystkich partycjach jeziora danych; ich wynik podaje "
+        "tabela poniżej.",
     )
     rows, total_parts, total_rows, total_defects = [], 0, 0, 0
     for symbol, stats in sorted(summary.items()):
@@ -4345,9 +4329,8 @@ def _data_quality_results(doc: Document) -> None:
         doc, "Tabela",
         f"Wynik kontroli jakości na {total_parts} partycjach obejmujących "
         f"{total_rows:,} wierszy: {total_defects} defektów. ".replace(",", " ")
-        + "Zerowa liczba naruszeń nie jest zaskoczeniem - dane pochodzą z jednego, "
-        "automatycznie publikowanego źródła - lecz jej zmierzenie jest warunkiem, aby "
-        "późniejsze wyniki przypisywać modelowi, a nie uszkodzeniu wejścia.",
+        + "Dane pochodzą z jednego, automatycznie publikowanego źródła, a zmierzenie ich "
+        "jakości pozwala przypisywać późniejsze wyniki modelowi, a nie uszkodzeniu wejścia.",
     )
 
 def _chapter_3_equations(doc: Document) -> None:
@@ -4503,8 +4486,8 @@ SCREENSHOTS: list[tuple[str, str, str, str]] = [
      "Założenia wykonawcze symulacji, tu dla przebiegu badania GRU na BTCUSDT, wystawione "
      "jako parametry: prowizja, poślizg, próg "
      "kosztowy, minimalna zmiana pozycji, długość okna reguły momentum oraz docelowa "
-     "ekspozycja dla każdej rekomendacji. Wartość „Hold” celowo nie ma własnej ekspozycji - "
-     "oznacza utrzymanie poprzedniej.",
+     "ekspozycja dla każdej rekomendacji. Wartość „Hold” nie ma własnej ekspozycji, "
+     "ponieważ oznacza utrzymanie poprzedniej.",
      "zakładka „Backtest” z rozwiniętym formularzem parametrów"),
     ("10-backtest-wynik.png", "Symulacja - wynik i hipotezy zerowe",
      "Wynik symulacji przebiegu badania GRU na BTCUSDT (ziarno 42, horyzont tygodniowy, "
@@ -4620,7 +4603,7 @@ def _results_rank_stability(doc: Document, runs: dict) -> None:
         for horizon, per_model in means_by_horizon.items()
     }
 
-    add_heading(doc, "10.2. Czy ranking architektur jest trwały?", 2)
+    add_heading(doc, "10.2. Trwałość rankingu architektur", 2)
     beyond = learners_beyond_noise(architecture_spread(runs))
     if len(beyond) <= 1:
         where = (f" na wszystkich horyzontach poza {HORIZON_LOCATIVE[beyond[0]]}, gdzie "
