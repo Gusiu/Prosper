@@ -27,6 +27,11 @@ STUDY_SYMBOLS = (
     "LINKUSDT", "LTCUSDT",
 )
 STUDY_MODELS = ("baseline", "ml", "xgboost", "gru", "tft")
+# What the thesis calls the models and the horizons. The identifiers are the
+# software's; every table and figure of the thesis prints these names instead.
+MODEL_LABEL = {"baseline": "model odniesienia", "ml": "scikit-learn", "xgboost": "XGBoost",
+               "gru": "GRU", "tft": "TFT"}
+HORIZON_LABEL = {"week": "tydzień", "month": "miesiąc", "quarter": "kwartał", "year": "rok"}
 STUDY_SEEDS = (7, 42, 123)
 STUDY_PROTOCOL = {"interval": "1d", "start": "2020-01-01", "end": "2026-06-30",
                   "deterministic": True}

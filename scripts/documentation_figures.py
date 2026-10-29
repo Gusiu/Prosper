@@ -23,7 +23,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import matplotlib.ticker  # noqa: E402
 import numpy as np  # noqa: E402
-from documentation_sources import STUDY_MODELS, STUDY_SYMBOLS, is_study_run  # noqa: E402
+from documentation_sources import (  # noqa: E402
+    HORIZON_LABEL,
+    MODEL_LABEL,
+    STUDY_MODELS,
+    STUDY_SYMBOLS,
+    is_study_run,
+)
 
 from prosper.domain import HORIZON_NAMES  # noqa: E402
 
@@ -118,7 +124,7 @@ def architecture_comparison() -> str | None:
             arr = np.array(values)
             means.append(arr.mean())
             errors.append(arr.std(ddof=1) if len(arr) > 1 else 0.0)
-            labels.append(model)
+            labels.append(MODEL_LABEL[model])
         if not means:
             continue
         positions = np.arange(len(means))
@@ -128,7 +134,7 @@ def architecture_comparison() -> str | None:
         axis.axhline(0.5, color="#C0392B", linewidth=0.9, linestyle="--")
         axis.set_xticks(positions)
         axis.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
-        axis.set_title(horizon)
+        axis.set_title(HORIZON_LABEL[horizon])
         axis.set_ylim(0.35, 0.62)
     np.atleast_1d(axes)[0].set_ylabel("trafność")
     return _save(fig, "porownanie_architektur.png")
@@ -159,7 +165,7 @@ def stability_over_time() -> str | None:
     fig, axis = plt.subplots(figsize=(9.5, 3.0))
     for model, points in sorted(series.items()):
         values = [v for _, v in points]
-        axis.plot(range(len(values)), values, linewidth=1.0, label=model, alpha=0.85)
+        axis.plot(range(len(values)), values, linewidth=1.0, label=MODEL_LABEL[model], alpha=0.85)
     axis.axhline(0.5, color="#C0392B", linewidth=1.0, linestyle="--", label="poziom losowy")
     axis.set_xlabel("kolejny miesiąc okresu oceny")
     axis.set_ylabel("trafność w miesiącu")
@@ -194,7 +200,7 @@ def seed_spread() -> str | None:
                          edgecolor=ACCENT, facecolor="none", linewidth=0.9)
     axis.axhline(0.5, color="#C0392B", linewidth=1.0, linestyle="--")
     axis.set_xticks(range(len(MODELS)))
-    axis.set_xticklabels(MODELS)
+    axis.set_xticklabels([MODEL_LABEL[m] for m in MODELS])
     axis.set_ylabel("trafność, horyzont tygodniowy")
     axis.set_title("Każdy przebieg osobno - rozrzut wewnątrz architektury wobec różnic między nimi")
     return _save(fig, "rozrzut_ziarna.png")
@@ -219,9 +225,9 @@ def calibration_by_horizon() -> str | None:
                 if by_horizon.get(horizon) and by_horizon[horizon].get("ece") is not None
             ]
             means.append(float(np.mean(values)) if values else np.nan)
-        axis.bar(positions + index * width - 2 * width, means, width * 0.9, label=model)
+        axis.bar(positions + index * width - 2 * width, means, width * 0.9, label=MODEL_LABEL[model])
     axis.set_xticks(positions)
-    axis.set_xticklabels(HORIZON_NAMES)
+    axis.set_xticklabels([HORIZON_LABEL[h] for h in HORIZON_NAMES])
     axis.set_ylabel("ECE (mniej = lepiej)")
     axis.set_title("Błąd kalibracji według horyzontu i architektury")
     axis.legend(frameon=False, ncol=5, fontsize=7)
@@ -248,7 +254,7 @@ def backtest_percentiles() -> str | None:
 
     fig, axis = plt.subplots(figsize=(9.5, 2.8))
     labels = [m for m in MODELS if m in values]
-    axis.boxplot([values[m] for m in labels], tick_labels=labels, widths=0.5)
+    axis.boxplot([values[m] for m in labels], tick_labels=[MODEL_LABEL[m] for m in labels], widths=0.5)
     axis.axhline(50, color="#C0392B", linewidth=1.0, linestyle="--",
                  label="ułożenie przypadkowe")
     axis.axhline(95, color="#2E7D32", linewidth=1.0, linestyle=":", label="próg sygnału")
@@ -302,7 +308,7 @@ def reliability_diagram() -> str | None:
         drawn = True
         axis.plot([0.45, 0.75], [0.45, 0.75], color="#C0392B", linewidth=0.9, linestyle="--")
         axis.plot(xs, ys, marker="o", markersize=3, linewidth=1.1, color=ACCENT)
-        axis.set_title(horizon)
+        axis.set_title(HORIZON_LABEL[horizon])
         axis.set_xlabel("deklarowana pewność")
         axis.set_xlim(0.47, 0.72)
         axis.set_ylim(0.30, 0.75)
@@ -329,7 +335,7 @@ def equity_curves() -> str | None:
         if len(points) < 100:
             continue
         values = [p.get("value") for p in points if p.get("value") is not None]
-        axis.plot(range(len(values)), values, linewidth=1.0, label=model, alpha=0.85)
+        axis.plot(range(len(values)), values, linewidth=1.0, label=MODEL_LABEL[model], alpha=0.85)
         drawn += 1
         if drawn == 1:
             prices = [p.get("price") for p in points if p.get("price") is not None]
@@ -373,7 +379,7 @@ def feature_importance() -> str | None:
     axis.set_yticks(range(len(names)))
     axis.set_yticklabels(names, fontsize=7)
     axis.set_xlabel("względna ważność")
-    axis.set_title(f"XGBoost, BTCUSDT, horyzont „{horizon}” - 18 najważniejszych cech")
+    axis.set_title(f"XGBoost, BTCUSDT, horyzont: {HORIZON_LABEL[horizon]} - 18 najważniejszych cech")
     return _save(fig, "waznosc_cech.png")
 
 
@@ -404,7 +410,7 @@ def observation_power() -> str | None:
                  label="próg sensowności metryki (3 obserwacje)")
     axis.set_yscale("log")
     axis.set_xticks(range(len(labels)))
-    axis.set_xticklabels(labels)
+    axis.set_xticklabels([HORIZON_LABEL[h] for h in labels])
     axis.set_ylabel("obserwacje niezależne (skala log.)")
     axis.set_title("Moc statystyczna według horyzontu - wiążące ograniczenie projektu")
     axis.legend(frameon=False, fontsize=7)
@@ -446,13 +452,14 @@ def accuracy_map() -> str | None:
                 axis.text(j, i, f"{grid[i, j]:.3f}", ha="center", va="center", fontsize=7,
                           color="white" if dark else "#26303C")
         axis.set_xticks(range(len(MODELS)))
-        axis.set_xticklabels(MODELS, fontsize=7.5)
+        axis.set_xticklabels([MODEL_LABEL[m] for m in MODELS], fontsize=7.5)
         axis.set_yticks(range(len(SYMBOLS)))
         axis.set_yticklabels([s.replace("USDT", "") for s in SYMBOLS], fontsize=7.5)
         axis.tick_params(length=0)
         for spine in axis.spines.values():
             spine.set_visible(False)
-        axis.set_title(horizon if horizon != "year" else "year (przedziały odmówione)")
+        axis.set_title(HORIZON_LABEL[horizon]
+                       + (" (przedziały odmówione)" if horizon == "year" else ""))
     if image is None:
         plt.close(fig)
         return None
@@ -509,14 +516,15 @@ def base_rate() -> str | None:
         top.scatter(x, means[:, 0], color=ACCENT, s=20, zorder=3, label="trafność")
         top.axhline(0.5, color="#C0392B", linewidth=0.9, linestyle="--")
         top.set_ylim(0.3, 0.8)
-        top.set_title(horizon)
+        top.set_title(HORIZON_LABEL[horizon])
         bottom.bar(x, means[:, 2], width=0.62, color="#D5DCE5", label="udział wzrostów na rynku")
         bottom.scatter(x, means[:, 1], color=ACCENT, s=20, zorder=3,
                        label="udział prognoz wzrostu")
         bottom.set_ylim(0.0, 1.0)
         for axis in (top, bottom):
             axis.set_xticks(x)
-            axis.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+            axis.set_xticklabels([MODEL_LABEL[m] for m in labels], rotation=45, ha="right",
+                                 fontsize=7)
     axes[0, 0].set_ylabel("trafność, częstość")
     axes[1, 0].set_ylabel("udział wzrostów")
     # One legend per row: the two rows draw different quantities with the same marks.
@@ -568,7 +576,7 @@ def month_share() -> str | None:
             values = [above / total for (_, slug, h), (above, total) in shares.items()
                       if h == horizon and slug.split("_")[0] == model]
             if values:
-                labels.append(model)
+                labels.append(MODEL_LABEL[model])
                 data.append(values)
         if not data:
             continue
@@ -581,7 +589,7 @@ def month_share() -> str | None:
         axis.axhline(0.5, color="#C0392B", linewidth=0.9, linestyle="--")
         axis.set_xticks(range(1, len(labels) + 1))
         axis.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
-        axis.set_title(horizon)
+        axis.set_title(HORIZON_LABEL[horizon])
         axis.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
     np.atleast_1d(axes)[0].set_ylabel("miesiące z trafnością > 0,5")
     return _save(fig, "udzial_miesiecy.png")
@@ -634,7 +642,7 @@ def simulation_excess() -> str | None:
                 if column:
                     values.append(float(np.mean(column)))
             if values:
-                labels.append(model)
+                labels.append(MODEL_LABEL[model])
                 data.append(values)
         for index, values in enumerate(data):
             jitter = rng.uniform(-0.12, 0.12, len(values))

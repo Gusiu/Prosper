@@ -35,6 +35,8 @@ from docx.shared import Cm, Pt, RGBColor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from documentation_sources import (  # noqa: E402
+    HORIZON_LABEL,
+    MODEL_LABEL,
     STUDY_MODELS,
     STUDY_SYMBOLS,
     api_reference,
@@ -2302,7 +2304,8 @@ def _chapter_7_labels(doc: Document) -> None:
         doc,
         ["Nazwa", "Dni", "Tygodni", "Uzasadnienie"],
         [
-            [h.name, str(h.forward_days), str(h.forward_days // 7), reason]
+            [f"{HORIZON_LABEL[h.name]} ({h.name})", str(h.forward_days),
+             str(h.forward_days // 7), reason]
             for h, reason in zip(
                 DEFAULT_HORIZONS,
                 [
@@ -2317,7 +2320,7 @@ def _chapter_7_labels(doc: Document) -> None:
                 strict=False,
             )
         ],
-        [2.2, 1.6, 1.8, 10.4],
+        [3.0, 1.4, 1.6, 10.0],
     )
     add_caption(doc, "Tabela", "Zbiór horyzontów prognostycznych.")
     add_body(
@@ -2346,13 +2349,20 @@ def _chapter_8_models(doc: Document) -> None:
         doc,
         ["Model", "Rodzaj", "Pojemność", "Koszt (1 symbol, 4 horyzonty)"],
         [
-            ["baseline", "częstości empiryczne z wygładzaniem Laplace'a", "brak parametrów", "~8 s"],
-            ["ml", "gradient boosting na histogramach", "50 iteracji, 15 liści", "~190 s"],
-            ["xgboost", "gradient boosting", "100 drzew, głębokość 6", "~30 s"],
-            ["gru", "rekurencyjna sieć bramkowa", "2 warstwy, 64 jednostki", "~600 s"],
-            ["tft", "Temporal Fusion Transformer", "32 jednostki, 2 głowice uwagi", "~5900 s"],
+            # The identifier in brackets is the name the command line takes.
+            [f"{MODEL_LABEL[model]} ({model})", kind, capacity, cost]
+            for model, kind, capacity, cost in (
+                ("baseline", "częstości empiryczne z wygładzaniem Laplace'a", "brak parametrów",
+                 "~8 s"),
+                ("ml", "wzmacnianie gradientowe na histogramach", "50 iteracji, 15 liści",
+                 "~190 s"),
+                ("xgboost", "wzmacnianie gradientowe drzew", "100 drzew, głębokość 6", "~30 s"),
+                ("gru", "rekurencyjna sieć bramkowa", "2 warstwy, 64 jednostki", "~600 s"),
+                ("tft", "Temporal Fusion Transformer", "32 jednostki, 2 głowice uwagi",
+                 "~5900 s"),
+            )
         ],
-        [2.4, 6.0, 4.0, 3.6],
+        [3.6, 5.2, 3.8, 3.4],
     )
     add_caption(doc, "Tabela", "Porównywane rodziny modeli. Czasy zmierzone na 16 rdzeniach CPU.")
     add_diagram(
@@ -2701,7 +2711,8 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
     if invariant:
         add_body(
             doc,
-            f"Dla architektur {_listing(invariant)} trzy ziarna dają na każdym symbolu wynik "
+            f"Dla architektur {_listing([MODEL_LABEL[m] for m in invariant])} trzy ziarna dają "
+            "na każdym symbolu wynik "
             "identyczny co do bajtu: uczą się deterministycznie, bez podpróbkowania wierszy i "
             f"cech. Różnych pomiarów jest zatem {sum(len(v) for v in distinct_runs(runs).values())}"
             ", a rozrzut inicjalizacji wyznaczają wyłącznie pozostałe architektury.",
@@ -2737,7 +2748,7 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
     if tested and models:
         rows = []
         for model in models:
-            row = [model]
+            row = [MODEL_LABEL[model]]
             for horizon in tested:
                 means = spread[horizon]["means"]
                 if model not in means:
@@ -2750,7 +2761,8 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
                            ("rozstęp - uczące się", "range_learners"),
                            ("rozrzut ziarna", "noise")):
             rows.append([label] + [fmt(spread[h][key]) for h in tested])
-        add_table(doc, ["Architektura", *tested], rows, [4.4] + [2.9] * len(tested), font=9)
+        add_table(doc, ["Architektura", *(HORIZON_LABEL[h] for h in tested)], rows,
+                  [4.4] + [2.9] * len(tested), font=9)
         counts = []
         for model in models:
             taken = sum(len(horizon_values(runs.get((s, model), []), tested[0], "accuracy"))
@@ -2947,7 +2959,7 @@ def _results_max_vs_mean(doc: Document) -> None:
     add_table(
         doc,
         ["Horyzont", "Najlepsza komórka", "Trafność", "Obs. niezależnych", "Przedział"],
-        [[horizon, f"{sym.replace('USDT', '')} / {model}", fmt(acc),
+        [[HORIZON_LABEL[horizon], f"{sym.replace('USDT', '')} / {MODEL_LABEL[model]}", fmt(acc),
           "-" if eff is None else f"{eff:.1f}",
           f"{bounds[0]:.3f}-{bounds[1]:.3f}" if bounds else "odmówiony"]
          for horizon, (acc, sym, model, eff, bounds) in best.items()],
@@ -3089,8 +3101,9 @@ def _results_departures(doc: Document, runs: dict) -> None:
     add_table(
         doc,
         ["Symbol", "Model", "Ziarno", "Horyzont", "Trafność", "Przedział 95%", "p", "q"],
-        [[m["symbol"].replace("USDT", ""), m["model"], "-" if m["seed"] is None else str(m["seed"]),
-          m["horizon"], fmt(m["accuracy"]), f"{m['low']:.3f}-{m['high']:.3f}",
+        [[m["symbol"].replace("USDT", ""), MODEL_LABEL[m["model"]],
+          "-" if m["seed"] is None else str(m["seed"]),
+          HORIZON_LABEL[m["horizon"]], fmt(m["accuracy"]), f"{m['low']:.3f}-{m['high']:.3f}",
           fmt(m["p"], 4), fmt(m["q"])]
          for m in nominal],
         [1.8, 2.0, 1.5, 2.0, 1.8, 2.8, 1.6, 1.4],
@@ -3663,8 +3676,6 @@ HORIZON_LOCATIVE = {"week": "tygodniowym", "month": "miesięcznym", "quarter": "
                     "year": "rocznym"}
 HORIZON_NOMINATIVE = {"week": "tygodniowy", "month": "miesięczny", "quarter": "kwartalny",
                       "year": "roczny"}
-MODEL_LABEL = {"baseline": "model odniesienia", "ml": "scikit-learn", "xgboost": "XGBoost",
-               "gru": "GRU", "tft": "TFT"}
 COUNT_LOCATIVE = {2: "dwóch", 3: "trzech", 4: "czterech"}
 COUNT_WORDS = {5: "pięć", 6: "sześć", 7: "siedem", 8: "osiem", 9: "dziewięć", 10: "dziesięć"}
 
@@ -4060,9 +4071,9 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
                 low, high = interval.get("low"), interval.get("high")
                 rows.append([
                     symbol.replace("USDT", ""),
-                    model,
+                    MODEL_LABEL[model],
                     str(entry.get("seed") if entry.get("seed") is not None else "-"),
-                    horizon,
+                    HORIZON_LABEL[horizon],
                     str(cell.get("samples") or "-"),
                     fmt(cell.get("accuracy")),
                     f"[{low:.3f}; {high:.3f}]" if low is not None and high is not None
@@ -4105,7 +4116,7 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
         )
         mean = np.nanmean(arr, axis=0)
         table_rows.append([
-            symbol.replace("USDT", ""), model, str(len(values)),
+            symbol.replace("USDT", ""), MODEL_LABEL[model], str(len(values)),
             f"{mean[0]:+.0f}", f"{mean[1]:+.0f}", f"{mean[2]:+.0f}",
             f"{mean[3]:.1f}", f"{mean[4]:+.0f}", f"{mean[5]:.0f}",
         ])
@@ -4421,7 +4432,7 @@ def _both_ends_sentence(positions: dict[str, list[int]], places: int) -> str:
     count = {1: "Jedna architektura zajmuje", 2: "Dwie architektury zajmują",
              3: "Trzy architektury zajmują"}.get(len(both), f"{len(both)} architektur zajmuje")
     return (f"{count} zarówno pierwsze, jak i ostatnie miejsce, zależnie od horyzontu "
-            f"({', '.join(both)}).")
+            f"({', '.join(MODEL_LABEL[m] for m in both)}).")
 
 
 def _results_rank_stability(doc: Document, runs: dict) -> None:
@@ -4454,8 +4465,8 @@ def _results_rank_stability(doc: Document, runs: dict) -> None:
     add_heading(doc, "10.2. Czy ranking architektur jest trwały?", 2)
     beyond = learners_beyond_noise(architecture_spread(runs))
     if len(beyond) <= 1:
-        where = (f" na wszystkich horyzontach poza „{beyond[0]}”, gdzie przekracza go niewiele"
-                 if beyond else " na każdym horyzoncie")
+        where = (f" na wszystkich horyzontach poza {HORIZON_LOCATIVE[beyond[0]]}, gdzie "
+                 "przekracza go niewiele" if beyond else " na każdym horyzoncie")
         intro = (f"Rozstęp między architekturami uczącymi się mieści się w rozrzucie ziarna{where}. "
                  "Jeżeli różnice są szumem, ich porządek powinien zmieniać się wraz z horyzontem. "
                  "Sprawdzeniem jest kolejność miejsc.")
@@ -4467,7 +4478,8 @@ def _results_rank_stability(doc: Document, runs: dict) -> None:
     add_table(
         doc,
         ["Horyzont", "1. miejsce", "2. miejsce", "3. miejsce", "4. miejsce"],
-        [[horizon, *order[horizon]] for horizon in order],
+        [[HORIZON_LABEL[horizon], *(MODEL_LABEL[m] for m in order[horizon])]
+         for horizon in order],
         [2.8, 3.2, 3.2, 3.2, 3.2],
         font=9,
     )
@@ -4487,7 +4499,7 @@ def _results_rank_stability(doc: Document, runs: dict) -> None:
     add_table(
         doc,
         ["Architektura", "Zajmowane miejsca", "Najlepsze", "Najgorsze"],
-        [[m, ", ".join(str(p) for p in positions[m]), str(min(positions[m])),
+        [[MODEL_LABEL[m], ", ".join(str(p) for p in positions[m]), str(min(positions[m])),
           str(max(positions[m]))] for m in learners],
         [4.0, 5.0, 3.2, 3.2],
         font=9,
