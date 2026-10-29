@@ -1889,10 +1889,11 @@ def _chapter_3_theory(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Bootstrap blokowy (Künsch, 1989; Politis i Romano, 1994) losuje ciągi kolejnych "
-        "obserwacji o długości równej rozpiętości "
-        "horyzontu, dzięki czemu zachowuje zależność wewnątrz bloku i szacuje wariancję, która "
-        "nie jest zaniżona. Efektywna liczba obserwacji wynosi w przybliżeniu liczbę świec "
+        "Bootstrap blokowy (Künsch, 1989) losuje ciągi kolejnych obserwacji o stałej długości - "
+        "w tym systemie równej rozpiętości horyzontu - dzięki czemu zachowuje zależność "
+        "wewnątrz bloku i szacuje wariancję, która nie jest zaniżona. Odmiana stacjonarna "
+        "(Politis i Romano, 1994) losuje bloki o losowej długości; system stosuje bloki stałe, "
+        "ponieważ zasięg zależności między etykietami jest znany i równy rozpiętości horyzontu. Efektywna liczba obserwacji wynosi w przybliżeniu liczbę świec "
         "podzieloną przez rozpiętość horyzontu; poniżej dziesięciu bloków system odmawia podania "
         "przedziału zamiast podać przedział fałszywie wąski.",
     )
