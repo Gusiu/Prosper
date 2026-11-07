@@ -1569,8 +1569,8 @@ def _chapter_1_introduction(doc: Document) -> None:
         [
             "Żadna z pięciu badanych architektur nie osiąga trafności kierunkowej istotnie "
             "większej od losowej na horyzoncie o wystarczającej mocy statystycznej. Wynik "
-            "ogranicza od góry przewagę osiągalną z samych notowań przy dostępnej liczbie "
-            "obserwacji.",
+            "dotyczy badanych konfiguracji, dziewięciu instrumentów i lat 2020-2026: o modelach "
+            "większych, inaczej strojonych albo uczonych na innych danych nie rozstrzyga.",
             "Różnice między architekturami uczącymi się są tego samego rzędu co rozrzut "
             "wynikający z ziarna inicjalizacji, a ranking architektur zmienia się wraz z "
             "horyzontem, przy korelacji rang bliskiej zeru. Wybór architektury na podstawie tych "
@@ -1585,8 +1585,10 @@ def _chapter_1_introduction(doc: Document) -> None:
             "deklarowana pewność przewyższa częstość trafień. Rozbieżność jest niewielka tylko "
             "na horyzoncie tygodniowym, na którym wycinek kalibracyjny zawiera dość obserwacji "
             "niezależnych, by wyznaczyć temperaturę.",
-            "Wiążącym ograniczeniem jest liczba niezależnych obserwacji, nie pojemność modelu. "
-            "Wynika ona z arytmetyki nakładających się etykiet i nie podlega strojeniu.",
+            "Moc oceny i dokładność kalibracji ogranicza liczba niezależnych obserwacji, którą "
+            "w przybliżeniu wyznacza iloraz liczby świec i długości horyzontu. Wynika ona z "
+            "nakładania się etykiet, więc jest taka sama dla każdego modelu i nie zależy od "
+            "jego konfiguracji.",
             "Symulacja handlowa nie jest miarą jakości prognozy. Ten sam przebieg pod różnymi "
             "politykami ekspozycji daje wyniki rozpięte od głębokiej straty do wielokrotnego "
             "zysku, więc może służyć wyłącznie jako kontekst ekonomiczny.",
@@ -4211,9 +4213,9 @@ def _chapter_13_limits(doc: Document) -> None:
             "Nie badano prognozy przekrojowej. Pomiar korelacji zwrotów wskazuje, że wspólny "
             "czynnik rynkowy odpowiada za większość wariancji, a jego odjęcie jest jedyną drogą "
             "powyżej granicy wynikającej ze wzoru na liczbę symboli efektywnych.",
-            "Zastosowano modele o niewielkiej pojemności. Przy zmierzonej liczbie obserwacji "
-            "niezależnych pojemność nie jest jednak wiążącym ograniczeniem, więc rozszerzenie "
-            "modeli bez rozszerzenia danych nie zmieniłoby wyniku.",
+            "Zastosowano modele o niewielkiej pojemności i ustalonych hiperparametrach, "
+            "wspólnych dla wszystkich instrumentów. Badanie nie obejmuje modeli większych ani "
+            "strojenia hiperparametrów, więc o tym, czy osiągnęłyby przewagę, nie rozstrzyga.",
             "Badanie obejmuje jeden rynek i jeden reżim regulacyjny. Wyniki nie przenoszą się "
             "automatycznie na rynki o nieciągłym obrocie.",
             *_calibration_limit(),
@@ -4338,7 +4340,7 @@ def _chapter_14_summary(doc: Document, runs: dict) -> None:
         "wypadają poniżej reguły opartej na częstości klasy liczniejszej. "
         + _corrected_sentence(runs)
         + differences + _rank_turnover(runs)
-        + ". Ranking architektur nie jest zatem właściwością architektury.",
+        + ". Na tych danych ranking architektur nie jest więc stały między horyzontami.",
     )
     defects = COUNT_WORDS.get(len(DEFECTS), str(len(DEFECTS)))
     add_body(
