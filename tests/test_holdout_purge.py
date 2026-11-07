@@ -419,3 +419,49 @@ def test_a_moved_pooled_split_still_starts_with_a_whole_instant() -> None:
 
     assert cal_start < len(times) and times[cal_start - 1] < times[cal_start]
     assert len(set(labels[cal_start:])) == 2
+
+
+# ── a window that holds nothing out ──────────────────────────────────────────
+
+def test_a_window_without_a_slice_takes_the_horizons_latest_temperature() -> None:
+    """The raw models are near-certain, so an uncalibrated window was the most
+    confident of its run for no better reason than missing data. The latest
+    temperature of the same horizon was chosen on a slice realised before it;
+    before the first, a forecast is given no confidence beyond chance."""
+    from prosper.predict.calibration import (
+        TEMPERATURE_GRID,
+        TemperatureCalibrator,
+        TemperatureMemory,
+    )
+
+    memory = TemperatureMemory()
+    first = memory.settle("year", TemperatureCalibrator())
+    assert (first.temperature, first.source) == (TEMPERATURE_GRID[-1], "prior")
+
+    fitted = TemperatureCalibrator(50.0, fitted_on=120, source="fitted")
+    assert memory.settle("year", fitted) is fitted
+    later = memory.settle("year", TemperatureCalibrator())
+    assert (later.temperature, later.source, later.fitted_on) == (50.0, "carried", 0)
+    other = memory.settle("week", TemperatureCalibrator())
+    assert other.source == "prior", "each horizon keeps its own"
+
+
+def test_a_run_never_leaves_a_trained_window_uncalibrated(tmp_path) -> None:
+    import json
+
+    from prosper.predict.xgboost_model import predict_xgboost
+
+    settings = Settings(data_root=tmp_path)
+    _write_trend_then_cycle(settings)
+    build_features(SYMBOL, "1d", "2018-01-01", "2022-05-01", settings=settings)
+    predict_xgboost(
+        symbol=SYMBOL, start="2022-01-01", end="2022-01-31", settings=settings, interval="1d"
+    )
+
+    run_dir = next((settings.reports_predictions_dir / SYMBOL).glob("xgboost_1d_*"))
+    rows = [json.loads(line) for line in
+            (run_dir / "predictions.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    quarter = [row["quarter"] for row in rows if row["quarter"]["trained"]]
+    assert quarter and all(p["calibrated_on"] == 0 for p in quarter), "the case under test"
+    assert all(p["temperature_source"] == "prior" for p in quarter)
+    assert all(max(p["P_long"], p["P_short"]) < 0.51 for p in quarter)

@@ -46,6 +46,10 @@ calibrator and the networks' stopping rule (2.10) would score the model on outco
 on; at the yearly horizon the slice is shorter than the horizon, so every held-out label would be.
 Every model takes its split from `choose_holdout`, one policy: when the fitted rows or the slice hold a
 single class, the split moves to the nearest one where both hold two, or the window holds nothing out.
+Such a window takes the temperature last fitted at the same horizon of the run - chosen on a slice
+realised before it - or, before the first, the top of the grid: no confidence beyond chance
+(`TemperatureMemory`). The raw models are near-certain, so leaving it uncalibrated would make the
+windows with the least data the most confident of the run.
 
 *Guarded by* `tests/test_predict_leakage.py`, `tests/test_backtest_execution.py`,
 `tests/test_calibration.py`, `tests/test_holdout_purge.py`.

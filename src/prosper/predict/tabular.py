@@ -28,6 +28,7 @@ from prosper.domain import (
 )
 from prosper.predict.calibration import (
     TemperatureCalibrator,
+    TemperatureMemory,
     calibration_fields,
     choose_holdout,
 )
@@ -58,6 +59,7 @@ class TabularForecaster:
         # Each horizon's span as time, set per month: a pool holds several rows
         # per instant, so the gap before the held-out slice is not a row count.
         self.purge: dict[str, np.timedelta64] = {}
+        self.temperatures = TemperatureMemory()
 
     # ── the walk-forward hooks ──────────────────────────────────────────────
 
@@ -80,9 +82,12 @@ class TabularForecaster:
             if len(valid) < MIN_LABELLED_ROWS:
                 self.fitted[horizon.name] = None
                 continue
-            self.fitted[horizon.name] = self.fit_horizon(
-                horizon.name, str(plan.dates[first]), pooled, valid
-            )
+            fitted = self.fit_horizon(horizon.name, str(plan.dates[first]), pooled, valid)
+            if fitted and fitted.get("clf") is not None:
+                fitted["calibrator"] = self.temperatures.settle(
+                    horizon.name, fitted["calibrator"]
+                )
+            self.fitted[horizon.name] = fitted
         if slices:
             self.pool_contributions = describe_pool(slices, self.pool, plan.steps)
 

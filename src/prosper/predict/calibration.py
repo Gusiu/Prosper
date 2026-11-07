@@ -165,11 +165,16 @@ class TemperatureCalibrator:
     corrected.
     """
 
-    def __init__(self, temperature: float = 1.0, fitted_on: int = 0) -> None:
+    def __init__(
+        self, temperature: float = 1.0, fitted_on: int = 0, source: str = "identity"
+    ) -> None:
         self.temperature = float(temperature)
         # Held-out rows the temperature was chosen on; 0 when none was fitted
-        # and the identity stands in, which a fitted 1.0 must not be mistaken for.
+        # here, which a fitted 1.0 must not be mistaken for.
         self.fitted_on = int(fitted_on)
+        # "fitted" on this window's slice, "carried" from an earlier window
+        # of the horizon, "prior" before any was fitted - see TemperatureMemory.
+        self.source = source
 
     @property
     def is_identity(self) -> bool:
@@ -238,7 +243,33 @@ def fit_temperature(
         loss = _nll(probs, y_true, t)
         if loss < best_loss:
             best_t, best_loss = t, loss
-    return TemperatureCalibrator(best_t, fitted_on=len(y_true))
+    return TemperatureCalibrator(best_t, fitted_on=len(y_true), source="fitted")
+
+
+class TemperatureMemory:
+    """The newest fitted temperature of each horizon, for a window that could not fit one.
+
+    A window holds nothing out when its slice would be too small or no split
+    leaves both parts two classes (`choose_holdout`). The raw output of these
+    models is near-certain, so such a window was the most confident of its run
+    for no better reason than missing data. The temperature last fitted at the
+    same horizon of the run, chosen on a slice realised before this window, is
+    the best measurement of the model's reliability there is; before the first
+    one a forecast is given no confidence beyond chance, the top of
+    `TEMPERATURE_GRID`. The direction is the model's either way.
+    """
+
+    def __init__(self) -> None:
+        self.latest: dict[str, float] = {}
+
+    def settle(self, horizon: str, calibrator: TemperatureCalibrator) -> TemperatureCalibrator:
+        """*calibrator* if it was fitted, remembered; otherwise what stands in for it."""
+        if calibrator.fitted_on:
+            self.latest[horizon] = calibrator.temperature
+            return calibrator
+        if horizon in self.latest:
+            return TemperatureCalibrator(self.latest[horizon], source="carried")
+        return TemperatureCalibrator(TEMPERATURE_GRID[-1], source="prior")
 
 
 def calibration_fields(
@@ -255,6 +286,7 @@ def calibration_fields(
     total = sum(max(0.0, float(uncalibrated.get(name, 0.0))) for name in DIRECTION_CLASSES)
     return {
         "temperature": calibrator.temperature,
+        "temperature_source": calibrator.source,
         "calibrated_on": calibrator.fitted_on,
         "uncalibrated": {
             name: (max(0.0, float(uncalibrated.get(name, 0.0))) / total if total > 0 else

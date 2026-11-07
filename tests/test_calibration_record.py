@@ -3,7 +3,8 @@
 A run kept only the calibrated probabilities, so whether calibration helped,
 and whether a temperature ran into the end of the grid, could be argued but
 not measured. Each trained payload now carries the probabilities before the
-calibrator, the temperature, and how many held-out rows chose it.
+calibrator, the temperature, where it came from, and how many held-out rows
+chose it.
 """
 
 from __future__ import annotations
@@ -82,11 +83,12 @@ def _assert_recorded(payloads: list[dict]) -> None:
         before = payload["uncalibrated"]
         assert set(before) == set(DIRECTION_CLASSES)
         assert sum(before.values()) == pytest.approx(1.0)
+        assert payload["temperature"] in TEMPERATURE_GRID
         if payload["calibrated_on"]:
             fitted += 1
-            assert payload["temperature"] in TEMPERATURE_GRID
+            assert payload["temperature_source"] == "fitted"
         else:
-            assert payload["temperature"] == 1.0, "no held-out rows, so no temperature"
+            assert payload["temperature_source"] in ("carried", "prior")
         after = TemperatureCalibrator(payload["temperature"]).apply_to_mapping(before)
         for name in DIRECTION_CLASSES:
             assert payload[f"P_{name}"] == pytest.approx(after[name], abs=1e-9)

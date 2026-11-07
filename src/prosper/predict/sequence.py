@@ -27,7 +27,11 @@ import polars as pl
 from prosper.config import Settings
 from prosper.domain import DIRECTION_CLASSES, IDX_TO_DIR, training_features
 from prosper.labels.forward import ForwardLabels
-from prosper.predict.calibration import TemperatureCalibrator, calibration_fields
+from prosper.predict.calibration import (
+    TemperatureCalibrator,
+    TemperatureMemory,
+    calibration_fields,
+)
 from prosper.predict.defaults import summarise_epochs, window_seed
 from prosper.predict.failures import WindowFailures
 from prosper.predict.walk_forward import Month, RunPlan, uniform_depth
@@ -94,6 +98,7 @@ class SequenceForecaster:
         # Kept across months: a horizon that fails to fit has no model and so
         # never reaches its calibrator, whatever the cache holds.
         self.calibrators: dict[str, TemperatureCalibrator] = {}
+        self.temperatures = TemperatureMemory()
         self.depths: dict[str, dict[str, dict[str, float]]] = {}
         # How many epochs each horizon actually trained for, per window. The
         # budget is a ceiling, so this is a result, and without it whether
@@ -118,7 +123,12 @@ class SequenceForecaster:
             return
         for horizon in plan.horizons:
             if horizon.name in plan.selected:
-                self.models[horizon.name] = self.fit_horizon(plan, horizon.name, first, month)
+                model = self.fit_horizon(plan, horizon.name, first, month)
+                self.models[horizon.name] = model
+                if model is not None:
+                    self.calibrators[horizon.name] = self.temperatures.settle(
+                        horizon.name, self.calibrators.get(horizon.name, TemperatureCalibrator())
+                    )
         self.after_fit_month(plan, month, bars)
 
     def predict(self, bar: int, horizon: str) -> dict[str, Any] | None:
