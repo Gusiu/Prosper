@@ -2071,7 +2071,7 @@ def _chapter_2_requirements(doc: Document) -> None:
              "Wymagałaby wiarygodnej prognozy jako danych wejściowych. Jest to zadanie "
              "następujące po rozstrzygnięciu pytania badawczego, nie równoległe do niego."],
             ["Automatyczny dobór hiperparametrów.",
-             "Przy zmierzonej liczbie obserwacji niezależnych przeszukiwanie przestrzeni "
+             "Przy tak małej liczbie obserwacji niezależnych przeszukiwanie przestrzeni "
              "hiperparametrów wybrałoby konfigurację najlepiej dopasowaną do szumu okresu "
              "oceny. Zestawy parametrów są zatem ustalone i wspólne dla wszystkich symboli."],
             ["Prognoza wielkości ruchu jako pojedynczej wartości liczbowej.",
@@ -4850,8 +4850,9 @@ def _chapter_3_equations(doc: Document) -> None:
              "softmax zamienia logity na prawdopodobieństwa sumujące się do 1; jeden parametr; "
              "nie zmienia porządku klas"],
             ["Liczba obserwacji efektywnych",
-             "n_eff = N / F",
-             "etykiety nakładają się na F−1 świecach"],
+             "n_eff ≈ N / F",
+             "przybliżenie: etykiety odległe o F świec uznaje za niezależne, a pomija "
+             "zależność zwrotów w czasie i między instrumentami"],
             ["Liczba symboli efektywnych",
              "n_sym = n / ( 1 + (n−1)·ρ )",
              "ρ - średnia korelacja par; granica 1/ρ"],
@@ -4896,8 +4897,8 @@ def _chapter_3_equations(doc: Document) -> None:
             "przekazywać informację krok po kroku. Temporal Fusion Transformer łączy go z "
             "kodowaniem rekurencyjnym oraz sieciami wyboru zmiennych, które uczą się, które "
             "cechy są istotne w danym kontekście. Jest to model o największej pojemności w "
-            "zestawieniu - i przy zmierzonej liczbie obserwacji niezależnych właśnie ta "
-            "pojemność jest jego największym ryzykiem, nie zaletą.",
+            "zestawieniu, a przy tak małej liczbie obserwacji niezależnych ta pojemność "
+            "zwiększa przede wszystkim ryzyko dopasowania do szumu.",
         ],
     )
 
