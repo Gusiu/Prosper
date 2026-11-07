@@ -23,9 +23,10 @@ from prosper.domain import (
     DIRECTION_CLASSES,
     IDX_TO_DIR,
     effective_symbols,
+    interval_minutes,
     parse_depth_bins,
 )
-from prosper.predict.calibration import TemperatureCalibrator
+from prosper.predict.calibration import TemperatureCalibrator, purged_holdout
 from prosper.predict.pool import (
     PooledSlice,
     TrainingPool,
@@ -50,12 +51,17 @@ class TabularForecaster:
         self.features = pool.frames[0].features
         self.fitted: dict[str, dict[str, Any] | None] = {}
         self.pool_contributions: dict[str, Any] = {}
+        # Each horizon's span as time, set per month: a pool holds several rows
+        # per instant, so the gap before the held-out slice is not a row count.
+        self.purge: dict[str, np.timedelta64] = {}
 
     # ── the walk-forward hooks ──────────────────────────────────────────────
 
     def fit_month(self, plan: RunPlan, month: Month, bars: list[int]) -> None:
         first = bars[0]
         self.fitted = {}
+        bar = np.timedelta64(interval_minutes(plan.interval), "m")
+        self.purge = {name: steps * bar for name, steps in plan.steps.items()}
         slices: dict[str, PooledSlice] = {}
         for horizon in plan.horizons:
             if horizon.name not in plan.selected:
@@ -104,6 +110,15 @@ class TabularForecaster:
         """One horizon's payload for a single feature row."""
 
     # ── shared by both subclasses ───────────────────────────────────────────
+
+    def holdout(self, horizon: str, pooled: PooledSlice, valid: list[int]) -> tuple[int, int]:
+        """``(fit_end, calibration_start)`` among the labelled rows *valid* of *pooled*.
+
+        By instant, as the slice itself is (SPECIFICATION 2.8): the held-out
+        rows are the newest, and the fitted ones end a horizon before them -
+        `purged_holdout`.
+        """
+        return purged_holdout(pooled.open_time[valid], self.purge[horizon])
 
     @staticmethod
     def direction_probabilities(

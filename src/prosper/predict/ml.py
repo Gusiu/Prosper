@@ -9,7 +9,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 
 from prosper.config import Settings, get_settings
 from prosper.domain import DEFAULT_DEPTH_BINS_STR, DIRECTION_CLASSES, IDX_TO_DIR
-from prosper.predict.calibration import calibration_split, fit_calibrator_from_model
+from prosper.predict.calibration import fit_calibrator_from_model
 from prosper.predict.defaults import DEFAULT_TRAIN_WINDOW_DAYS
 from prosper.predict.pool import PooledSlice, TrainingPool
 from prosper.predict.tabular import TabularForecaster, load_tabular
@@ -39,10 +39,11 @@ class MLForecaster(TabularForecaster):
 
         # Reserve the most recent slice of the *training* region to calibrate
         # on. Holding out later bars instead would break invariant 6: their
-        # labels need closes the forecast cannot see.
-        split, _ = calibration_split(0, len(valid))
-        fit_idx = list(range(split))
-        cal_idx = list(range(split, len(valid)))
+        # labels need closes the forecast cannot see. The fitted rows end a
+        # horizon before the slice (`TabularForecaster.holdout`).
+        fit_end, cal_start = self.holdout(horizon, pooled, valid)
+        fit_idx = list(range(fit_end))
+        cal_idx = list(range(cal_start, len(valid)))
 
         model = HistGradientBoostingClassifier(
             random_state=self.seed, max_iter=50, max_leaf_nodes=15

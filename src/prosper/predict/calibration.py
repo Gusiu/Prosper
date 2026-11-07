@@ -12,12 +12,16 @@ that was already realised at the moment of the forecast. Splitting the
 intact - the calibrator never sees a label whose forward close lies at or after
 the bar being predicted.
 
-    |<------------- trainable region (training_bounds) ------------->|
-    |<------- fit the model ------->|<---- fit the calibrator ------>|
-    train_start                   split                        train_end   ... i
+    |<--------------- trainable region (training_bounds) --------------->|
+    |<----- fit the model ----->|<-- F -->|<---- fit the calibrator ---->|
+    train_start              fit_end   calibration_start            train_end   ... i
 
-Both halves end before ``train_end``, which `training_bounds` has already
-pulled back by ``forward_steps`` from the prediction bar.
+Both parts end before ``train_end``, which `training_bounds` has already
+pulled back by ``forward_steps`` from the prediction bar. The ``F`` bars
+between them, one horizon, belong to neither: a label at bar ``k`` is the
+return to ``close[k + F]``, so the model's newest labels would otherwise be
+computed from closes inside the slice that is meant to measure it. See
+`purged_holdout`.
 """
 
 from __future__ import annotations
@@ -53,10 +57,13 @@ class SupportsPredictProba(Protocol):
 
 
 def calibration_split(train_start: int, train_end: int) -> tuple[int, int]:
-    """Split a trainable region into (model_end, calibration_start).
+    """Where the held-out slice of a trainable region begins, by position.
 
-    Returns ``(train_end, train_end)`` when the region is too small to give the
-    calibrator a usable slice, which the caller reads as "do not calibrate".
+    Returns ``(calibration_start, calibration_start)``, or ``(train_end,
+    train_end)`` when the region is too small to give the calibrator a usable
+    slice, which the caller reads as "do not calibrate". It knows nothing of
+    the horizon: `purged_holdout` builds on it and moves the end of the fitted
+    rows back by one.
     """
     span = train_end - train_start
     if span <= 0:
@@ -70,6 +77,50 @@ def calibration_split(train_start: int, train_end: int) -> tuple[int, int]:
     if split <= train_start:
         return train_end, train_end
     return split, split
+
+
+def purged_holdout(times: Sequence[Any] | np.ndarray, purge: Any) -> tuple[int, int]:
+    """Positions ``(fit_end, calibration_start)`` dividing rows ordered by *times*.
+
+    *times* is each row's place in time, ascending: a bar index for one series,
+    an ``open_time`` for a pool, where several rows share an instant. The newest
+    `CALIBRATION_FRACTION` of the rows is held out, from the first row of its
+    instant so that no instant lies on both sides. The model fits only the rows
+    more than *purge* - the horizon, in the units of *times* - older than the
+    first held-out one.
+
+    That gap is what makes the slice out of sample. A label at bar ``k`` is the
+    return to ``close[k + F]``, so without it the model's newest ``F`` labels are
+    computed from closes inside the slice, and the calibrator - and the stopping
+    rule of the GRU and TFT - scores the model on outcomes it was fitted on. It
+    then looks more skilful there than on any later bar and is calibrated, and
+    stopped, accordingly. At the yearly horizon the slice is shorter than the
+    horizon, so that was every held-out label. The gap is the separation
+    `training_bounds` keeps from the bar being predicted.
+
+    Returns ``(len(times), len(times))`` - fit everything, hold out nothing -
+    when the region is too small for a slice or the gap would leave nothing to fit.
+    """
+    total = len(times)
+    _, calibration_start = calibration_split(0, total)
+    if calibration_start >= total:
+        return total, total
+    order = np.asarray(times)
+    calibration_start = int(np.searchsorted(order, order[calibration_start], side="left"))
+    fit_end = purged_end(order, calibration_start, purge)
+    if fit_end <= 0:
+        return total, total
+    return fit_end, calibration_start
+
+
+def purged_end(times: Sequence[Any] | np.ndarray, calibration_start: int, purge: Any) -> int:
+    """Leading rows the model may fit when the held-out slice starts at *calibration_start*.
+
+    Those whose time lies more than *purge* before the slice's first row; see
+    `purged_holdout`.
+    """
+    order = np.asarray(times)
+    return int(np.searchsorted(order, order[calibration_start] - purge, side="left"))
 
 
 class TemperatureCalibrator:
@@ -229,21 +280,26 @@ def usable_split(
     labels: Sequence[int],
     default_split: int,
     min_holdout: int = MIN_EARLY_STOPPING_SAMPLES,
+    *,
+    times: Sequence[Any] | np.ndarray | None = None,
+    purge: Any = 0,
 ) -> int | None:
-    """A split point where both halves carry more than one class.
+    """A held-out slice start where both the fitted rows and the slice carry more than one class.
 
-    `calibration_split` divides by position alone, which is right for the
-    look-ahead rule but blind to what the labels contain. When the older part
-    turns out to be single-class - common at the long horizon, where a whole
-    year of start dates can share one sign - the model cannot be fitted on it,
-    and the caller's only recourse was to train on everything and drop the
-    holdout, losing early stopping and calibration for that window.
+    `purged_holdout` divides by time alone, which is right for the look-ahead
+    rule but blind to what the labels contain. When the older part turns out
+    to be single-class - common at the long horizon, where a whole year of start
+    dates can share one sign - the model cannot be fitted on it, and the
+    caller's only recourse was to train on everything and drop the holdout,
+    losing early stopping and calibration for that window.
 
     Often a nearby split works: on BTCUSDT, 5 of the 13 affected windows have a
     valid one, some with more than fifty candidates. This returns the candidate
     closest to *default_split*, keeping the held-out fraction near what was
-    asked for, or ``None`` when no split satisfies both halves - in which case
-    dropping the holdout really is the only option.
+    asked for, or ``None`` when no split satisfies both parts - in which case
+    dropping the holdout really is the only option. Given *times* and *purge*,
+    a candidate is judged on the rows the model would actually fit, those
+    `purged_end` leaves before it; without them every row before it is fitted.
 
     A single-class *holdout* is deliberately rejected too. Cross-entropy over
     one class is minimised by predicting it with certainty, so stopping on it
@@ -252,11 +308,13 @@ def usable_split(
     total = len(labels)
     if total <= 0 or min_holdout <= 0:
         return None
+    order = np.arange(total) if times is None else np.asarray(times)
 
     candidates = [
         split
         for split in range(1, total - min_holdout + 1)
-        if len(set(labels[:split])) > 1 and len(set(labels[split:])) > 1
+        if len(set(labels[: purged_end(order, split, purge)])) > 1
+        and len(set(labels[split:])) > 1
     ]
     if not candidates:
         return None

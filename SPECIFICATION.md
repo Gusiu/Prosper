@@ -38,12 +38,15 @@ A label at bar `k` needs `close[k + forward_steps]`, so it is trainable at bar `
 goes through it. The trading simulation obeys the same rule from the other end: a signal formed on
 bar `t` executes at the **open of bar `t+1`**.
 
-Calibrators are fitted *inside* the training window. `calibration_split` carves its held-out slice
+Calibrators are fitted *inside* the training window. `purged_holdout` carves its held-out slice
 out of the region `training_bounds` already returned, never from later bars - otherwise the
-calibrator sees labels the forecast could not.
+calibrator sees labels the forecast could not - and ends the fitted rows one horizon before the
+slice. Without that gap the model's newest labels are computed from closes inside the slice, so the
+calibrator and the networks' stopping rule (2.10) would score the model on outcomes it was fitted
+on; at the yearly horizon the slice is shorter than the horizon, so every held-out label would be.
 
 *Guarded by* `tests/test_predict_leakage.py`, `tests/test_backtest_execution.py`,
-`tests/test_calibration.py`.
+`tests/test_calibration.py`, `tests/test_holdout_purge.py`.
 
 ### 2.2 Every horizon actually trains, or says it did not
 
@@ -151,8 +154,9 @@ exactly why this one is inverted.
 `predict/pool.py` is reached by `predict ml` and `predict xgboost` via `--symbols`. Row 400 of
 BTCUSDT is September 2018 and row 400 of SOLUSDT is September 2021, so an index-based pooled window
 trains a 2021 forecast on bars that had not happened yet - and the only symptom is better accuracy.
-The slice is sorted by instant as well, because `calibration_split` takes its newest rows and
-"newest" has to mean newest *overall*.
+The slice is sorted by instant as well, because `purged_holdout` takes its newest rows and
+"newest" has to mean newest *overall*. For the same reason its gap is a span of time, never a
+count of rows, and no instant is split between the fitted rows and the held-out ones.
 
 **Single-symbol runs of those two models take the pooled path too**, so each of them has one
 implementation of which rows it may see. The sequence models and the baseline slice one symbol by

@@ -1,0 +1,277 @@
+"""The calibration slice must be out of sample for the model it calibrates.
+
+A label is the return from a bar's close to the close F bars later
+(`labels/forward.py`), so neighbouring labels share most of their price path.
+Every model holds out the newest quarter of its training window to fit the
+calibrator, and the networks also stop training on it. With the fitted rows
+running right up to that slice, the last F fitted labels were computed from
+closes inside it: the model was scored there on outcomes it had been trained
+on, looked more skilful than on any later bar, and was calibrated accordingly.
+At the yearly horizon the slice is shorter than the horizon, so every held-out
+label overlapped a fitted one.
+
+Each test records which rows a real run fits and which it holds out, and checks
+that no close is shared: the newest fitted bar lies more than F bars before the
+oldest held-out one - the separation `training_bounds` keeps from the bar being
+predicted.
+"""
+
+from __future__ import annotations
+
+import math
+import random
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+import numpy as np
+import polars as pl
+import pytest
+
+from prosper.config import Settings
+from prosper.domain import DEFAULT_HORIZONS
+from prosper.features.build import build_features
+from prosper.storage.layout import get_parquet_file_path
+from prosper.storage.parquet import save_parquet
+
+SYMBOL = "TESTUSDT"
+FORWARD = {h.name: h.steps("1d") for h in DEFAULT_HORIZONS}
+DAY = np.timedelta64(1, "D")
+
+
+def _write_history(settings: Settings, days: int) -> None:
+    """A slow cycle plus noise, so every horizon sees both directions."""
+    rng = random.Random(11)
+    rows = []
+    level = 100.0
+    start = datetime(2018, 1, 1, tzinfo=UTC)
+    for i in range(days):
+        cycle = 1.0 + 0.6 * math.sin(2 * math.pi * i / 500.0)
+        level *= 1.0 + rng.gauss(0.0, 0.015)
+        price = level * cycle
+        rows.append(
+            {
+                "open_time": start + timedelta(days=i),
+                "open": price * 0.995,
+                "high": price * 1.02,
+                "low": price * 0.98,
+                "close": price,
+                "volume": 1000.0 + i,
+            }
+        )
+    df = pl.DataFrame(rows).with_columns(
+        pl.col("open_time").dt.year().alias("_y"),
+        pl.col("open_time").dt.month().alias("_m"),
+    )
+    for (year, month), group in df.group_by(["_y", "_m"]):
+        save_parquet(
+            group.drop(["_y", "_m"]).sort("open_time"),
+            get_parquet_file_path(SYMBOL, "1d", int(year), month=int(month), settings=settings),
+        )
+
+
+@pytest.fixture
+def lake(tmp_path):
+    settings = Settings(data_root=tmp_path)
+    _write_history(settings, 2200)
+    build_features(SYMBOL, "1d", "2018-01-01", "2024-01-10", settings=settings)
+    return settings
+
+
+def _assert_out_of_sample(gaps: list[tuple[int, int]]) -> None:
+    """Each pair is (forward steps, bars from the newest fitted to the oldest held-out row)."""
+    assert gaps, "no window held anything out, so nothing was checked"
+    for forward, gap in gaps:
+        assert gap > forward, (
+            f"the newest fitted bar is {gap} bars before the first held-out one, so at "
+            f"a {forward}-bar horizon their labels share {forward - gap + 1} closes"
+        )
+
+
+# ── the split itself ─────────────────────────────────────────────────────────
+
+def test_the_fitted_rows_end_a_horizon_before_the_held_out_slice() -> None:
+    from prosper.predict.calibration import CALIBRATION_FRACTION, purged_holdout
+
+    bars = list(range(1000))
+    fit_end, cal_start = purged_holdout(bars, 91)
+
+    assert cal_start == 1000 - int(1000 * CALIBRATION_FRACTION)
+    assert bars[cal_start] - bars[fit_end - 1] == 92, "91 bars belong to neither part"
+
+
+def test_a_pooled_instant_is_never_on_both_sides() -> None:
+    """Three symbols per day: a quarter of the rows can start mid-instant, and
+    rows from one day are the same market. A horizon is a span of days there,
+    not a count of rows."""
+    from prosper.predict.calibration import purged_holdout
+
+    # 402 days: the newest quarter of the 1206 rows begins on the last row of a day.
+    days = np.datetime64("2021-01-01", "D") + np.arange(402)
+    times = np.repeat(days, 3).astype("datetime64[us]")
+    fit_end, cal_start = purged_holdout(times, np.timedelta64(28, "D"))
+
+    assert times[cal_start - 1] < times[cal_start], "the slice starts with a whole day"
+    assert (times[cal_start] - times[fit_end - 1]) / DAY == 29
+    assert times[fit_end] > times[fit_end - 1], "the fitted rows end with a whole day"
+
+
+def test_a_gap_that_leaves_nothing_to_fit_holds_nothing_out() -> None:
+    """The yearly horizon in a window a few months long: training on everything
+    without a calibrator beats a calibrator with no model behind it."""
+    from prosper.predict.calibration import purged_holdout
+
+    assert purged_holdout(list(range(300)), 364) == (300, 300)
+
+
+def test_a_rescued_split_is_judged_on_the_rows_actually_fitted() -> None:
+    """Without the gap the oldest 100 rows look fittable; with it, only those
+    up to 70 are fitted, and they hold one class."""
+    from prosper.predict.calibration import usable_split
+
+    labels = [0] * 70 + [1] * 30 + [0, 1] * 50
+    assert usable_split(labels, 100, min_holdout=20) == 100
+    split = usable_split(labels, 100, min_holdout=20, times=range(len(labels)), purge=30)
+
+    assert split is not None and split > 100
+
+
+# ── pooled tree models ───────────────────────────────────────────────────────
+
+@dataclass
+class _Window:
+    """One trained window of a tabular model: its rows and how they were divided."""
+
+    horizon: str
+    times: np.ndarray  # open_time of each labelled training row, oldest first
+    fitted: int | None = None  # leading rows the direction model was fitted on
+    held_out: int = 0  # trailing rows the calibrator was fitted on
+
+
+def _spy_on_tabular(monkeypatch, forecaster, module, classifier) -> list[_Window]:
+    windows: list[_Window] = []
+    fit_horizon, fit = forecaster.fit_horizon, classifier.fit
+    calibrate = module.fit_calibrator_from_model
+
+    def recording_fit_horizon(self, horizon, window, pooled, valid):
+        windows.append(_Window(horizon, np.asarray(pooled.open_time)[valid]))
+        return fit_horizon(self, horizon, window, pooled, valid)
+
+    def recording_fit(self, X, y, *args, **kwargs):
+        # The direction model is fitted first; depth models, if any, follow it.
+        if windows and windows[-1].fitted is None:
+            windows[-1].fitted = len(X)
+        return fit(self, X, y, *args, **kwargs)
+
+    def recording_calibrate(clf, X, y, **kwargs):
+        windows[-1].held_out = len(X)
+        return calibrate(clf, X, y, **kwargs)
+
+    monkeypatch.setattr(forecaster, "fit_horizon", recording_fit_horizon)
+    monkeypatch.setattr(classifier, "fit", recording_fit)
+    monkeypatch.setattr(module, "fit_calibrator_from_model", recording_calibrate)
+    return windows
+
+
+def _tabular_gaps(windows: list[_Window]) -> list[tuple[int, int]]:
+    gaps = []
+    for window in windows:
+        if not window.held_out or window.fitted is None:
+            continue
+        newest_fitted = window.times[window.fitted - 1]
+        oldest_held_out = window.times[len(window.times) - window.held_out]
+        gaps.append((FORWARD[window.horizon], int((oldest_held_out - newest_fitted) / DAY)))
+    return gaps
+
+
+def test_xgboost_calibrates_on_labels_it_was_not_fitted_on(lake, monkeypatch) -> None:
+    import xgboost
+
+    from prosper.predict import xgboost_model
+
+    windows = _spy_on_tabular(
+        monkeypatch, xgboost_model.XGBoostForecaster, xgboost_model, xgboost.XGBClassifier
+    )
+    xgboost_model.predict_xgboost(
+        symbol=SYMBOL, start="2022-06-01", end="2022-07-31", settings=lake, interval="1d"
+    )
+
+    _assert_out_of_sample(_tabular_gaps(windows))
+
+
+def test_gradient_boosting_calibrates_on_labels_it_was_not_fitted_on(lake, monkeypatch) -> None:
+    from prosper.predict import ml
+
+    windows = _spy_on_tabular(
+        monkeypatch, ml.MLForecaster, ml, ml.HistGradientBoostingClassifier
+    )
+    ml.predict_ml(symbol=SYMBOL, start="2022-06-01", end="2022-07-31", settings=lake, interval="1d")
+
+    _assert_out_of_sample(_tabular_gaps(windows))
+
+
+# ── sequence models ──────────────────────────────────────────────────────────
+
+@pytest.mark.slow
+def test_gru_stops_and_calibrates_on_labels_it_was_not_fitted_on(lake, monkeypatch) -> None:
+    from torch.utils.data import Subset
+
+    from prosper.predict import gru
+
+    current: dict[str, str] = {}
+    gaps: list[tuple[int, int]] = []
+    reseed, train = gru.GRUForecaster.reseed, gru._train_gru
+
+    # `reseed` learns the window's horizon just before training; `_train_gru`
+    # is never told it.
+    def remember_horizon(self, horizon, month):
+        current["horizon"] = horizon
+        reseed(self, horizon, month)
+
+    def recording_train(model, loader, *args, dataset, holdout, **kwargs):
+        fitted = loader.dataset
+        if holdout and fitted is not dataset:
+            # Positions in `dataset` are sequences; a sequence's index is its
+            # target bar less a constant, so differences are differences in bars.
+            def sequence(position: int) -> int:
+                return dataset.indices[position] if isinstance(dataset, Subset) else position
+
+            gaps.append(
+                (
+                    FORWARD[current["horizon"]],
+                    sequence(min(holdout)) - sequence(max(fitted.indices)),
+                )
+            )
+        return train(model, loader, *args, dataset=dataset, holdout=holdout, **kwargs)
+
+    monkeypatch.setattr(gru.GRUForecaster, "reseed", remember_horizon)
+    monkeypatch.setattr(gru, "_train_gru", recording_train)
+    gru.predict_gru(
+        symbol=SYMBOL, start="2022-06-01", end="2022-06-30", settings=lake,
+        interval="1d", epochs=1, hidden_size=8,
+    )
+
+    _assert_out_of_sample(gaps)
+
+
+@pytest.mark.slow
+def test_tft_stops_and_calibrates_on_labels_it_was_not_fitted_on(lake, monkeypatch) -> None:
+    from prosper.predict import tft
+
+    gaps: list[tuple[int, int]] = []
+    calibrate = tft._fit_tft_calibrator
+
+    def recording_calibrate(model, ds, *args, bar_indices, forward_steps, **kwargs):
+        if bar_indices:
+            newest_fitted = int(ds.decoded_index["time_idx_first_prediction"].max())
+            gaps.append((forward_steps, min(bar_indices) - newest_fitted))
+        return calibrate(
+            model, ds, *args, bar_indices=bar_indices, forward_steps=forward_steps, **kwargs
+        )
+
+    monkeypatch.setattr(tft, "_fit_tft_calibrator", recording_calibrate)
+    tft.predict_tft(
+        symbol=SYMBOL, start="2022-06-01", end="2022-06-20", settings=lake, interval="1d",
+        seq_len=30, max_epochs=1, hidden_size=8,
+    )
+
+    _assert_out_of_sample(gaps)
