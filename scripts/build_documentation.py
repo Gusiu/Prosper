@@ -2337,8 +2337,9 @@ def _chapter_3_theory(doc: Document) -> None:
         "optimum wtedy i tylko wtedy, gdy prognoza podaje prawdziwe prawdopodobieństwo. Reguła "
         "niewłaściwa nagradza zniekształcanie prognozy - na przykład sama trafność nagradza "
         "deklarowanie skrajnej pewności. System stosuje dwie reguły właściwe: wynik "
-        "Briera[@brier1950], czyli średni kwadrat różnicy między prognozowanym prawdopodobieństwem a "
-        "wynikiem, oraz stratę logarytmiczną, nazywaną też entropią krzyżową - średnią ujemnego "
+        "Briera[@brier1950], czyli sumę kwadratów różnic między prawdopodobieństwami obu klas a "
+        "wynikiem, uśrednioną po prognozach, oraz stratę logarytmiczną, nazywaną też "
+        "entropią krzyżową - średnią ujemnego "
         "logarytmu prawdopodobieństwa, które model przypisał klasie, która wystąpiła. Obok nich "
         "raportuje trafność i oczekiwany błąd kalibracji.",
     )
@@ -2348,8 +2349,8 @@ def _chapter_3_theory(doc: Document) -> None:
         [
             ["Trafność", "udział poprawnie wskazanych kierunków", "0-1",
              "niewłaściwa, ale bezpośrednio interpretowalna"],
-            ["Wynik Briera", "średni kwadrat różnicy prognozy i wyniku", "0-1",
-             "właściwa; kwadratowa kara za pewność błędną"],
+            ["Wynik Briera", "suma po obu klasach kwadratów różnic prognozy i wyniku", "0-2",
+             "właściwa; kwadratowa kara za pewność błędną; prognoza 0,5 daje 0,5"],
             ["Strata logarytmiczna (entropia krzyżowa)",
              "średnia ujemnego logarytmu prawdopodobieństwa klasy, która wystąpiła",
              "0-∞", "właściwa; kara nieograniczona"],
@@ -5043,8 +5044,8 @@ def _chapter_3_equations(doc: Document) -> None:
              "ACC = (1/N) · Σ 1[ ŷ(k) = y(k) ]",
              "reguła niewłaściwa; podana dla interpretowalności"],
             ["Wynik Briera",
-             "BS = (1/N) · Σ ( p(k) − y(k) )²",
-             "reguła właściwa; kara kwadratowa"],
+             "BS = (1/N) · Σ_k Σ_c ( p_c(k) − y_c(k) )²",
+             "reguła właściwa; kara kwadratowa; c - obie klasy, więc BS = 2·(p − y)², od 0 do 2"],
             ["Strata logarytmiczna",
              "LL = −(1/N) · Σ [ y·ln p + (1−y)·ln(1−p) ]",
              "reguła właściwa; kara nieograniczona"],
