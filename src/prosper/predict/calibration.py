@@ -46,9 +46,14 @@ CALIBRATION_FRACTION = 0.25
 
 # Temperatures searched when fitting. One grid, shared by the fit and by the
 # stopping criterion, so the two cannot disagree about what "calibrated" means.
+# It reaches far above 10 because the raw models are near-certain: a slice that
+# shows no skill asks for a temperature without bound, and one ending at 10
+# left a 0.99 forecast at 0.61. At 1000 the same forecast is 0.501, and the
+# direction - which a temperature never changes - is still defined.
 TEMPERATURE_GRID: tuple[float, ...] = (
     0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75,
     2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0,
+    15.0, 20.0, 30.0, 50.0, 70.0, 100.0, 150.0, 200.0, 300.0, 500.0, 1000.0,
 )
 
 

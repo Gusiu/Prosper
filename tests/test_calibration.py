@@ -57,6 +57,22 @@ def test_calibration_never_reaches_past_the_training_bound() -> None:
     assert train_end + forward_steps <= row_index
 
 
+def test_a_forecast_without_skill_can_be_flattened_to_a_coin_flip() -> None:
+    """The models are confident far beyond their accuracy - XGBoost's raw
+    confidence on BTCUSDT ran 0.80-0.96 - and when the held-out slice shows no
+    skill, the temperature minimising its loss has no upper bound. A grid ending
+    at 10 left such a forecast at 0.61; in a run on BTCUSDT the fitted temperature
+    sat at 10 in three months out of four, at every horizon."""
+    rng = np.random.default_rng(0)
+    y = rng.integers(0, 2, size=200)
+    predicted = np.r_[y[:100], 1 - y[100:]]  # right on exactly half the rows
+    probs = np.where(predicted[:, None] == np.arange(2), 0.99, 0.01)
+
+    calibrator = fit_temperature(probs, y)
+
+    assert max(calibrator.apply([0.99, 0.01])) < 0.51
+
+
 def test_temperature_above_one_softens_an_overconfident_forecast() -> None:
     calibrator = TemperatureCalibrator(3.0)
     softened = calibrator.apply([0.98, 0.02])
