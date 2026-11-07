@@ -17,6 +17,7 @@ import inspect
 import json
 import pathlib
 import re
+import subprocess
 from dataclasses import dataclass, field
 
 # ── which runs are the study ─────────────────────────────────────────────────
@@ -35,6 +36,26 @@ HORIZON_LABEL = {"week": "tydzień", "month": "miesiąc", "quarter": "kwartał",
 STUDY_SEEDS = (7, 42, 123)
 STUDY_PROTOCOL = {"interval": "1d", "start": "2020-01-01", "end": "2026-06-30",
                   "deterministic": True}
+# The commit the study ran on. A run belongs to it when the package it was
+# computed with is that commit's: same tree of src/prosper, nothing uncommitted.
+# The runs of October, on code that calibrated on rows overlapping the fitted
+# ones, share everything else with these and are told apart by this alone.
+STUDY_CODE = "ec966c1fb5e3302bcda5b495ee2992fd1e38f4de"
+REPOSITORY = pathlib.Path(__file__).resolve().parent.parent
+
+
+@functools.cache
+def _package_tree(commit: str | None) -> str | None:
+    """The tree of src/prosper at *commit*; two commits with one tree compute the same runs."""
+    if not commit:
+        return None
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", f"{commit}:src/prosper"], cwd=REPOSITORY, capture_output=True,
+            text=True, check=True, timeout=10,
+        ).stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 @functools.cache
@@ -42,9 +63,10 @@ def study_runs(report_root: str = "data/reports") -> frozenset[tuple[str, str]]:
     """(symbol, run slug) of every run that belongs to the study.
 
     Selected by what each run says about itself in run_summary.json - interval,
-    period, deterministic mode, seed - rather than by which folders exist. A run
-    trained from the dashboard while testing it, on another period or seed, is
-    then never counted, however long it stays in the lake.
+    period, deterministic mode, seed and the code it was computed with - rather
+    than by which folders exist. A run trained from the dashboard while testing
+    it, on another period, seed or version of the code, is then never counted,
+    however long it stays in the lake.
     """
     selected = set()
     for summary in pathlib.Path(report_root, "predictions").glob("*/*/run_summary.json"):
@@ -59,6 +81,11 @@ def study_runs(report_root: str = "data/reports") -> frozenset[tuple[str, str]]:
         if any(record.get(key) != value for key, value in STUDY_PROTOCOL.items()):
             continue
         if record.get("seed") not in STUDY_SEEDS:
+            continue
+        environment = record.get("environment") or {}
+        if environment.get("git_dirty") is not False or (
+            _package_tree(environment.get("git_commit")) != _package_tree(STUDY_CODE)
+        ):
             continue
         selected.add((symbol, slug))
     return frozenset(selected)
