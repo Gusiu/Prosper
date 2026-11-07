@@ -53,6 +53,7 @@ from documentation_sources import (  # noqa: E402
     dataset_summary,
     feature_catalogue,
     is_study_run,
+    qa_summary,
     settings_reference,
     test_inventory,
 )
@@ -2875,7 +2876,6 @@ def _chapter_8_models(doc: Document) -> None:
         "wtedy, gdy k+F < i.",
     )
     add_body(
-    add_body(
         doc,
         "Okres oceny obejmuje świece od 1 stycznia 2020 do 30 czerwca 2026. Każda prognoza "
         "oceniana jest na własnej etykiecie, zrealizowanej F świec później, więc ocena prognoz "
@@ -2883,6 +2883,7 @@ def _chapter_8_models(doc: Document) -> None:
         "oddaje kalibratorowi (rozdział 8.8), a wszystkie etykiety, na których się uczył albo "
         "był kalibrowany, zrealizowały się przed prognozą.",
     )
+    add_body(
         doc,
         "Protokół ten jest zapisany w systemie raz (predict/walk_forward.py), a każda z pięciu "
         "architektur dostarcza jedynie dwóch operacji: dopasowania na początku miesiąca i "
@@ -4804,38 +4805,30 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
     )
 
 def _data_quality_results(doc: Document) -> None:
-    """Outcome of the four checks across the lake, if it has been measured."""
-    path = "data/_recompute/qa_summary.json"
-    if not os.path.exists(path):
-        return
-    try:
-        summary = json.load(open(path, encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
+    """Outcome of the four checks on the study's data, from the monthly QA reports."""
+    summary = qa_summary("1d")
     if not summary:
         return
 
     add_body(
         doc,
-        "Kontrole uruchomiono na wszystkich partycjach jeziora danych; ich wynik podaje "
-        "tabela poniżej.",
+        "Kontrole uruchomiono na każdej miesięcznej partycji danych dziennych dziewięciu "
+        "instrumentów badania, do czerwca 2026 włącznie; ich wynik podaje tabela poniżej.",
     )
     rows, total_parts, total_rows, total_defects = [], 0, 0, 0
     for symbol, stats in sorted(summary.items()):
-        defects = (stats.get("nieposortowane", 0) + stats.get("duplikaty", 0)
-                   + stats.get("luki", 0) + stats.get("naruszenia_ohlc", 0)
-                   + stats.get("nieczytelne", 0))
-        total_parts += stats.get("partycje", 0)
-        total_rows += stats.get("wiersze", 0)
+        defects = stats["unsorted"] + stats["duplicates"] + stats["gaps"] + stats["ohlc"]
+        total_parts += stats["partitions"]
+        total_rows += stats["rows"]
         total_defects += defects
         rows.append([
             symbol,
-            str(stats.get("partycje", 0)),
-            f"{stats.get('wiersze', 0):,}".replace(",", " "),
-            str(stats.get("nieposortowane", 0)),
-            str(stats.get("duplikaty", 0)),
-            str(stats.get("luki", 0)),
-            str(stats.get("naruszenia_ohlc", 0)),
+            str(stats["partitions"]),
+            f"{stats['rows']:,}".replace(",", " "),
+            str(stats["unsorted"]),
+            str(stats["duplicates"]),
+            str(stats["gaps"]),
+            str(stats["ohlc"]),
         ])
     add_table(
         doc,

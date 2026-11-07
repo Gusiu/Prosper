@@ -19,6 +19,7 @@ import pathlib
 import re
 import subprocess
 from dataclasses import dataclass, field
+from datetime import date
 
 # ── which runs are the study ─────────────────────────────────────────────────
 
@@ -418,8 +419,37 @@ class SymbolStats:
     years: float
 
 
+def qa_summary(interval: str = "1d") -> dict[str, dict[str, int]]:
+    """The platform's monthly QA reports of every study symbol, summed up to the study's end.
+
+    Read from what `prosper qa check` wrote, month by month, for exactly the
+    data the study used - not from a snapshot taken on some other day.
+    """
+    from prosper.config import get_settings
+
+    last = STUDY_PROTOCOL["end"][:7]
+    root = get_settings().reports_qa_dir
+    out: dict[str, dict[str, int]] = {}
+    for symbol in STUDY_SYMBOLS:
+        totals = dict.fromkeys(("partitions", "rows", "unsorted", "duplicates", "gaps", "ohlc"), 0)
+        for path in sorted((root / symbol / interval).glob("*.json")):
+            if path.stem > last:
+                continue
+            report = json.loads(path.read_text(encoding="utf-8"))
+            checks = report.get("checks", {})
+            totals["partitions"] += 1
+            totals["rows"] += int(report.get("row_count", 0))
+            totals["unsorted"] += 0 if checks.get("sorted", {}).get("passed", False) else 1
+            totals["duplicates"] += int(checks.get("duplicates", {}).get("count", 0))
+            totals["gaps"] += int(checks.get("gaps", {}).get("count", 0))
+            totals["ohlc"] += int(checks.get("ohlc_invariants", {}).get("violation_count", 0))
+        if totals["partitions"]:
+            out[symbol] = totals
+    return out
+
+
 def dataset_summary(interval: str = "1d") -> list[SymbolStats]:
-    """Extent of every symbol in the lake, measured rather than declared."""
+    """Extent of every symbol in the lake up to the study's end, measured rather than declared."""
     import polars as pl
 
     from prosper.config import get_settings
@@ -434,6 +464,9 @@ def dataset_summary(interval: str = "1d") -> list[SymbolStats]:
         if not files:
             continue
         frame = pl.concat([pl.scan_parquet(str(p)).select("open_time") for p in files]).collect()
+        if frame.is_empty():
+            continue
+        frame = frame.filter(pl.col("open_time").dt.date() <= date.fromisoformat(STUDY_PROTOCOL["end"]))
         if frame.is_empty():
             continue
         first, last = frame["open_time"].min(), frame["open_time"].max()
