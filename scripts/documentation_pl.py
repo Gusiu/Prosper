@@ -89,6 +89,10 @@ MODULES: dict[str, tuple[str, str]] = {
         "2a8d8174",
         "Kalibracja dopasowywana jest wewnątrz okna treningowego, nigdy po nim.",
     ),
+    "test_calibration_record.py": (
+        "0e943b4c",
+        "Każda skalibrowana prognoza zapisuje, co zrobiła z nią kalibracja.",
+    ),
     "test_cli_api_contract.py": (
         "6f7bab08",
         "Każda flaga wysyłana przez interfejs HTTP musi istnieć w poleceniu wiersza poleceń, "
@@ -128,6 +132,10 @@ MODULES: dict[str, tuple[str, str]] = {
         "Symbol, którego historia zaczyna się wewnątrz żądanego zakresu, nie może przerwać "
         "przebiegu.",
     ),
+    "test_holdout_purge.py": (
+        "531b884d",
+        "Wycinek kalibracyjny musi leżeć poza próbą modelu, który kalibruje.",
+    ),
     "test_horizon_set.py": (
         "a9cd4b90",
         "Zbiór horyzontów: pełne tygodnie, wzajemnie współmierne, nazwane od rozpiętości.",
@@ -141,6 +149,10 @@ MODULES: dict[str, tuple[str, str]] = {
         "Pamięć podręczna inwentarza musi zauważyć partycję, która zniknęła.",
     ),
     "test_labels.py": ("b15f7265", "Testy budowania etykiet."),
+    "test_missing_features.py": (
+        "1fd8cdc6",
+        "Obie sieci sekwencyjne zamieniają brakującą cechę na tę samą liczbę.",
+    ),
     "test_one_grader.py": ("bc633461", "O werdykcie decyduje jeden obiekt i nic poza nim."),
     "test_order_flow_features.py": (
         "7da356a0",
@@ -609,6 +621,12 @@ CASES: dict[str, tuple[str, str]] = {
         "da39a3ee",
         "Zdegenerowany wektor prawdopodobieństw zastępowany jest rozkładem jednostajnym.",
     ),
+    "test_calibration.py::a_forecast_without_skill_can_be_flattened_to_a_coin_flip": (
+        "a1cb1ba0",
+        "Prognozę bez umiejętności da się spłaszczyć do rzutu monetą. Surowa pewność modeli "
+        "sięga 0,80-0,96, a przy siatce kończącej się na 10 prognoza 0,99 zostawała na 0,61; "
+        "temperatura stawała tam w trzech miesiącach na cztery.",
+    ),
     "test_calibration.py::a_legacy_three_class_run_keeps_its_own_reference": (
         "da39a3ee",
         "Starszy przebieg trzyklasowy zachowuje własny poziom odniesienia.",
@@ -727,6 +745,26 @@ CASES: dict[str, tuple[str, str]] = {
     "test_calibration.py::too_few_samples_yields_the_identity": (
         "da39a3ee",
         "Zbyt mała liczba próbek daje kalibrację tożsamościową.",
+    ),
+    "test_calibration_record.py::gradient_boosting_records_what_calibration_did": (
+        "da39a3ee",
+        "Model scikit-learn zapisuje przy prognozie temperaturę, jej źródło i "
+        "prawdopodobieństwa sprzed kalibracji.",
+    ),
+    "test_calibration_record.py::gru_records_what_calibration_did": (
+        "da39a3ee",
+        "GRU zapisuje przy prognozie temperaturę, jej źródło i prawdopodobieństwa sprzed "
+        "kalibracji.",
+    ),
+    "test_calibration_record.py::tft_records_what_calibration_did": (
+        "da39a3ee",
+        "TFT zapisuje przy prognozie temperaturę, jej źródło i prawdopodobieństwa sprzed "
+        "kalibracji.",
+    ),
+    "test_calibration_record.py::xgboost_records_what_calibration_did": (
+        "da39a3ee",
+        "XGBoost zapisuje przy prognozie temperaturę, jej źródło i prawdopodobieństwa sprzed "
+        "kalibracji.",
     ),
     "test_cli_api_contract.py::a_card_with_an_open_section_grows_with_it": (
         "b64982e2",
@@ -1234,16 +1272,89 @@ CASES: dict[str, tuple[str, str]] = {
         "znormalizować”, co wywołujący zamienia na świecę nietrenowaną. Zwrócenie zer dawałoby "
         "modelowi po cichu zmyśloną skalę.",
     ),
-    "test_history_shorter_than_range.py::both_sequence_predictors_guard_the_empty_window": (
-        "08cdb743",
-        "Oba modele sekwencyjne zabezpieczają się przed pustym oknem: liczą te same "
-        "statystyki, więc miały ten sam błąd.",
+    "test_history_shorter_than_range.py::both_sequence_predictors_refuse_the_empty_window": (
+        "6a0f40f5",
+        "Obie sieci normalizują tą samą funkcją, więc obie miały ten sam błąd; puste okno daje "
+        "teraz świecę nietrenowaną.",
     ),
     "test_history_shorter_than_range.py::normalisation_reads_only_the_window_it_is_given": (
         "c0e822c6",
         "Normalizacja czyta wyłącznie przekazane jej okno: dopasowuje się do świec przeszłych "
         "i stosuje do wszystkich, a gdyby statystyki pochodziły z całej tablicy, prognoza "
         "widziałaby własną przyszłość.",
+    ),
+    "test_holdout_purge.py::a_gap_that_leaves_nothing_to_fit_holds_nothing_out": (
+        "a0f40c9c",
+        "Horyzont roczny w oknie kilkumiesięcznym: uczenie na całym oknie bez kalibratora jest "
+        "lepsze niż kalibrator bez modelu.",
+    ),
+    "test_holdout_purge.py::a_moved_pooled_split_still_starts_with_a_whole_instant": (
+        "da39a3ee",
+        "Przesunięty podział puli nadal zaczyna wycinek od pełnej chwili.",
+    ),
+    "test_holdout_purge.py::a_pooled_instant_is_never_on_both_sides": (
+        "5288410d",
+        "Trzy instrumenty na dzień: wiersze jednego dnia to ten sam rynek, więc dzień nie leży "
+        "po obu stronach podziału, a horyzont jest odcinkiem czasu, nie liczbą wierszy.",
+    ),
+    "test_holdout_purge.py::a_rescued_split_is_judged_on_the_rows_actually_fitted": (
+        "2934412c",
+        "Przesunięty podział oceniany jest na wierszach rzeczywiście uczących: bez przerwy "
+        "najstarsze 100 wierszy wygląda na zdatne, z przerwą uczy się tylko 70, a one mają "
+        "jedną klasę.",
+    ),
+    "test_holdout_purge.py::a_run_never_leaves_a_trained_window_uncalibrated": (
+        "da39a3ee",
+        "Przebieg nie zostawia żadnego wytrenowanego okna bez kalibracji.",
+    ),
+    "test_holdout_purge.py::a_window_without_a_slice_takes_the_horizons_latest_temperature": (
+        "85d91e2b",
+        "Okno bez wycinka przejmuje ostatnią temperaturę horyzontu, wyznaczoną na wycinku "
+        "zrealizowanym wcześniej, a przed pierwszą nie dostaje pewności ponad losową. Okno bez "
+        "kalibracji było najpewniejsze w przebiegu tylko dlatego, że brakowało danych.",
+    ),
+    "test_holdout_purge.py::gradient_boosting_calibrates_on_labels_it_was_not_fitted_on": (
+        "da39a3ee",
+        "Model scikit-learn kalibruje się na etykietach, na których się nie uczył.",
+    ),
+    "test_holdout_purge.py::gru_stops_and_calibrates_on_labels_it_was_not_fitted_on": (
+        "da39a3ee",
+        "GRU zatrzymuje uczenie i kalibruje się na etykietach, na których się nie uczył.",
+    ),
+    "test_holdout_purge.py::tft_stops_and_calibrates_on_labels_it_was_not_fitted_on": (
+        "da39a3ee",
+        "TFT zatrzymuje uczenie i kalibruje się na etykietach, na których się nie uczył.",
+    ),
+    "test_holdout_purge.py::tft_stops_on_the_calibration_slice_alone": (
+        "3d706ebb",
+        "TFT decyduje o zatrzymaniu wyłącznie na wycinku kalibracyjnym; świece sprzed niego są "
+        "tylko historią kodera, nigdy celem, bo model był na nich uczony albo leżą w przerwie.",
+    ),
+    "test_holdout_purge.py::the_fitted_rows_end_a_horizon_before_the_held_out_slice": (
+        "da39a3ee",
+        "Wiersze uczące kończą się jeden horyzont przed wycinkiem kalibracyjnym.",
+    ),
+    "test_holdout_purge.py::the_policy_holds_nothing_out_when_no_split_works": (
+        "da39a3ee",
+        "Gdy żaden podział nie spełnia warunków, okno nie wydziela wycinka.",
+    ),
+    "test_holdout_purge.py::the_policy_keeps_the_default_split_when_it_is_usable": (
+        "da39a3ee",
+        "Zasada podziału zostawia podział domyślny, gdy jest dopuszczalny.",
+    ),
+    "test_holdout_purge.py::the_policy_moves_a_split_whose_slice_holds_one_class": (
+        "ff64cd18",
+        "Zasada podziału przesuwa podział, którego wycinek ma jedną klasę: zatrzymanie i "
+        "kalibracja na jednej klasie nagradzają pewność.",
+    ),
+    "test_holdout_purge.py::tree_models_move_a_split_that_leaves_one_class_to_fit": (
+        "3b816984",
+        "Modele drzewiaste przesuwają podział zostawiający do uczenia jedną klasę, tak jak "
+        "sieci; wcześniej na tym samym oknie jedna architektura była skalibrowana, a druga nie.",
+    ),
+    "test_holdout_purge.py::xgboost_calibrates_on_labels_it_was_not_fitted_on": (
+        "da39a3ee",
+        "XGBoost kalibruje się na etykietach, na których się nie uczył.",
     ),
     "test_horizon_set.py::a_quarter_carries_more_than_twice_a_half_year": (
         "a8be9581",
@@ -1335,6 +1446,19 @@ CASES: dict[str, tuple[str, str]] = {
     "test_labels.py::parse_depth_bins_invalid": (
         "c3a2b107",
         "Odczyt błędnego zapisu kubełków głębokości.",
+    ),
+    "test_missing_features.py::a_missing_feature_lands_at_the_window_median": (
+        "da39a3ee",
+        "Brakująca cecha trafia na medianę okna.",
+    ),
+    "test_missing_features.py::both_networks_scale_the_same_window_identically": (
+        "da39a3ee",
+        "Obie sieci skalują to samo okno identycznie.",
+    ),
+    "test_missing_features.py::the_scale_is_taken_from_the_values_present": (
+        "46c24ab1",
+        "Skala liczona jest z wartości obecnych: mediana 0 i rozstęp międzykwartylowy 1 na "
+        "świecach, które mają cechę.",
     ),
     "test_one_grader.py::a_bar_is_graded_before_its_risk_joins_the_history": (
         "da39a3ee",
