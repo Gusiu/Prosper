@@ -3356,6 +3356,7 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
 
     _results_baserate(doc)
     _results_calibration(doc, runs)
+    _results_scoring_rules(doc, runs)
     _results_stability(doc)
     _results_backtest(doc)
     _results_max_vs_mean(doc)
@@ -3572,7 +3573,7 @@ def _results_calibration(doc: Document, runs: dict) -> None:
         return
     facts = calibration_facts(runs)
     by_horizon = {h: f for h, f in facts["by_horizon"].items() if f["ece"] and f["cells"]}
-    add_heading(doc, "10.5. Kalibracja", 2)
+    add_heading(doc, "10.5. Kalibracja i reguły oceny właściwej", 2)
     add_body(
         doc,
         "Oczekiwany błąd kalibracji mierzy rozbieżność między deklarowaną pewnością a "
@@ -3643,6 +3644,64 @@ def _results_calibration(doc: Document, runs: dict) -> None:
             "Deklarowana pewność nie przewyższa częstości trafień na każdym horyzoncie i w "
             "każdej architekturze; zakresy obu wielkości podaje tabela powyżej.",
         )
+
+
+COIN_BRIER, COIN_LOG_LOSS = 0.5, math.log(2.0)
+
+
+def scoring_rules(runs: dict) -> dict[tuple[str, str], tuple[float, float, int]]:
+    """Per (horizon, model): mean Brier score and log loss over the distinct runs, and their count."""
+    distinct = distinct_runs(runs)
+    out: dict[tuple[str, str], tuple[float, float, int]] = {}
+    for horizon in HORIZON_NAMES:
+        for model in MODELS:
+            entries = [r for s in SYMBOLS for r in distinct.get((s, model), [])]
+            briers = horizon_values(entries, horizon, "brier")
+            losses = horizon_values(entries, horizon, "nll")
+            if briers and len(briers) == len(losses):
+                out[(horizon, model)] = (float(np.mean(briers)), float(np.mean(losses)),
+                                         len(briers))
+    return out
+
+
+def _results_scoring_rules(doc: Document, runs: dict) -> None:
+    """Both proper scores by architecture and horizon, against a forecast that says nothing."""
+    scores = scoring_rules(runs)
+    horizons = [h for h in HORIZON_NAMES if any((h, m) in scores for m in MODELS)]
+    if not horizons:
+        return
+    add_body(
+        doc,
+        "Wynik Briera i strata logarytmiczna oceniają prognozę probabilistyczną w całości: "
+        "karzą zarówno brak rozróżniania, jak i pewność nieuzasadnioną trafieniami. Tabela "
+        "podaje ich średnie według architektury i horyzontu wraz z prognozą stałą 0,5, która "
+        "nie niesie żadnej informacji: jej wynik Briera, liczony po obu klasach, wynosi 0,5, a "
+        f"strata logarytmiczna ln 2 = {pl(COIN_LOG_LOSS)}. Model odniesienia, prognozujący "
+        "częstość klas w oknie treningowym, jest drugim poziomem odniesienia.",
+    )
+    rows = [[MODEL_LABEL[m], *(
+        "-" if (h, m) not in scores else f"{scores[(h, m)][0]:.3f} / {scores[(h, m)][1]:.3f}"
+        for h in horizons)] for m in MODELS]
+    rows.append(["prognoza 0,5", *(f"{COIN_BRIER:.3f} / {COIN_LOG_LOSS:.3f}" for _ in horizons)])
+    add_table(doc, ["Architektura", *(HORIZON_LABEL[h] for h in horizons)], rows,
+              [4.0] + [3.0] * len(horizons), font=10)
+    add_caption(
+        doc, "Tabela",
+        "Średni wynik Briera i średnia strata logarytmiczna (w tej kolejności) według "
+        "architektury i horyzontu; niższe wartości oznaczają lepsze prognozy. Średnie po "
+        "różnych przebiegach, każdy przebieg z równą wagą.",
+    )
+    better = {h: [m for m in MODELS if (h, m) in scores and scores[(h, m)][1] < COIN_LOG_LOSS]
+              for h in horizons}
+    if not any(better.values()):
+        verdict = ("Żadna architektura nie uzyskuje na żadnym horyzoncie straty logarytmicznej "
+                   "niższej niż prognoza 0,5.")
+    else:
+        verdict = "Stratę logarytmiczną niższą niż prognoza 0,5 uzyskuje " + "; ".join(
+            f"na horyzoncie {HORIZON_LOCATIVE[h]} " + (
+                _listing([MODEL_LABEL[m] for m in better[h]]) if better[h] else "żadna")
+            for h in horizons) + "."
+    add_body(doc, verdict)
 
 
 def _results_backtest(doc: Document) -> None:
