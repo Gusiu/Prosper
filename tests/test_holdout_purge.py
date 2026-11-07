@@ -275,3 +275,44 @@ def test_tft_stops_and_calibrates_on_labels_it_was_not_fitted_on(lake, monkeypat
     )
 
     _assert_out_of_sample(gaps)
+
+
+@pytest.mark.slow
+def test_tft_stops_on_the_calibration_slice_alone(lake, monkeypatch) -> None:
+    """The stopping rule scores the slice the calibrator is fitted on
+    (SPECIFICATION 2.10). Its frame reaches back `seq_len` bars so that the
+    oldest held-out bar has a full encoder history; those older bars are fitted
+    or purged ones, so they may be inputs but never targets."""
+    from prosper.predict import tft
+
+    windows: list[dict[str, set[int]]] = []
+    reseed = tft.TFTForecaster.reseed
+    callback, calibrate = tft._calibrated_val_loss_callback, tft._fit_tft_calibrator
+
+    def new_window(self, horizon, month):
+        windows.append({})
+        reseed(self, horizon, month)
+
+    def recording_callback(val_dataset):
+        targets = val_dataset.decoded_index["time_idx_first_prediction"]
+        windows[-1]["stopped"] = {int(k) for k in targets}
+        return callback(val_dataset)
+
+    def recording_calibrate(model, ds, *args, bar_indices, **kwargs):
+        windows[-1]["calibrated"] = set(bar_indices)
+        return calibrate(model, ds, *args, bar_indices=bar_indices, **kwargs)
+
+    monkeypatch.setattr(tft.TFTForecaster, "reseed", new_window)
+    monkeypatch.setattr(tft, "_calibrated_val_loss_callback", recording_callback)
+    monkeypatch.setattr(tft, "_fit_tft_calibrator", recording_calibrate)
+    tft.predict_tft(
+        symbol=SYMBOL, start="2022-06-01", end="2022-06-20", settings=lake, interval="1d",
+        seq_len=30, max_epochs=1, hidden_size=8,
+    )
+
+    stopped = [window for window in windows if "stopped" in window]
+    assert stopped, "no window stopped early, so nothing was checked"
+    for window in stopped:
+        extra = sorted(window["stopped"] - window["calibrated"])
+        assert not extra, f"stopped on {len(extra)} bars outside the slice, from {extra[0]}"
+        assert window["stopped"] == window["calibrated"]

@@ -467,12 +467,13 @@ class TFTForecaster(SequenceForecaster):
                 val_bars = [k for k in range(lo, max(cal_idx) + 1) if y_dir[k] >= 0]
                 if len(val_bars) >= MIN_EARLY_STOPPING_SAMPLES + self.seq_len:
                     val_frame = frame(val_bars)
-                    val_ds = labelled_only(
-                        TimeSeriesDataSet.from_dataset(
-                            ds, val_frame, predict=False, stop_randomization=True
-                        ),
-                        val_frame,
-                    )
+                    # The bars before the slice are fitted or purged ones, there
+                    # only as encoder history: scored as targets too, they would
+                    # stop the model on outcomes it was fitted on. `cal_idx` holds
+                    # labelled bars only, so this also drops the unlabelled ones.
+                    val_ds = TimeSeriesDataSet.from_dataset(
+                        ds, val_frame, predict=False, stop_randomization=True
+                    ).filter(lambda index: index.time_idx_first_prediction.isin(cal_idx))
                     val_loader = val_ds.to_dataloader(train=False, batch_size=64, num_workers=0)
 
             self.reseed(horizon, month)

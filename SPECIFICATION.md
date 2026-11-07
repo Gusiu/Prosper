@@ -203,9 +203,11 @@ measured loss is the one *after* temperature scaling (`calibrated_nll`), not raw
 Raw CE charges for confidence. The network sharpens long before it stops discriminating and the
 calibrator undoes that a step later, so stopping on the raw value returned a one-epoch model while
 accuracy was still rising. That holdout is the calibrator's slice as well; splitting it again would
-put both halves under the sample floor at the long horizon.
+put both halves under the sample floor at the long horizon. TFT's validation frame reaches back
+`seq_len` bars so the oldest held-out bar has a full encoder history, but only the slice's own bars
+are scored: the older ones are fitted or purged (2.1).
 
-*Guarded by* `tests/test_early_stopping.py`.
+*Guarded by* `tests/test_early_stopping.py`, `tests/test_holdout_purge.py`.
 
 ### 2.11 Direction has two classes; depth has one bin scheme
 
