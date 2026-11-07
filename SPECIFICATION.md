@@ -295,12 +295,14 @@ fifteen configurations covering every model, pooled and single, 1d and 1w, fixed
 a horizon subset, seeded and deterministic modes, and a symbol whose history starts inside the range
 produce identical predictions before and after - except that one recovered TFT row.
 
-GRU and TFT still normalise missing features differently (GRU after scaling, TFT before). Every
-symbol's first 89 bars have missing features and early windows reach them, so aligning the two
-would change published numbers; it is recorded in `predict/sequence.py` rather than changed.
+GRU and TFT normalise through one function, `predict/sequence.py::robust_scale`: the median and
+interquartile range of the values present in the window, and a missing value at the median. Every
+symbol's first 89 bars have missing features and early windows reach them, so two rules would mean
+the two networks were trained on different inputs for the same bars.
 
 *Guarded by* `tests/test_walk_forward.py`, and the structural checks in `tests/test_train_window.py`,
-`tests/test_run_provenance.py` and `tests/test_window_seed.py` that every model goes through it.
+`tests/test_run_provenance.py` and `tests/test_window_seed.py` that every model goes through it;
+the shared normalisation by `tests/test_missing_features.py`.
 
 ---
 

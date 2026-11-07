@@ -43,12 +43,6 @@ from prosper.predict.walk_forward import (
 )
 
 
-def _robust_normalize(X: np.ndarray, med: np.ndarray, iqr: np.ndarray) -> np.ndarray:
-    X_safe = np.where(np.isfinite(X), X, 0.0)
-    X_norm = (X_safe - med) / iqr
-    return np.clip(np.nan_to_num(X_norm, nan=0.0, posinf=3.0, neginf=-3.0), -5.0, 5.0)
-
-
 def _class_columns(dataset_ref: Any) -> list[int]:
     """Output-column index of each direction class, in `DIRECTION_CLASSES` order.
 
@@ -357,17 +351,6 @@ class TFTForecaster(SequenceForecaster):
     def fit_month(self, plan: RunPlan, month: Month, bars: list[int]) -> None:
         self.datasets, self.month_predictions = {}, {}
         super().fit_month(plan, month, bars)
-
-    def normalise(self, window: np.ndarray) -> np.ndarray | None:
-        # Missing values become a raw 0 *before* scaling here, unlike the GRU;
-        # see the module docstring of `prosper.predict.sequence`.
-        if window.shape[0] == 0:
-            return None
-        safe = np.where(np.isfinite(window), window, 0.0)
-        median = np.median(safe, axis=0)
-        iqr = np.percentile(safe, 75, axis=0) - np.percentile(safe, 25, axis=0)
-        iqr[iqr == 0] = 1.0
-        return _robust_normalize(self.features, median, iqr)
 
     def fit_horizon(self, plan: RunPlan, horizon: str, first: int, month: Month) -> Any:
         assert self.normalised is not None

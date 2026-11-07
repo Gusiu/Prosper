@@ -212,33 +212,6 @@ def _fit_gru_calibrator(
     return fit_temperature(probs, ys)
 
 
-# ── normalisation ─────────────────────────────────────────────────────────────
-def _robust_normalise(X_train: np.ndarray, X_all: np.ndarray):
-    """Median/IQR normalisation fitted on train, applied to all.
-
-    Returns ``None`` when there is nothing to fit on. That happens at the very
-    first bar of a symbol whose history begins inside the requested range - the
-    causal window reaches back from bar 0 and finds nothing - and
-    `np.percentile` would crash on it, since it indexes `arr[-1]`. A bar with no
-    history behind it has no training rows either, so
-    the honest outcome is an untrained bar (invariant 3), not an exception that
-    loses the whole run.
-    """
-    if X_train.size == 0 or X_train.shape[0] == 0:
-        return None
-    # Replace NaN before statistics so numpy doesn't warn on all-NaN columns
-    X_safe = np.where(np.isfinite(X_train), X_train, 0.0)
-    med = np.median(X_safe, axis=0)
-    q75 = np.percentile(X_safe, 75, axis=0)
-    q25 = np.percentile(X_safe, 25, axis=0)
-    iqr = q75 - q25
-    iqr[iqr == 0] = 1.0
-    X_norm = (X_all - med) / iqr
-    X_norm = np.nan_to_num(X_norm, nan=0.0, posinf=3.0, neginf=-3.0)
-    X_norm = np.clip(X_norm, -5.0, 5.0)
-    return X_norm
-
-
 # ── the model in the walk-forward loop ────────────────────────────────────────
 class GRUForecaster(SequenceForecaster):
     """A GRU classifier per horizon, scored bar by bar on the last *seq_len* bars."""
@@ -263,9 +236,6 @@ class GRUForecaster(SequenceForecaster):
         self.dropout = dropout
         self.batch_size = batch_size
         self.lr = lr
-
-    def normalise(self, window: np.ndarray) -> np.ndarray | None:
-        return _robust_normalise(window, self.features)
 
     def fit_horizon(self, plan: RunPlan, horizon: str, first: int, month: Month) -> Any:
         assert self.normalised is not None
