@@ -9,7 +9,6 @@ from typing import Any
 import numpy as np
 
 from prosper.config import Settings, get_settings
-from prosper.domain import DIRECTION_CLASSES
 from prosper.predict.calibration import (
     TemperatureCalibrator,
     fit_calibrator_from_model,
@@ -100,11 +99,10 @@ class XGBoostForecaster(TabularForecaster):
         }
 
     def predict_horizon(self, fitted: dict[str, Any], row: np.ndarray) -> dict[str, Any]:
-        probabilities = self.direction_probabilities(
-            fitted["clf"], fitted["classes"], fitted["calibrator"], row
-        )
         return {
-            **{f"P_{d}": probabilities[d] for d in DIRECTION_CLASSES},
+            **self.direction_payload(
+                fitted["clf"], fitted["classes"], fitted["calibrator"], row
+            ),
             "depth_long_bins": fitted["depth"]["long"],
             "depth_short_bins": fitted["depth"]["short"],
             "trained": True,

@@ -27,7 +27,7 @@ import polars as pl
 from prosper.config import Settings
 from prosper.domain import DIRECTION_CLASSES, IDX_TO_DIR, training_features
 from prosper.labels.forward import ForwardLabels
-from prosper.predict.calibration import TemperatureCalibrator
+from prosper.predict.calibration import TemperatureCalibrator, calibration_fields
 from prosper.predict.defaults import summarise_epochs, window_seed
 from prosper.predict.failures import WindowFailures
 from prosper.predict.walk_forward import Month, RunPlan, uniform_depth
@@ -127,10 +127,13 @@ class SequenceForecaster:
         probabilities = self.probabilities(bar, horizon)
         if probabilities is None:
             return None
-        calibrated = self.calibrators.get(horizon, TemperatureCalibrator(1.0)).apply(probabilities)
+        calibrator = self.calibrators.get(horizon, TemperatureCalibrator(1.0))
+        calibrated = calibrator.apply(probabilities)
+        uncalibrated = {IDX_TO_DIR[k]: float(probabilities[k]) for k in range(len(DIRECTION_CLASSES))}
         depths = self.depths.get(horizon, {})
         return {
             **{f"P_{IDX_TO_DIR[k]}": float(calibrated[k]) for k in range(len(DIRECTION_CLASSES))},
+            **calibration_fields(uncalibrated, calibrator),
             "depth_long_bins": depths.get("long", uniform_depth(self.depth_labels)),
             "depth_short_bins": depths.get("short", uniform_depth(self.depth_labels)),
             "trained": True,

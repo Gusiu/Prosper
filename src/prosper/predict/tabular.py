@@ -26,7 +26,11 @@ from prosper.domain import (
     interval_minutes,
     parse_depth_bins,
 )
-from prosper.predict.calibration import TemperatureCalibrator, purged_holdout
+from prosper.predict.calibration import (
+    TemperatureCalibrator,
+    calibration_fields,
+    purged_holdout,
+)
 from prosper.predict.pool import (
     PooledSlice,
     TrainingPool,
@@ -121,10 +125,10 @@ class TabularForecaster:
         return purged_holdout(pooled.open_time[valid], self.purge[horizon])
 
     @staticmethod
-    def direction_probabilities(
+    def direction_payload(
         clf: Any, classes: Any, calibrator: TemperatureCalibrator, row: np.ndarray
-    ) -> dict[str, float]:
-        """Classifier output mapped back to direction names, then calibrated.
+    ) -> dict[str, Any]:
+        """Classifier output mapped back to direction names, calibrated, with what calibration did.
 
         Column j of `predict_proba` belongs to ``classes[j]``, which is not
         always both directions: a window can lack one side entirely.
@@ -132,7 +136,11 @@ class TabularForecaster:
         probabilities = dict.fromkeys(DIRECTION_CLASSES, 0.0)
         for class_index, probability in zip(classes, clf.predict_proba(row)[0], strict=True):
             probabilities[IDX_TO_DIR[class_index]] = probability
-        return calibrator.apply_to_mapping(probabilities)
+        calibrated = calibrator.apply_to_mapping(probabilities)
+        return {
+            **{f"P_{d}": calibrated[d] for d in DIRECTION_CLASSES},
+            **calibration_fields(probabilities, calibrator),
+        }
 
 
 def load_tabular(

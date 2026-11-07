@@ -27,7 +27,7 @@ computed from closes inside the slice that is meant to measure it. See
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 import numpy as np
@@ -134,8 +134,11 @@ class TemperatureCalibrator:
     corrected.
     """
 
-    def __init__(self, temperature: float = 1.0) -> None:
+    def __init__(self, temperature: float = 1.0, fitted_on: int = 0) -> None:
         self.temperature = float(temperature)
+        # Held-out rows the temperature was chosen on; 0 when none was fitted
+        # and the identity stands in, which a fitted 1.0 must not be mistaken for.
+        self.fitted_on = int(fitted_on)
 
     @property
     def is_identity(self) -> bool:
@@ -204,7 +207,30 @@ def fit_temperature(
         loss = _nll(probs, y_true, t)
         if loss < best_loss:
             best_t, best_loss = t, loss
-    return TemperatureCalibrator(best_t)
+    return TemperatureCalibrator(best_t, fitted_on=len(y_true))
+
+
+def calibration_fields(
+    uncalibrated: Mapping[str, float], calibrator: TemperatureCalibrator
+) -> dict[str, Any]:
+    """What the calibrator did to one forecast, kept beside it in the payload.
+
+    The probabilities before it was applied, the temperature and how many
+    held-out rows chose it, so that how much calibration helps, and whether a
+    temperature ran into the end of `TEMPERATURE_GRID`, can be measured from a
+    run rather than argued. Nested and without the ``P_`` prefix, which
+    readers of a payload take to mean a direction class.
+    """
+    total = sum(max(0.0, float(uncalibrated.get(name, 0.0))) for name in DIRECTION_CLASSES)
+    return {
+        "temperature": calibrator.temperature,
+        "calibrated_on": calibrator.fitted_on,
+        "uncalibrated": {
+            name: (max(0.0, float(uncalibrated.get(name, 0.0))) / total if total > 0 else
+                   1.0 / len(DIRECTION_CLASSES))
+            for name in DIRECTION_CLASSES
+        },
+    }
 
 
 def calibrated_nll(probs: np.ndarray, y_true: Sequence[int] | np.ndarray) -> float:

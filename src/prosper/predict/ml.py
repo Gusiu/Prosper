@@ -8,7 +8,7 @@ import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier
 
 from prosper.config import Settings, get_settings
-from prosper.domain import DEFAULT_DEPTH_BINS_STR, DIRECTION_CLASSES, IDX_TO_DIR
+from prosper.domain import DEFAULT_DEPTH_BINS_STR, IDX_TO_DIR
 from prosper.predict.calibration import fit_calibrator_from_model
 from prosper.predict.defaults import DEFAULT_TRAIN_WINDOW_DAYS
 from prosper.predict.pool import PooledSlice, TrainingPool
@@ -91,11 +91,10 @@ class MLForecaster(TabularForecaster):
         return model
 
     def predict_horizon(self, fitted: dict[str, Any], row: np.ndarray) -> dict[str, Any]:
-        probabilities = self.direction_probabilities(
-            fitted["clf"], fitted["classes"], fitted["calibrator"], row
-        )
         return {
-            **{f"P_{d}": probabilities[d] for d in DIRECTION_CLASSES},
+            **self.direction_payload(
+                fitted["clf"], fitted["classes"], fitted["calibrator"], row
+            ),
             "depth_long_bins": self._depth_bins(fitted, "long", row),
             "depth_short_bins": self._depth_bins(fitted, "short", row),
             "trained": True,
