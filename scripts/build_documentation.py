@@ -920,7 +920,7 @@ def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
     page_break(doc)
     _abbreviations(doc)
 
-    _chapter_1_introduction(doc)
+    _chapter_1_introduction(doc, runs)
     _chapter_2_requirements(doc)
     _chapter_3_theory(doc)
     _chapter_3_equations(doc)
@@ -1140,15 +1140,6 @@ def architecture_spread(runs: dict) -> dict[str, dict]:
     return spread
 
 
-def learners_beyond_noise(spread: dict[str, dict]) -> list[str]:
-    """Horizons on which the learning architectures lie further apart than a seed moves them."""
-    return [
-        horizon for horizon, cell in spread.items()
-        if cell["noise"] is not None and cell["range_learners"] is not None
-        and cell["range_learners"] > cell["noise"]
-    ]
-
-
 def study_facts(runs: dict) -> dict:
     """The few numbers the abstracts and the summary quote, all read from the artifacts.
 
@@ -1186,7 +1177,6 @@ def study_facts(runs: dict) -> dict:
         }
     facts["rank_correlation"] = rank_agreement(runs)[1]
     facts["spread"] = architecture_spread(runs)
-    facts["beyond_noise"] = learners_beyond_noise(facts["spread"])
     return facts
 
 
@@ -1433,8 +1423,7 @@ ABSTRACT_CHARACTERS = (400, 1000)
 def abstract_text(runs: dict) -> str:
     """The streszczenie. Every number in it is read from the runs."""
     f = study_facts(runs)
-    horizons = len(f["spread"])
-    within = horizons - len(f["beyond_noise"])
+    learner = paired_facts(runs)["learner_significant"]
     higher = [m for m in departures(runs)["measurements"]
               if m["q"] < FALSE_DISCOVERY_RATE and m["accuracy"] > CHANCE]
     defects = len(DEFECTS)
@@ -1452,10 +1441,13 @@ def abstract_text(runs: dict) -> str:
            + _plural(len(higher), "pomiar przekroczył", "pomiary przekroczyły",
                      "pomiarów przekroczyło")
            + " losowość także po poprawce na wielokrotne porównania")
-        + ", a różnice między architekturami mieściły się w rozrzucie wynikającym z losowej "
-        f"inicjalizacji na {COUNT_LOCATIVE.get(within, str(within))} z "
-        f"{COUNT_LOCATIVE.get(horizons, str(horizons))} horyzontów. Wynik jest zgodny ze "
-        "słabą formą hipotezy efektywności rynku."
+        + (", a porównane parami na tych samych prognozach architektury uczące się nie różniły "
+           "się istotnie" if not learner else
+           f", a w porównaniu parami na tych samych prognozach {len(learner)} "
+           + _plural(len(learner), "para architektur uczących się różniła",
+                     "pary architektur uczących się różniły",
+                     "par architektur uczących się różniło") + " się istotnie")
+        + ". Wynik jest zgodny ze słabą formą hipotezy efektywności rynku."
         + (" Prognozy okazały się przy tym zbyt pewne siebie."
            if calibration_facts(runs)["overconfident"] else "")
         + f" Warstwa weryfikacji wykryła {COUNT_WORDS.get(defects, str(defects))} "
@@ -1553,7 +1545,7 @@ def _abbreviations(doc: Document) -> None:
 
 # ── 1 ────────────────────────────────────────────────────────────────────────
 
-def _chapter_1_introduction(doc: Document) -> None:
+def _chapter_1_introduction(doc: Document, runs: dict) -> None:
     add_heading(doc, "1. Wstęp", 1)
 
     add_heading(doc, "1.1. Kontekst", 2)
@@ -1649,6 +1641,27 @@ def _chapter_1_introduction(doc: Document) -> None:
     )
 
     add_heading(doc, "1.5. Twierdzenia szczegółowe", 2)
+    paired = paired_facts(runs) if runs else None
+    correlation = rank_agreement(runs)[1] if runs else float("nan")
+    if paired is None:
+        comparison = ("Różnice między architekturami uczącymi się ocenia test parami na tych "
+                      "samych prognozach (rozdział 10.1).")
+    else:
+        learner, others = paired["learner_significant"], [
+            r for r in paired["significant"] if r not in paired["learner_significant"]]
+        comparison = (
+            ("Porównane parami na tych samych prognozach architektury uczące się nie różnią "
+             "się istotnie po poprawce na wielokrotne porównania"
+             if not learner else
+             f"Porównane parami na tych samych prognozach architektury uczące się różnią się "
+             f"istotnie w {len(learner)} z {paired['learner_tested']} porównań")
+            + (f", a ich kolejność zmienia się wraz z horyzontem, przy średniej korelacji rang "
+               f"{pl(correlation, '+.2f')}" if not math.isnan(correlation) else "")
+            + ". Wybór architektury na podstawie tych wyników nie ma podstaw. "
+            + ("Model odniesienia różni się od nich istotnie w " + str(len(others))
+               + " porównaniach." if others else
+               "Także model odniesienia nie różni się istotnie od żadnej z nich.")
+        )
     add_bullets(
         doc,
         [
@@ -1656,11 +1669,7 @@ def _chapter_1_introduction(doc: Document) -> None:
             "większej od losowej na horyzoncie o wystarczającej mocy statystycznej. Wynik "
             "dotyczy badanych konfiguracji, dziewięciu instrumentów i lat 2020-2026: o modelach "
             "większych, inaczej strojonych albo uczonych na innych danych nie rozstrzyga.",
-            "Różnice między architekturami uczącymi się są tego samego rzędu co rozrzut "
-            "wynikający z ziarna inicjalizacji, a ranking architektur zmienia się wraz z "
-            "horyzontem, przy korelacji rang bliskiej zeru. Wybór architektury na podstawie tych "
-            "wyników nie ma podstaw; wyraźnie odróżnia się jedynie model odniesienia, słabszy od "
-            "pozostałych na horyzontach dłuższych niż tydzień.",
+            comparison,
             "Trafność pojedynczego przebiegu obarczona jest szumem inicjalizacji, którego "
             "przedział ufności liczony wewnątrz tego przebiegu nie obejmuje. Każdą "
             "konfigurację uruchomiono zatem trzykrotnie, pod różnymi ziarnami. Dla obu modeli "
@@ -4595,12 +4604,13 @@ def _chapter_14_summary(doc: Document, runs: dict) -> None:
         return
     f = study_facts(runs)
     deterministic = set(f["seed_invariant"]) == {"ml", "xgboost"}
-    if len(f["beyond_noise"]) <= 1:
-        differences = ("Różnice między architekturami uczącymi się są tego samego rzędu co szum "
-                       "inicjalizacji, a ich porządek zmienia się wraz z horyzontem")
+    learner = paired_facts(runs)["learner_significant"]
+    if not learner:
+        differences = ("Porównane parami na tych samych prognozach architektury uczące się nie "
+                       "różnią się istotnie, a ich porządek zmienia się wraz z horyzontem")
     else:
-        differences = (f"Różnice między architekturami uczącymi się przekraczają szum "
-                       f"inicjalizacji na {len(f['beyond_noise'])} horyzontach, lecz ich porządek "
+        differences = (f"Porównane parami na tych samych prognozach architektury uczące się "
+                       f"różnią się istotnie w {len(learner)} porównaniach, lecz ich porządek "
                        "zmienia się wraz z horyzontem")
     add_body(
         doc,
@@ -4654,8 +4664,9 @@ def _check_thesis_against_data(runs: dict) -> None:
     problems = []
     if above > 1.5 * expected + 1:
         problems.append(f"{above} measurements above chance where about {expected} are expected")
-    if len(f["beyond_noise"]) > 1:
-        problems.append(f"the learners exceed the seed spread on {f['beyond_noise']}")
+    learner = paired_facts(runs)["learner_significant"]
+    if learner:
+        problems.append(f"{len(learner)} pairs of learners differ in the paired test")
     found = departures(runs)
     higher = [m for m in found["measurements"]
               if m["q"] < FALSE_DISCOVERY_RATE and m["accuracy"] > CHANCE]
@@ -5319,42 +5330,22 @@ def _both_ends_sentence(positions: dict[str, list[int]], places: int) -> str:
 def _results_rank_stability(doc: Document, runs: dict) -> None:
     """Does the ordering of architectures survive a change of horizon?
 
-    The thesis rests on this, so it is computed rather than asserted. The
-    baseline is excluded: it does not learn, it is consistently last, and
-    including it would inflate the apparent agreement between horizons.
+    The thesis rests on this, so it is computed rather than asserted.
     """
     learners = [m for m in MODELS if m != "baseline"]
-    means_by_horizon: dict[str, dict[str, float]] = {}
-    for horizon in HORIZON_NAMES:
-        per_model = {}
-        for model in learners:
-            values = []
-            for symbol in SYMBOLS:
-                values.extend(horizon_values(runs.get((symbol, model), []), horizon, "accuracy"))
-            if values:
-                per_model[model] = float(np.mean(values))
-        if len(per_model) == len(learners):
-            means_by_horizon[horizon] = per_model
-    if len(means_by_horizon) < 2:
+    order, average = rank_agreement(runs)
+    if len(order) < 2:
         return
 
-    order = {
-        horizon: sorted(per_model, key=lambda m: -per_model[m])
-        for horizon, per_model in means_by_horizon.items()
-    }
-
     add_heading(doc, "10.2. Trwałość rankingu architektur", 2)
-    beyond = learners_beyond_noise(architecture_spread(runs))
-    if len(beyond) <= 1:
-        where = (f" na wszystkich horyzontach poza {HORIZON_LOCATIVE[beyond[0]]}, gdzie "
-                 "przekracza go niewiele" if beyond else " na każdym horyzoncie")
-        intro = (f"Rozstęp między architekturami uczącymi się mieści się w rozrzucie ziarna{where}. "
-                 "Jeżeli różnice są szumem, ich porządek powinien zmieniać się wraz z horyzontem. "
-                 "Sprawdzeniem jest kolejność miejsc.")
+    if not paired_facts(runs)["learner_significant"]:
+        intro = ("Test parami nie wykazał istotnej różnicy między architekturami uczącymi się. "
+                 "Jeżeli różnice ich średnich są szumem, ich porządek powinien zmieniać się wraz "
+                 "z horyzontem. Sprawdzeniem jest kolejność miejsc.")
     else:
-        intro = (f"Rozstęp między architekturami uczącymi się przekracza rozrzut ziarna na "
-                 f"{len(beyond)} horyzontach. Pozostaje pytanie, czy opisuje architekturę, czy parę "
-                 "architektura-horyzont. Odpowiedzią jest kolejność miejsc.")
+        intro = ("Test parami wykazał istotne różnice między niektórymi architekturami uczącymi "
+                 "się. Pozostaje pytanie, czy opisują architekturę, czy parę architektura-horyzont. "
+                 "Odpowiedzią jest kolejność miejsc.")
     add_body(doc, intro)
     add_table(
         doc,
@@ -5372,14 +5363,6 @@ def _results_rank_stability(doc: Document, runs: dict) -> None:
 
     ranks = {h: {m: i for i, m in enumerate(o)} for h, o in order.items()}
     horizons = list(order)
-    correlations = []
-    for index, first in enumerate(horizons):
-        for second in horizons[index + 1:]:
-            left = np.array([ranks[first][m] for m in learners], dtype=float)
-            right = np.array([ranks[second][m] for m in learners], dtype=float)
-            if left.std() and right.std():
-                correlations.append(float(np.corrcoef(left, right)[0, 1]))
-    average = float(np.mean(correlations)) if correlations else float("nan")
 
     positions = {m: [ranks[h][m] + 1 for h in horizons] for m in learners}
     add_table(
