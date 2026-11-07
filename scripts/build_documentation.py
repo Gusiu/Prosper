@@ -4636,7 +4636,8 @@ def _appendix_glossary(doc: Document) -> None:
              "Wykorzystanie w uczeniu informacji niedostępnej w chwili prognozy; objawia się "
              "poprawą trafności, nie błędem wykonania."],
             ["przewaga",
-             "Różnica prawdopodobieństw obu kierunków; z konstrukcji ograniczona przez 0,5."],
+             "Różnica prawdopodobieństw wzrostu i spadku, od -1 do 1: znak wskazuje kierunek "
+             "prognozy, wartość bezwzględna jej siłę."],
             ["reguła właściwa",
              "Miara oceny prognozy probabilistycznej osiągająca optimum wtedy i tylko wtedy, gdy "
              "prognoza podaje prawdziwe prawdopodobieństwo."],
@@ -4853,8 +4854,8 @@ def _chapter_3_equations(doc: Document) -> None:
              "W = F + max( MIN_WIERSZY, 3·F )",
              "podłoga wierszowa wiąże krótkie horyzonty, obserwacyjna długie"],
             ["Przewaga prognozy",
-             "edge = | p_wzrost − p_spadek |",
-             "z konstrukcji nie przekracza 0,5"],
+             "edge = p_wzrost − p_spadek",
+             "od -1 do 1: znak wskazuje kierunek, wartość bezwzględna jego siłę"],
             ["Percentyl przesunięć",
              "pct = ( #{ i : ROI_i < ROI } / M ) · 100",
              "M - liczba przesunięć cyklicznych; 50 oznacza przypadek"],

@@ -240,8 +240,9 @@ supposed to be trading. Three paths, found one at a time, hours apart.
 The grader is stateful; feed it in chronological order. Its **risk** gates are quantiles of the
 risk already seen, never including the bar being graded. Its **edge** thresholds are fixed on
 purpose: `edge` is a difference of two probabilities, so 0.3 means the same under any bin scheme,
-while `risk` is a product whose range moves whenever the bins or the calibrator do. Edge is bounded
-by 0.5 by construction, since `min(p_long, p_short) <= 0.5`.
+while `risk` is a product whose range moves whenever the bins or the calibrator do. Edge is
+`p_long - p_short`, from -1 to 1: its sign is the direction and its size the strength. The bound of
+0.5 belongs to risk, which counts the adverse side, whose probability is at most 0.5.
 
 Risk counts the **adverse side only** - large moves against the position the edge implies. Summing
 both sides made an expected rally a reason not to buy, and held 90% of medium and long bars.
