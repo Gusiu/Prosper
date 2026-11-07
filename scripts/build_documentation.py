@@ -2887,12 +2887,13 @@ def _chapter_8_models(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Jedna rozbieżność pozostała. GRU i TFT normalizują cechy medianą i "
-        "rozstępem międzykwartylowym, lecz brakującą wartość traktują inaczej: GRU zastępuje ją "
-        "zerem po przeskalowaniu, czyli medianą okna, a TFT zerem przed przeskalowaniem. "
-        "Pierwsze 89 świec każdego symbolu ma braki wynikające z rozruchu wskaźników, a "
-        "najwcześniejsze okna sięgają tak daleko, więc ujednolicenie zmieniłoby opublikowane "
-        "wyniki jednej z sieci i wymagałoby ponownego przeliczenia.",
+        "Pierwsze 89 świec każdego symbolu ma braki cech wynikające z rozruchu wskaźników, a "
+        "najwcześniejsze okna treningowe sięgają tak daleko. Obie sieci normalizują cechy "
+        "medianą i rozstępem międzykwartylowym okna, liczonymi z wartości obecnych, a brakującą "
+        "wartość zastępują medianą okna, czyli zerem po przeskalowaniu - wartością, która nie "
+        "mówi sieci nic o danej świecy. Reguła jest wspólna, aby dla tych samych świec obie "
+        "sieci uczyły się na tych samych wejściach; modele gradientowe obsługują braki natywnie, "
+        "kierując je w każdym podziale drzewa w stronę wyznaczoną podczas uczenia.",
     )
     add_diagram(
         doc, "petla_kroczaca",
