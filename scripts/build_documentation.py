@@ -4178,6 +4178,26 @@ DEFECTS = [
      "TFT: okna z taką świecą zapisywane jako nietrenowane, w dziewięciu przebiegach na "
      "sześciu symbolach; GRU: przerwanie przebiegu",
      "rozszerzenie badania z trzech na dziewięć instrumentów"],
+    ["Wycinek kalibracyjny przylegający do części uczącej bez przerwy",
+     "kalibrator i reguła zatrzymania oceniały model na wynikach, na których się uczył; na "
+     "horyzoncie rocznym dotyczyło to każdej świecy wycinka",
+     "rozrysowanie granicy uczenia i kalibracji na osi czasu"],
+    ["Zbiór walidacyjny TFT obejmujący świece sprzed wycinka",
+     "wczesne zatrzymanie mierzone częściowo na celach, na których model się uczył",
+     "test porównujący cele walidacji z wycinkiem kalibracyjnym"],
+    ["Siatka temperatur kończąca się na 10",
+     "kalibrator nie mógł spłaszczyć prognozy bez umiejętności; prognozy zbyt pewne mimo "
+     "kalibracji",
+     "zapis temperatury przy każdej prognozie"],
+    ["Różne uzupełnianie braków w GRU i TFT, statystyki skalowania liczone z brakami jako zerami",
+     "obie sieci uczone na różnych wejściach dla tych samych świec",
+     "przegląd metodyki porównania architektur"],
+    ["Ratunkowe przesunięcie podziału tylko w sieciach",
+     "na tym samym oknie jedna architektura skalibrowana, druga nie",
+     "test na szeregu, którego najstarsze etykiety mają jedną klasę"],
+    ["Okno bez wycinka pozostawione bez kalibracji",
+     "prognozy z najmniejszej ilości danych najpewniejsze w przebiegu",
+     "zapis źródła temperatury przy każdej prognozie"],
 ]
 
 
@@ -4539,7 +4559,9 @@ HORIZON_LOCATIVE = {"week": "tygodniowym", "month": "miesięcznym", "quarter": "
 HORIZON_NOMINATIVE = {"week": "tygodniowy", "month": "miesięczny", "quarter": "kwartalny",
                       "year": "roczny"}
 COUNT_LOCATIVE = {2: "dwóch", 3: "trzech", 4: "czterech"}
-COUNT_WORDS = {5: "pięć", 6: "sześć", 7: "siedem", 8: "osiem", 9: "dziewięć", 10: "dziesięć"}
+COUNT_WORDS = {5: "pięć", 6: "sześć", 7: "siedem", 8: "osiem", 9: "dziewięć", 10: "dziesięć",
+               11: "jedenaście", 12: "dwanaście", 13: "trzynaście", 14: "czternaście",
+               15: "piętnaście"}
 
 
 def _listing(words: list[str]) -> str:
