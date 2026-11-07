@@ -16,6 +16,7 @@ script is the source of truth, the document is an artifact.
 from __future__ import annotations
 
 import glob
+import itertools
 import json
 import math
 import os
@@ -47,6 +48,7 @@ from documentation_sources import (  # noqa: E402
     HORIZON_LABEL,
     MODEL_LABEL,
     STUDY_MODELS,
+    STUDY_SEEDS,
     STUDY_SYMBOLS,
     api_reference,
     cli_reference,
@@ -68,6 +70,7 @@ from prosper.eval.significance import (  # noqa: E402
     DEFAULT_RESAMPLES,
     accuracy_interval,
     benjamini_hochberg,
+    block_bootstrap,
     bootstrap_p_value,
 )
 from prosper.predict.calibration import (  # noqa: E402
@@ -1274,6 +1277,84 @@ def departures(runs: dict) -> dict:
     return result
 
 
+_paired_cache: dict[tuple, list[dict]] = {}
+
+
+def _panel_mean(rows: np.ndarray) -> float:
+    return float(np.nanmean(rows))
+
+
+def paired_differences(runs: dict) -> list[dict]:
+    """Every pair of architectures compared on the same forecasts, per horizon.
+
+    For one instrument and seed the two runs forecast the same bars. On the bars
+    both scored, the difference of their hits - and of their log losses - is one
+    cell of a panel whose rows are dates; the mean over the panel is the
+    difference between the architectures. Its interval is the moving-block
+    bootstrap of section 9.2 drawing whole dates, so every instrument is
+    resampled on the same days and their common movement stays in the interval.
+    A seed-invariant model's identical runs stand in for one another and the
+    baseline's single run for every seed. Benjamini-Hochberg runs over the pairs
+    and horizons of each measure separately.
+    """
+    import polars
+
+    key = tuple(sorted((s, m, r["slug"]) for (s, m), v in runs.items() for r in v))
+    if key in _paired_cache:
+        return _paired_cache[key]
+
+    def run_for(entries: dict[int, dict], seed: int) -> dict | None:
+        return entries.get(seed) or (next(iter(entries.values())) if len(entries) == 1 else None)
+
+    results: list[dict] = []
+    for horizon in HORIZON_NAMES:
+        for first, second in itertools.combinations(MODELS, 2):
+            cells: dict[str, list[dict]] = {"accuracy": [], "log_loss": []}
+            block = 1
+            for symbol in SYMBOLS:
+                a_runs = {r["seed"]: r for r in runs.get((symbol, first), [])}
+                b_runs = {r["seed"]: r for r in runs.get((symbol, second), [])}
+                if not a_runs or not b_runs:
+                    continue
+                for seed in STUDY_SEEDS:
+                    a, b = run_for(a_runs, seed), run_for(b_runs, seed)
+                    if a is None or b is None:
+                        continue
+                    joined = _scored(symbol, a["slug"], horizon,
+                                     ["date", "forward_steps", "correct", "nll"]).join(
+                        _scored(symbol, b["slug"], horizon, ["date", "correct", "nll"]),
+                        on="date", suffix="_b")
+                    if joined.height == 0:
+                        continue
+                    block = int(joined["forward_steps"][0] or 1)
+                    dates = joined["date"].to_list()
+                    hits = (joined["correct"].cast(polars.Float64)
+                            - joined["correct_b"].cast(polars.Float64)).to_list()
+                    losses = (joined["nll"] - joined["nll_b"]).to_list()
+                    cells["accuracy"].append(dict(zip(dates, hits, strict=True)))
+                    cells["log_loss"].append(dict(zip(dates, losses, strict=True)))
+            for measure, series in cells.items():
+                if not series:
+                    continue
+                dates = sorted(set().union(*series))
+                panel = np.array([[cell.get(d, np.nan) for cell in series] for d in dates])
+                interval = block_bootstrap(panel, block, _panel_mean)
+                p_value = (bootstrap_p_value(panel, block, 0.0, _panel_mean,
+                                             resamples=P_VALUE_RESAMPLES)
+                           if interval.estimable else None)
+                results.append({
+                    "horizon": horizon, "first": first, "second": second, "measure": measure,
+                    "difference": interval.point, "low": interval.low, "high": interval.high,
+                    "cells": len(series), "dates": len(dates), "p": p_value, "q": None,
+                })
+    for measure in ("accuracy", "log_loss"):
+        tested = [r for r in results if r["measure"] == measure and r["p"] is not None]
+        for record, q in zip(tested, benjamini_hochberg([r["p"] for r in tested]), strict=True):
+            record["q"] = q
+    _paired_cache[key] = results
+    return results
+
+
 def _side_runs(sides: list) -> float:
     """Mean length of a stretch of consecutive bars predicting the same side."""
     changes = sum(1 for a, b in zip(sides, sides[1:]) if a != b)
@@ -1512,14 +1593,15 @@ def _chapter_1_introduction(doc: Document) -> None:
         doc,
         "Na podstawie samej historii notowań żadna z badanych architektur uczenia maszynowego "
         "nie prognozuje kierunku zmian cen kryptowalut istotnie trafniej niż losowo, a "
-        "różnice między architekturami są tego samego rzędu co rozrzut wynikający z losowej "
-        "inicjalizacji.",
+        "porównane na tych samych prognozach architektury uczące się nie różnią się między "
+        "sobą istotnie.",
     )
     add_body(
         doc,
         "Tezę obaliłby pomiar, w którym któraś architektura na horyzoncie o wystarczającej "
-        "mocy statystycznej osiąga trafność istotnie wyższą od losowej także po poprawce na "
-        "wielokrotne porównania.",
+        "mocy statystycznej osiąga trafność istotnie wyższą od losowej, albo w którym dwie "
+        "architektury uczące się, porównane na tych samych świecach, różnią się trafnością "
+        "istotnie - w obu przypadkach także po poprawce na wielokrotne porównania.",
     )
     add_body(
         doc,
@@ -1528,10 +1610,12 @@ def _chapter_1_introduction(doc: Document) -> None:
         "(rozdział 10.4). Druga część tezy wymaga zmierzenia szumu: stwierdzenie, że "
         "architektury nie różnią się między sobą, jest nieodróżnialne od stwierdzenia, że "
         "pomiar był zbyt zaszumiony, aby je rozróżnić, dopóki poziom szumu nie zostanie "
-        "zmierzony. Dlatego każdą konfigurację uruchomiono pod trzema ziarnami generatora "
-        "liczb losowych, a rozdział 10 zestawia rozstęp między architekturami z rozrzutem "
-        "wynikającym z samej inicjalizacji i sprawdza, czy kolejność architektur utrzymuje się "
-        "między horyzontami.",
+        "zmierzony. Dlatego architektury porównuje się parami na tych samych świecach, a "
+        "przedział ufności różnicy pokazuje, jak dużą różnicę pomiar by wykrył. Każdą "
+        "konfigurację uruchomiono przy tym pod trzema ziarnami generatora liczb losowych, a "
+        "rozdział 10 zestawia ponadto rozstęp między architekturami z rozrzutem wynikającym z "
+        "samej inicjalizacji i sprawdza, czy kolejność architektur utrzymuje się między "
+        "horyzontami.",
     )
 
     add_heading(doc, "1.4. Uzasadnienie wyboru rynku", 2)
@@ -3194,17 +3278,18 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
         page_break(doc)
         return
 
-    add_heading(doc, "10.1. Ranking architektur wobec podłogi szumu", 2)
+    add_heading(doc, "10.1. Porównanie architektur", 2)
     add_body(
         doc,
-        "Tabela poniżej odpowiada wprost na pytanie badawcze. Wielkością rozstrzygającą jest "
-        "porównanie rozstępu między architekturami z rozrzutem tej samej architektury pod "
-        "różnymi ziarnami. Jeżeli rozstęp nie przekracza rozrzutu, ranking architektur nie ma "
-        "podstaw. Rozrzut liczony jest wyłącznie z architektur, których wynik ziarno zmienia: "
-        "modele deterministyczne wniosłyby do średniej zera i zaniżyły poziom szumu, zamieniając "
-        "remis w ranking. Rozstęp podawany jest dwukrotnie - dla wszystkich architektur i dla "
-        "samych uczących się - ponieważ model odniesienia nie uczy się i na dłuższych "
-        "horyzontach odstaje od reszty.",
+        "Pierwsza tabela podaje średnią trafność każdej architektury i zestawia rozstęp tych "
+        "średnich z rozrzutem tej samej architektury pod różnymi ziarnami. Jest to opis skali: "
+        "średnie pochodzą z przebiegów na różnych instrumentach, a zestawienie rozstępu z "
+        "rozrzutem nie testuje różnicy między dwiema architekturami na tych samych "
+        "obserwacjach - taki test podają dwie kolejne tabele. Rozrzut liczony jest wyłącznie "
+        "z architektur, których wynik ziarno zmienia: modele deterministyczne wniosłyby do "
+        "średniej zera i zaniżyły poziom szumu. Rozstęp podawany jest dwukrotnie - dla "
+        "wszystkich architektur i dla samych uczących się - ponieważ model odniesienia nie "
+        "uczy się i na dłuższych horyzontach odstaje od reszty.",
     )
 
     spread = architecture_spread(runs)
@@ -3247,11 +3332,12 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
         )
         add_body(
             doc,
-            "Wniosek: " + "; ".join(
+            "Rozstęp wobec rozrzutu: " + "; ".join(
                 f"na horyzoncie {HORIZON_LOCATIVE[h]} {_spread_verdict(spread[h])}"
                 for h in tested
             ) + ".",
         )
+    _results_paired(doc, runs)
 
     _results_rank_stability(doc, runs)
 
@@ -3274,6 +3360,94 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
     _results_max_vs_mean(doc)
     _results_departures(doc, runs)
     page_break(doc)
+
+
+LEARNERS = ("ml", "xgboost", "gru", "tft")
+
+
+def paired_facts(runs: dict) -> dict:
+    """What the paired comparison says, for the sentences that quote it."""
+    found = paired_differences(runs)
+    accuracy = [r for r in found if r["measure"] == "accuracy" and r["q"] is not None]
+    significant = [r for r in accuracy if r["q"] < FALSE_DISCOVERY_RATE]
+    return {
+        "tested": len(accuracy),
+        "learner_tested": sum(1 for r in accuracy
+                              if r["first"] in LEARNERS and r["second"] in LEARNERS),
+        "significant": significant,
+        "learner_significant": [r for r in significant
+                                if r["first"] in LEARNERS and r["second"] in LEARNERS],
+        "untested": sorted({r["horizon"] for r in found if r["q"] is None},
+                           key=HORIZON_NAMES.index),
+    }
+
+
+def _paired_cell(record: dict | None, scale: float, places: int) -> str:
+    if record is None:
+        return "-"
+    point = f"{scale * record['difference']:+.{places}f}"
+    if record["low"] is None:
+        return point
+    star = "*" if record["q"] is not None and record["q"] < FALSE_DISCOVERY_RATE else ""
+    return (f"{point}{star} [{scale * record['low']:+.{places}f}; "
+            f"{scale * record['high']:+.{places}f}]")
+
+
+def _results_paired(doc: Document, runs: dict) -> None:
+    """The direct test of chapter 10.1: each pair of architectures on the same forecasts."""
+    found = paired_differences(runs)
+    if not found:
+        return
+    facts = paired_facts(runs)
+    add_body(
+        doc,
+        "Bezpośredni test porównuje architektury parami na tych samych prognozach. Dla danego "
+        "instrumentu i ziarna obie architektury prognozują te same świece, więc różnica ich "
+        "trafień na świecach ocenionych u obu jest jedną kolumną panelu, którego wiersze są "
+        "datami; średnia panelu jest różnicą trafności. Przedział ufności daje bootstrap "
+        "blokowy z rozdziału 9.2 losujący całe daty, tak że wszystkie instrumenty są losowane "
+        "na tych samych dniach i ich wspólny ruch zostaje w przedziale. Wartości p koryguje się "
+        "procedurą Benjaminiego i Hochberga osobno dla trafności i dla straty logarytmicznej."
+        + (f" Na horyzoncie {HORIZON_LOCATIVE[facts['untested'][0]]} okres oceny mieści mniej "
+           "niż dziesięć bloków, więc przedziału się nie wyznacza (rozdział 9.2)."
+           if len(facts["untested"]) == 1 else ""),
+    )
+    shown = [h for h in HORIZON_NAMES if h not in facts["untested"]]
+    index = {(r["horizon"], r["first"], r["second"], r["measure"]): r for r in found}
+    for measure, scale, places, caption in (
+        ("accuracy", 100.0, 1,
+         "Różnica trafności par architektur na tych samych prognozach, w punktach "
+         "procentowych (pierwsza minus druga), z 95-procentowym przedziałem ufności. Gwiazdka "
+         "oznacza q < 0,05 po poprawce Benjaminiego i Hochberga."),
+        ("log_loss", 1.0, 3,
+         "Różnica średniej straty logarytmicznej par architektur na tych samych prognozach "
+         "(pierwsza minus druga; ujemna oznacza lepsze prognozy pierwszej), z 95-procentowym "
+         "przedziałem ufności. Gwiazdka oznacza q < 0,05 po poprawce Benjaminiego i Hochberga."),
+    ):
+        rows = [[f"{MODEL_LABEL[a]} - {MODEL_LABEL[b]}",
+                 *(_paired_cell(index.get((h, a, b, measure)), scale, places) for h in shown)]
+                for a, b in itertools.combinations(MODELS, 2)]
+        add_table(doc, ["Para", *(HORIZON_LABEL[h] for h in shown)], rows,
+                  [4.0] + [4.2] * len(shown), font=9)
+        add_caption(doc, "Tabela", caption)
+
+    learner = facts["learner_significant"]
+    others = [r for r in facts["significant"] if r not in learner]
+    verdict = (
+        "żadne nie wykazuje istotnej różnicy trafności po poprawce na wielokrotne porównania"
+        if not learner else
+        f"istotną różnicę trafności po poprawce wykazuje {len(learner)}: " + _listing([
+            f"{MODEL_LABEL[r['first']]} - {MODEL_LABEL[r['second']]} na horyzoncie "
+            f"{HORIZON_LOCATIVE[r['horizon']]}" for r in learner])
+    )
+    baseline = (
+        "Model odniesienia różni się istotnie od: " + _listing(sorted(
+            f"{MODEL_LABEL[r['second']]} na horyzoncie {HORIZON_LOCATIVE[r['horizon']]}"
+            for r in others)) + "."
+        if others else "Model odniesienia nie różni się istotnie od żadnej z nich."
+    )
+    add_body(doc, f"Wśród {facts['learner_tested']} porównań par architektur uczących się "
+                  f"{verdict}. {baseline}")
 
 
 def _spread_verdict(cell: dict) -> str:
