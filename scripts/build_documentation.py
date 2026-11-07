@@ -2875,6 +2875,14 @@ def _chapter_8_models(doc: Document) -> None:
         "wtedy, gdy k+F < i.",
     )
     add_body(
+    add_body(
+        doc,
+        "Okres oceny obejmuje świece od 1 stycznia 2020 do 30 czerwca 2026. Każda prognoza "
+        "oceniana jest na własnej etykiecie, zrealizowanej F świec później, więc ocena prognoz "
+        "rocznych kończy się rok przed końcem danych. Najnowszą część okna treningowego model "
+        "oddaje kalibratorowi (rozdział 8.8), a wszystkie etykiety, na których się uczył albo "
+        "był kalibrowany, zrealizowały się przed prognozą.",
+    )
         doc,
         "Protokół ten jest zapisany w systemie raz (predict/walk_forward.py), a każda z pięciu "
         "architektur dostarcza jedynie dwóch operacji: dopasowania na początku miesiąca i "
@@ -2924,14 +2932,44 @@ def _chapter_8_models(doc: Document) -> None:
     add_body(
         doc,
         "Prawdopodobieństwa kalibrowane są skalowaniem temperatury[@guo2017] na "
-        "wycinku wydzielonym "
-        "wewnątrz okna treningowego - nigdy na świecach późniejszych, ponieważ kalibrator "
-        "widziałby wtedy etykiety niedostępne prognozie. Wycinek obejmuje najnowsze "
-        f"{CALIBRATION_FRACTION:.0%} wierszy, których etykiety są już znane, czyli okres "
-        "najbliższy prognozie; gdy byłoby ich mniej niż "
-        f"{MIN_CALIBRATION_SAMPLES}, prawdopodobieństwa przechodzą bez kalibracji. Liczba "
-        "obserwacji niezależnych w wycinku maleje wraz z horyzontem, czego skutki pokazuje "
-        "rozdział 10.5.",
+        "wycinku wydzielonym wewnątrz okna treningowego - nigdy na świecach późniejszych, "
+        "ponieważ kalibrator widziałby wtedy etykiety niedostępne prognozie. Wycinek obejmuje "
+        f"najnowsze {CALIBRATION_FRACTION:.0%} wierszy, których etykiety są już znane, czyli "
+        "okres najbliższy prognozie. Model uczy się tylko na wierszach starszych od wycinka o "
+        "co najmniej jeden horyzont. Etykieta świecy k zależy od cen aż do świecy k+F, więc bez "
+        "tej przerwy etykiety ostatnich F wierszy uczących byłyby liczone z cen przypadających "
+        "na okres wycinka, a kalibrator oceniałby model na wynikach, na których był uczony. Ta "
+        "sama przerwa oddziela okno treningowe od prognozowanej świecy. Oś czasu jednej "
+        "prognozy przedstawia rysunek poniżej.",
+    )
+    add_figure(
+        doc, "os_czasu",
+        "Oś czasu jednej prognozy na horyzoncie kwartalnym i rocznym. Pod paskami zaznaczono "
+        "świece, z których cen liczona jest etykieta: najnowszej świecy uczącej, najstarszej "
+        "i najnowszej świecy wycinka oraz samej prognozy. Żadna cena nie należy do etykiet po "
+        "obu stronach granicy, a na horyzoncie rocznym wycinek jest krótszy od jednej etykiety.",
+    )
+    add_body(
+        doc,
+        "Gdy wiersze uczące albo wycinek zawierają tylko jedną klasę, podział przesuwa się do "
+        "najbliższego, przy którym obie części zawierają obie klasy, a wycinek co najmniej "
+        f"{MIN_CALIBRATION_SAMPLES} wierszy; gdy takiego nie ma, model uczy się na całym oknie. "
+        "Reguła jest jedna dla wszystkich architektur, aby na tym samym oknie żadna nie "
+        "zachowywała kalibratora, który inna traci. Temperaturę wybiera się z siatki od 0,5 do "
+        "1000, minimalizując stratę logarytmiczną na wycinku. Siatka sięga tak wysoko, "
+        "ponieważ surowe prognozy modeli są niemal pewne, a wycinek, na którym model nie "
+        "wykazuje umiejętności, wymaga prognozy bliskiej 50%: temperatura 1000 zamienia "
+        "prawdopodobieństwo 0,99 w 0,501. Skalowanie nie zmienia kolejności klas, więc kierunek "
+        "prognozy, a z nim trafność, nie zależą od kalibracji.",
+    )
+    add_body(
+        doc,
+        "Okno bez wycinka przejmuje temperaturę wyznaczoną ostatnio na tym samym horyzoncie "
+        "przebiegu, czyli na wycinku zrealizowanym wcześniej. Przed pierwszym takim wyznaczeniem "
+        "prognoza nie dostaje pewności ponad losową - przyjmuje górny kraniec siatki. "
+        "Pozostawienie takiego okna bez kalibracji uczyniłoby prognozy z najmniejszej ilości "
+        "danych najpewniejszymi w całym przebiegu. Liczba obserwacji niezależnych w wycinku "
+        "maleje wraz z horyzontem, czego skutki pokazuje rozdział 10.5.",
     )
     add_body(
         doc,

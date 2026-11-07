@@ -699,12 +699,71 @@ def simulation_excess() -> str | None:
     return _save(fig, "symulacja_nadwyzki.png")
 
 
+def holdout_timeline() -> str:
+    """One forecast's training window on a time axis, at the quarter and the year.
+
+    Drawn from the protocol's own constants rather than from a run, so it shows
+    each part at its true length: what the model fits, the horizon purged before
+    the calibration slice, the slice, and the bars whose labels are not yet
+    known when the forecast is made. Below the bars, the span of four labels -
+    the newest fitted, the oldest and newest held out, and the forecast's own -
+    shows that no close is shared across a boundary, and at the year that the
+    slice is shorter than one label.
+    """
+    from prosper.predict.calibration import CALIBRATION_FRACTION
+    from prosper.predict.window import dynamic_window_steps
+
+    colours = {"fit": ACCENT, "purge": "#D5D8DD", "slice": "#D9822B", "unknown": "#F1F2F4"}
+    fig, axes = plt.subplots(2, 1, figsize=(9.5, 4.4))
+    for axis, (name, forward) in zip(axes, (("kwartał", 91), ("rok", 364)), strict=True):
+        window = dynamic_window_steps(forward)
+        held = int((window - forward) * CALIBRATION_FRACTION)
+        slice_start = -forward - held
+        fit_end = slice_start - forward
+        parts = [
+            (-window, fit_end + window, colours["fit"], "część ucząca"),
+            (fit_end, forward, colours["purge"], "przerwa jednego horyzontu"),
+            (slice_start, held, colours["slice"], "wycinek kalibracyjny"),
+            (-forward, forward, colours["unknown"], "etykiety jeszcze nieznane"),
+        ]
+        for start, length, colour, label in parts:
+            axis.broken_barh([(start, length)], (1.0, 0.6), facecolors=colour,
+                             edgecolor="#4A5563", linewidth=0.6, label=label)
+        spans = [
+            (fit_end - 1, colours["fit"], "etykieta najnowszej świecy uczącej"),
+            (slice_start, colours["slice"], "etykieta najstarszej świecy wycinka"),
+            (-forward - 1, colours["slice"], "etykieta najnowszej świecy wycinka"),
+            (0, "#C0392B", "etykieta prognozy"),
+        ]
+        for level, (bar, colour, label) in zip((0.75, 0.5, 0.25, 0.0), spans, strict=True):
+            axis.plot([bar, bar + forward], [level, level], color=colour, linewidth=1.6)
+            axis.plot([bar, bar], [level - 0.07, level + 0.07], color=colour, linewidth=1.2)
+            axis.plot([bar + forward] * 2, [level - 0.07, level + 0.07], color=colour,
+                      linewidth=1.2)
+            axis.text(bar + forward + window * 0.012, level, label, va="center", fontsize=6.5,
+                      color="#26303C")
+        axis.axvline(0, color="#C0392B", linewidth=0.8, linestyle="--")
+        axis.text(0, 1.75, "prognoza", ha="center", fontsize=7, color="#C0392B")
+        axis.set_xlim(-window * 1.02, forward + window * 0.32)
+        axis.set_ylim(-0.2, 1.95)
+        axis.set_yticks([])
+        axis.spines["left"].set_visible(False)
+        axis.set_title(f"{name}: okno {window} świec, horyzont {forward}, wycinek {held}",
+                       loc="left", fontsize=8)
+    axes[-1].set_xlabel("świece względem prognozowanej")
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles[:4], labels[:4], loc="lower center", ncol=4, frameon=False, fontsize=7,
+               bbox_to_anchor=(0.5, -0.04))
+    return _save(fig, "os_czasu.png")
+
+
 def build_all() -> dict[str, str]:
     """Render every figure; return name -> path for the ones that had data."""
     figures = {
         "porownanie": architecture_comparison(),
         "rozrzut": seed_spread(),
         "moc": observation_power(),
+        "os_czasu": holdout_timeline(),
         "stabilnosc": stability_over_time(),
         "kalibracja": calibration_by_horizon(),
         "niezawodnosc": reliability_diagram(),
