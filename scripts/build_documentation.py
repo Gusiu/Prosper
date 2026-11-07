@@ -3920,9 +3920,12 @@ def _chapter_11_verification(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Defekt był niewidoczny dla wszystkich raportowanych miar: zamiana dwóch klas nie zmienia "
-        "entropii, pewności ani wyniku Briera, a trafność przekształca w swoje dopełnienie, co "
-        "przy wartościach bliskich 0,5 wygląda jak szum. Wykryto go dopiero na szeregu "
+        "Defekt był niewidoczny w raportowanych miarach. Zamiana prawdopodobieństw dwóch klas "
+        "przy niezmienionych etykietach nie zmienia entropii ani pewności, a trafność "
+        "przekształca w jej dopełnienie. Wynik Briera zmienia się na każdej świecy o "
+        "dwukrotność przewagi: rośnie, gdy prognoza była trafna, i maleje, gdy była błędna. "
+        "Przy trafności bliskiej 0,5 i niewielkiej przewadze te zmiany niemal się znoszą, więc "
+        "i trafność, i wynik Briera wyglądały jak szum. Defekt wykryto dopiero na szeregu "
         "syntetycznym, w którym kierunek jest deterministyczną funkcją poprzedniej świecy: "
         "zamiast oczekiwanej zgodności 0,987 model osiągnął 0,013.",
     )
