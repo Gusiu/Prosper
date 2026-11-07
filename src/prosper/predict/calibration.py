@@ -128,6 +128,32 @@ def purged_end(times: Sequence[Any] | np.ndarray, calibration_start: int, purge:
     return int(np.searchsorted(order, order[calibration_start] - purge, side="left"))
 
 
+def choose_holdout(
+    times: Sequence[Any] | np.ndarray, labels: Sequence[int], purge: Any
+) -> tuple[int, int]:
+    """``(fit_end, calibration_start)`` for one window, the same policy for every model.
+
+    `purged_holdout` decides by time alone. When the rows it leaves to fit, or
+    the slice it holds out, carry a single class, the nearest split where both
+    carry two is taken instead (`usable_split`); when there is none, the window
+    fits every row and holds nothing out. Every model goes through here, so no
+    architecture keeps a calibrator that another loses on the same window: the
+    tree models used to train on everything and drop it where the networks
+    moved the split.
+    """
+    total = len(labels)
+    fit_end, calibration_start = purged_holdout(times, purge)
+    if calibration_start >= total:
+        return total, total
+    if len(set(labels[:fit_end])) > 1 and len(set(labels[calibration_start:])) > 1:
+        return fit_end, calibration_start
+    moved = usable_split(labels, calibration_start, MIN_CALIBRATION_SAMPLES, times=times,
+                         purge=purge)
+    if moved is None:
+        return total, total
+    return purged_end(times, moved, purge), moved
+
+
 class TemperatureCalibrator:
     """Single-parameter (temperature) scaling of a probability vector.
 
@@ -344,7 +370,8 @@ def usable_split(
     candidates = [
         split
         for split in range(1, total - min_holdout + 1)
-        if len(set(labels[: purged_end(order, split, purge)])) > 1
+        if order[split - 1] < order[split]  # a pooled instant stays on one side
+        and len(set(labels[: purged_end(order, split, purge)])) > 1
         and len(set(labels[split:])) > 1
     ]
     if not candidates:

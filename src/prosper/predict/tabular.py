@@ -29,7 +29,7 @@ from prosper.domain import (
 from prosper.predict.calibration import (
     TemperatureCalibrator,
     calibration_fields,
-    purged_holdout,
+    choose_holdout,
 )
 from prosper.predict.pool import (
     PooledSlice,
@@ -120,9 +120,10 @@ class TabularForecaster:
 
         By instant, as the slice itself is (SPECIFICATION 2.8): the held-out
         rows are the newest, and the fitted ones end a horizon before them -
-        `purged_holdout`.
+        `choose_holdout`, the policy every model follows.
         """
-        return purged_holdout(pooled.open_time[valid], self.purge[horizon])
+        labels = [int(pooled.direction[k]) for k in valid]
+        return choose_holdout(pooled.open_time[valid], labels, self.purge[horizon])
 
     @staticmethod
     def direction_payload(

@@ -19,10 +19,8 @@ from prosper.labels.forward import forward_labels
 from prosper.predict.calibration import (
     TemperatureCalibrator,
     calibrated_nll,
+    choose_holdout,
     fit_temperature,
-    purged_end,
-    purged_holdout,
-    usable_split,
 )
 from prosper.predict.defaults import (
     DEFAULT_EPOCH_BUDGET,
@@ -367,19 +365,8 @@ class TFTForecaster(SequenceForecaster):
         # `training_bounds`, so their labels are realised and invariant 6 is
         # untouched; the bars fitted end a horizon before them
         # (`purged_holdout`), so the model never sees their outcomes either.
-        fit_end, cal_start = purged_holdout(valid_idx, forward_steps)
         window_labels = [int(y_dir[k]) for k in valid_idx]
-        if len(set(window_labels[:fit_end])) < 2:
-            # Same rescue as the GRU: a single-class fit half is unlearnable,
-            # but a nearby split usually is not.
-            alternative = usable_split(
-                window_labels, cal_start, times=valid_idx, purge=forward_steps
-            )
-            if alternative is None:
-                fit_end = cal_start = len(valid_idx)
-            else:
-                cal_start = alternative
-                fit_end = purged_end(valid_idx, cal_start, forward_steps)
+        fit_end, cal_start = choose_holdout(valid_idx, window_labels, forward_steps)
         fit_idx = valid_idx[:fit_end]
         cal_idx = valid_idx[cal_start:]
         if len(fit_idx) < self.seq_len + 10 or len(set(y_dir[fit_idx])) < 2:

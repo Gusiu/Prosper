@@ -16,10 +16,8 @@ from prosper.labels.forward import forward_labels
 from prosper.predict.calibration import (
     TemperatureCalibrator,
     calibrated_nll,
+    choose_holdout,
     fit_temperature,
-    purged_end,
-    purged_holdout,
-    usable_split,
 )
 from prosper.predict.defaults import (
     DEFAULT_EPOCH_BUDGET,
@@ -268,28 +266,13 @@ class GRUForecaster(SequenceForecaster):
             # so their labels are realised - invariant 6 is untouched - and the
             # fitted ones end a horizon before them (`purged_holdout`). A
             # sequence's index in `labelled` is its target bar less a constant.
-            forward = plan.steps[horizon]
-            fit_end, cal_start = purged_holdout(labelled, forward)
+            seq_labels = [int(y_slice[k + self.seq_len]) for k in labelled]
+            fit_end, cal_start = choose_holdout(labelled, seq_labels, plan.steps[horizon])
             fit_ds: Any = ds
             cal_range: list[int] = []
             if cal_start < len(ds):
-                seq_labels = [int(ds[k][1]) for k in range(len(ds))]
-                if len(set(seq_labels[:fit_end])) <= 1:
-                    # Nothing to learn from a single-class fit half. Look for a
-                    # nearby split that works before giving up: doing neither cost 5
-                    # of the 13 affected windows their holdout, and with it early
-                    # stopping and calibration.
-                    alternative = usable_split(
-                        seq_labels, cal_start, times=labelled, purge=forward
-                    )
-                    if alternative is None:
-                        fit_end = cal_start = len(ds)
-                    else:
-                        cal_start = alternative
-                        fit_end = purged_end(labelled, cal_start, forward)
-                if cal_start < len(ds):
-                    fit_ds = Subset(ds, list(range(fit_end)))
-                    cal_range = list(range(cal_start, len(ds)))
+                fit_ds = Subset(ds, list(range(fit_end)))
+                cal_range = list(range(cal_start, len(ds)))
 
             self.reseed(horizon, month)
             loader = DataLoader(fit_ds, batch_size=self.batch_size, shuffle=True, drop_last=False)

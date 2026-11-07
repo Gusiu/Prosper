@@ -316,3 +316,106 @@ def test_tft_stops_on_the_calibration_slice_alone(lake, monkeypatch) -> None:
         extra = sorted(window["stopped"] - window["calibrated"])
         assert not extra, f"stopped on {len(extra)} bars outside the slice, from {extra[0]}"
         assert window["stopped"] == window["calibrated"]
+
+
+# ── one holdout policy for every model ───────────────────────────────────────
+
+def _write_trend_then_cycle(settings: Settings) -> None:
+    """A steady rise for 1300 days, then a 60-day cycle around where it ended.
+
+    Every label older than about day 1240 is a rise, so in January 2022 the
+    default fitted rows of the week and month windows hold one class while
+    their newest rows hold both: the split has to move for the window to be
+    calibrated at all. The quarter's first fall comes too late for any split
+    to leave the calibrator its 40 rows, so that window rightly holds nothing out.
+    """
+    start = datetime(2018, 1, 1, tzinfo=UTC)
+    top = 100.0 * 1.002**1300
+    rows = []
+    for i in range(1600):
+        if i < 1300:
+            price = 100.0 * 1.002**i
+        else:
+            price = top * (1.0 + 0.3 * math.sin(2 * math.pi * (i - 1300) / 60.0))
+        rows.append(
+            {
+                "open_time": start + timedelta(days=i),
+                "open": price * 0.999,
+                "high": price * 1.01,
+                "low": price * 0.99,
+                "close": price,
+                "volume": 1000.0 + i,
+            }
+        )
+    df = pl.DataFrame(rows).with_columns(
+        pl.col("open_time").dt.year().alias("_y"),
+        pl.col("open_time").dt.month().alias("_m"),
+    )
+    for (year, month), group in df.group_by(["_y", "_m"]):
+        save_parquet(
+            group.drop(["_y", "_m"]).sort("open_time"),
+            get_parquet_file_path(SYMBOL, "1d", int(year), month=int(month), settings=settings),
+        )
+
+
+def test_tree_models_move_a_split_that_leaves_one_class_to_fit(tmp_path) -> None:
+    """The networks already looked for a nearby usable split; the tree models
+    trained on every row and dropped the calibrator, so on the same window one
+    architecture was calibrated and another was not."""
+    import json
+
+    from prosper.domain import HORIZON_NAMES
+    from prosper.predict.xgboost_model import predict_xgboost
+
+    settings = Settings(data_root=tmp_path)
+    _write_trend_then_cycle(settings)
+    build_features(SYMBOL, "1d", "2018-01-01", "2022-05-01", settings=settings)
+    predict_xgboost(
+        symbol=SYMBOL, start="2022-01-01", end="2022-01-31", settings=settings, interval="1d"
+    )
+
+    run_dir = next((settings.reports_predictions_dir / SYMBOL).glob("xgboost_1d_*"))
+    rows = [json.loads(line) for line in
+            (run_dir / "predictions.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    for horizon in ("week", "month"):
+        assert horizon in HORIZON_NAMES
+        payloads = [row[horizon] for row in rows if row[horizon]["trained"]]
+        assert payloads, f"{horizon} did not train"
+        assert all(p["calibrated_on"] > 0 for p in payloads), f"{horizon} lost its calibrator"
+
+
+def test_the_policy_keeps_the_default_split_when_it_is_usable() -> None:
+    from prosper.predict.calibration import choose_holdout, purged_holdout
+
+    labels = [0, 1] * 500
+    assert choose_holdout(range(1000), labels, 28) == purged_holdout(range(1000), 28)
+
+
+def test_the_policy_moves_a_split_whose_slice_holds_one_class() -> None:
+    """Stopping and calibrating on one class rewards certainty (`usable_split`)."""
+    from prosper.predict.calibration import choose_holdout
+
+    labels = [0, 1] * 400 + [1] * 200
+    fit_end, cal_start = choose_holdout(range(1000), labels, 28)
+
+    assert len(set(labels[cal_start:])) == 2
+    assert len(set(labels[:fit_end])) == 2
+    assert cal_start - fit_end == 28
+
+
+def test_the_policy_holds_nothing_out_when_no_split_works() -> None:
+    from prosper.predict.calibration import choose_holdout
+
+    assert choose_holdout(range(1000), [0] * 990 + [1] * 10, 28) == (1000, 1000)
+
+
+def test_a_moved_pooled_split_still_starts_with_a_whole_instant() -> None:
+    from prosper.predict.calibration import choose_holdout
+
+    days = np.datetime64("2021-01-01", "D") + np.arange(400)
+    times = np.repeat(days, 3).astype("datetime64[us]")
+    labels = [0, 1] * 450 + [1] * 300
+    fit_end, cal_start = choose_holdout(times, labels, np.timedelta64(28, "D"))
+
+    assert cal_start < len(times) and times[cal_start - 1] < times[cal_start]
+    assert len(set(labels[cal_start:])) == 2
