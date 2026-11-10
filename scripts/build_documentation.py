@@ -3420,7 +3420,8 @@ def _results_paired(doc: Document, runs: dict) -> None:
         "na tych samych dniach i ich wspólny ruch zostaje w przedziale. Wartości p koryguje się "
         "procedurą Benjaminiego i Hochberga osobno dla trafności i dla straty logarytmicznej."
         + (f" Na horyzoncie {HORIZON_LOCATIVE[facts['untested'][0]]} okres oceny mieści mniej "
-           "niż dziesięć bloków, więc przedziału się nie wyznacza (rozdział 9.2)."
+           "niż dziesięć bloków, więc przedziału się nie wyznacza (rozdział 9.2) i różnic między "
+           "średnimi z tabeli powyżej nie da się na nim przetestować."
            if len(facts["untested"]) == 1 else ""),
     )
     shown = [h for h in HORIZON_NAMES if h not in facts["untested"]]
@@ -3459,6 +3460,33 @@ def _results_paired(doc: Document, runs: dict) -> None:
     )
     add_body(doc, f"Wśród {facts['learner_tested']} porównań par architektur uczących się "
                   f"{verdict}. {baseline}")
+
+    losses = [r for r in found if r["measure"] == "log_loss" and r["q"] is not None
+              and r["q"] < FALSE_DISCOVERY_RATE
+              and r["first"] in LEARNERS and r["second"] in LEARNERS]
+    worse: dict[str, int] = {}
+    for r in losses:
+        loser = r["first"] if r["difference"] > 0 else r["second"]
+        worse[loser] = worse.get(loser, 0) + 1
+    if worse:
+        ece = calibration_facts(runs)["by_horizon"]
+        least = max(LEARNERS, key=lambda m: np.mean(
+            [f["ece"][m] for f in ece.values() if m in f["ece"]] or [0.0]))
+        add_body(
+            doc,
+            "W stracie logarytmicznej różnice są wyraźniejsze: istotnie wyższą stratę od innej "
+            "architektury uczącej się ma " + _listing([
+                f"{MODEL_LABEL[m]} w {n} "
+                + _plural(n, "porównaniu", "porównaniach", "porównaniach")
+                for m, n in sorted(worse.items(), key=lambda kv: -kv[1])])
+            + ". Trafności tych par nie różnią się istotnie, więc różnice dotyczą pewności "
+            "prognoz, a nie wskazywanego kierunku"
+            + (f" - {MODEL_LABEL[least]} ma największy błąd kalibracji wśród architektur "
+               "uczących się (rozdział 10.5)." if least in worse else "."),
+        )
+    else:
+        add_body(doc, "Także w stracie logarytmicznej żadna para architektur uczących się nie "
+                      "różni się istotnie.")
 
 
 def _spread_verdict(cell: dict) -> str:
