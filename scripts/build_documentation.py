@@ -3489,6 +3489,17 @@ def _results_paired(doc: Document, runs: dict) -> None:
                       "różni się istotnie.")
 
 
+def below_base_rate() -> bool:
+    """Whether every architecture's mean accuracy lies below the frequency of the more
+    common class, at every horizon - the rule that learns nothing (section 10.4)."""
+    try:
+        from documentation_figures import base_rate_rows
+    except Exception:
+        return False
+    means = [np.mean(values, axis=0) for values in base_rate_rows().values() if values]
+    return bool(means) and all(m[0] < m[3] for m in means)
+
+
 def _spread_verdict(cell: dict) -> str:
     """What one horizon's spread says about ranking the learning architectures."""
     noise, every, learners = cell["noise"], cell["range"], cell["range_learners"]
@@ -3513,11 +3524,7 @@ def _results_baserate(doc: Document) -> None:
     """
     if "czestosc_bazowa" not in _FIGURES:
         return
-    from documentation_figures import base_rate_rows
-
-    rows = base_rate_rows()
-    means = {key: np.mean(values, axis=0) for key, values in rows.items() if values}
-    below = bool(means) and all(m[0] < m[3] for m in means.values())
+    below = below_base_rate()
 
     add_heading(doc, "10.4. Trafność wobec częstości klasy większościowej", 2)
     add_body(
@@ -4670,8 +4677,9 @@ def _chapter_14_summary(doc: Document, runs: dict) -> None:
         "inicjalizacji"
         + (f" - {f['distinct']} różnych pomiarów, ponieważ oba modele gradientowe uczą się "
            "deterministycznie" if deterministic else "")
-        + ". Żadna architektura nie osiąga trafności istotnie wyższej od losowej, a wszystkie "
-        "wypadają poniżej reguły opartej na częstości klasy liczniejszej. "
+        + ". Żadna architektura nie osiąga trafności istotnie wyższej od losowej"
+        + (", a wszystkie wypadają poniżej reguły opartej na częstości klasy liczniejszej. "
+           if below_base_rate() else ". ")
         + _corrected_sentence(runs)
         + differences + _rank_turnover(runs)
         + ". Na tych danych ranking architektur nie jest więc stały między horyzontami.",
