@@ -3455,7 +3455,7 @@ def _results_paired(doc: Document, runs: dict) -> None:
                  *(_paired_cell(index.get((h, a, b, measure)), scale, places) for h in shown)]
                 for a, b in itertools.combinations(MODELS, 2)]
         add_table(doc, ["Para", *(HORIZON_LABEL[h] for h in shown)], rows,
-                  [4.0] + [4.2] * len(shown), font=9)
+                  [4.9] + [(16.0 - 4.9) / max(1, len(shown))] * len(shown), font=9)
         add_caption(doc, "Tabela", caption)
 
     learner = facts["learner_significant"]

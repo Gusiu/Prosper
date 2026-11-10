@@ -714,7 +714,7 @@ def holdout_timeline() -> str:
     from prosper.predict.window import dynamic_window_steps
 
     colours = {"fit": ACCENT, "purge": "#D5D8DD", "slice": "#D9822B", "unknown": "#F1F2F4"}
-    fig, axes = plt.subplots(2, 1, figsize=(9.5, 4.4))
+    fig, axes = plt.subplots(2, 1, figsize=(9.5, 3.7))
     for axis, (name, forward) in zip(axes, (("kwartał", 91), ("rok", 364)), strict=True):
         window = dynamic_window_steps(forward)
         held = int((window - forward) * CALIBRATION_FRACTION)
