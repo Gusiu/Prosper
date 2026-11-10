@@ -2114,6 +2114,18 @@ def _chapter_2_requirements(doc: Document) -> None:
              "Przy zbyt wąskim oknie dwa horyzonty zwracały stały rozkład, a warstwa oceny "
              "punktowała tę stałą jako prognozę.",
              "11.2"],
+            ["Wycinek kalibracyjny oddzielony jest od wierszy uczących przerwą jednego "
+             "horyzontu.",
+             "Wycinek przylegający do części uczącej.",
+             "Etykiety ostatnich wierszy uczących liczono z cen z okresu wycinka, więc "
+             "kalibrator i reguła zatrzymania oceniały model na wynikach, na których się uczył.",
+             "11.8"],
+            ["Siatka temperatur sięga 1000, aby kalibrator mógł spłaszczyć prognozę bez "
+             "umiejętności.",
+             "Siatka od 0,5 do 10.",
+             "Temperatura stawała na granicy siatki w większości okien, a prognozy pozostawały "
+             "zbyt pewne mimo kalibracji.",
+             "11.8"],
         ],
         [4.4, 3.4, 6.0, 1.7],
         font=9,
@@ -2121,7 +2133,7 @@ def _chapter_2_requirements(doc: Document) -> None:
     add_caption(
         doc, "Tabela",
         "Wymagania wyprowadzone z pomiaru. Kolumna Opis wskazuje podrozdział zawierający pełne "
-        "omówienie. Wspólną cechą tych ośmiu przypadków jest to, że brzmienie pierwotne nie "
+        "omówienie. Wspólną cechą tych dziesięciu przypadków jest to, że brzmienie pierwotne nie "
         "powodowało awarii - powodowało wynik, i to zwykle wynik lepszy od prawdziwego.",
     )
     add_body(
