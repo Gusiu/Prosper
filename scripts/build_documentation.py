@@ -15,6 +15,7 @@ script is the source of truth, the document is an artifact.
 
 from __future__ import annotations
 
+import functools
 import glob
 import itertools
 import json
@@ -54,9 +55,11 @@ from documentation_sources import (  # noqa: E402
     cli_reference,
     dataset_summary,
     feature_catalogue,
+    is_previous_study_run,
     is_study_run,
     qa_summary,
     settings_reference,
+    study_runs,
     test_inventory,
 )
 
@@ -137,18 +140,20 @@ except Exception as _diagram_error:  # Java or PlantUML absent and nothing rende
 
 # ── results read from the artifacts ──────────────────────────────────────────
 
-def load_runs() -> dict[tuple[str, str], list[dict]]:
-    """Every evaluated run on disk, keyed by (symbol, model).
+def load_runs(selected=None) -> dict[tuple[str, str], list[dict]]:
+    """Every evaluated run on disk that *selected* accepts (the study's by default),
+    keyed by (symbol, model).
 
     Reads what is there rather than what was expected: a partial recompute
     produces a partial table and says so, instead of failing or inventing rows.
     """
+    selected = selected or is_study_run
     found: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/metrics.json")):
         parts = path.replace("\\", "/").split("/")
         symbol, slug = parts[-3], parts[-2]
         model = slug.split("_")[0]
-        if not is_study_run(symbol, slug):
+        if not selected(symbol, slug):
             continue
         try:
             payload = json.load(open(path, encoding="utf-8"))
@@ -931,7 +936,7 @@ def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
     _chapter_8_models(doc)
     _chapter_9_methodology(doc)
     _chapter_10_results(doc, runs)
-    _chapter_11_verification(doc)
+    _chapter_11_verification(doc, runs)
     _chapter_12_interfaces(doc)
     _chapter_12a_worked_example(doc)
     _chapter_12b_screenshots(doc)
@@ -1642,6 +1647,7 @@ def _chapter_1_introduction(doc: Document, runs: dict) -> None:
 
     add_heading(doc, "1.5. Twierdzenia szczegółowe", 2)
     paired = paired_facts(runs) if runs else None
+    calibration_claim = _calibration_claim(runs)
     correlation = rank_agreement(runs)[1] if runs else float("nan")
     if paired is None:
         comparison = ("Różnice między architekturami uczącymi się ocenia test parami na tych "
@@ -1675,10 +1681,7 @@ def _chapter_1_introduction(doc: Document, runs: dict) -> None:
             "konfigurację uruchomiono zatem trzykrotnie, pod różnymi ziarnami. Dla obu modeli "
             "gradientowych ziarno nie zmienia wyniku - uczą się bez podpróbkowania - więc szum "
             "inicjalizacji mierzą wyłącznie GRU i TFT.",
-            "Prognozy wszystkich architektur są zbyt pewne siebie: na każdym horyzoncie "
-            "deklarowana pewność przewyższa częstość trafień. Rozbieżność jest niewielka tylko "
-            "na horyzoncie tygodniowym, na którym wycinek kalibracyjny zawiera dość obserwacji "
-            "niezależnych, by wyznaczyć temperaturę.",
+            calibration_claim,
             "Moc oceny i dokładność kalibracji ogranicza liczba niezależnych obserwacji, którą "
             "w przybliżeniu wyznacza iloraz liczby świec i długości horyzontu. Wynika ona z "
             "nakładania się etykiet, więc jest taka sama dla każdego modelu i nie zależy od "
@@ -3647,7 +3650,7 @@ def _results_calibration(doc: Document, runs: dict) -> None:
           _span([c["confidence"] for c in f["cells"].values()], ".3f", prose=False),
           _span([c["accuracy"] for c in f["cells"].values()], ".3f", prose=False),
           _span(list(f["ece"].values()), ".3f", prose=False),
-          "-" if f["slice_observations"] is None else f"{f['slice_observations']:.1f}"]
+          "-" if f["slice_observations"] is None else f"{f['slice_observations']:.2f}"]
          for h, f in by_horizon.items()],
         [2.4, 3.4, 3.2, 2.6, 4.4],
     )
@@ -3655,39 +3658,228 @@ def _results_calibration(doc: Document, runs: dict) -> None:
         doc, "Tabela",
         "Pewność, trafienia i błąd kalibracji według horyzontu. Każda komórka podaje zakres "
         "od najniższej do najwyższej średniej spośród pięciu architektur; ostatnia kolumna - "
-        "liczbę obserwacji niezależnych w wycinku, na którym wyznaczana jest temperatura.",
+        "przybliżoną liczbę obserwacji niezależnych w wycinku, na którym wyznaczana jest "
+        "temperatura (długość wycinka podzielona przez horyzont).",
     )
+    ece = _learner_ece(runs)
     week, year = by_horizon.get("week"), by_horizon.get("year")
-    if week and year and facts["overconfident"]:
-        best = min(week["ece"], key=week["ece"].get)
+    if week and year and "week" in ece and "year" in ece:
+        learners = [m for m in LEARNERS if m in week["cells"]]
+        over = [h for h, f in by_horizon.items()
+                if all(f["cells"][m]["confidence"] > f["cells"][m]["accuracy"]
+                       for m in learners if m in f["cells"])]
+        level = [h for h in by_horizon if h not in over]
+        temperatures = temperature_facts()
         add_body(
             doc,
-            "Na każdym horyzoncie wszystkie architektury deklarują więcej pewności, niż wynosi "
-            "ich częstość trafień - prognozy są zbyt pewne siebie. Na horyzoncie tygodniowym "
-            f"rozbieżność jest niewielka (ECE {_span(list(week['ece'].values()))}), a "
-            f"najmniejszą ma {MODEL_LABEL[best]}"
-            + (", który niczego się nie uczy" if best == "baseline" else "")
-            + f". Na horyzoncie rocznym rośnie do {_span(list(year['ece'].values()))}. Przyczynę "
-            "pokazuje ostatnia kolumna tabeli: temperaturę wyznacza się na wycinku obejmującym "
-            f"najnowsze {CALIBRATION_FRACTION:.0%} wierszy okna treningowego (rozdział 8.8), "
-            "który na horyzoncie tygodniowym zawiera około "
+            "Architektury uczące się są niemal skalibrowane na horyzoncie tygodniowym (ECE "
+            f"{_span(ece['week'])}), a błąd kalibracji rośnie z horyzontem do "
+            f"{_span(ece['year'])} na rocznym. "
+            + (f"Na horyzoncie {_listing([HORIZON_LOCATIVE[h] for h in over])} deklarują więcej "
+               "pewności, niż wynosi ich częstość trafień" if over else "")
+            + (f"; na {_listing([HORIZON_LOCATIVE[h] for h in level])} średnia pewność "
+               "zrównuje się z częstością trafień i błąd bierze się z tego, że pewność nie "
+               "układa się zgodnie z trafieniami, a nie z jej nadmiaru" if over and level else "")
+            + (". " if over else "")
+            + "Przyczynę wzrostu pokazuje ostatnia kolumna tabeli: temperaturę wyznacza się na "
+            f"wycinku obejmującym najnowsze {CALIBRATION_FRACTION:.0%} wierszy okna treningowego "
+            "(rozdział 8.8), który na horyzoncie tygodniowym zawiera około "
             f"{pl(week['slice_observations'], '.0f')} obserwacji niezależnych, a na rocznym - "
-            f"{pl(year['slice_observations'], '.2f')}. Temperatura dopasowana do mniej niż "
-            "jednej obserwacji niezależnej nie przenosi się na okres prognozy.",
+            f"{pl(year['slice_observations'], '.2f')}"
+            + (f". Na horyzoncie rocznym {pl(100 * temperatures['year_without_slice'], '.0f')}% "
+               "prognoz pochodzi przy tym z okien, w których wycinka nie dało się wydzielić"
+               if temperatures else "")
+            + ". Temperatura wyznaczona z kilku obserwacji niezależnych przenosi się na okres "
+            "prognozy tylko w przybliżeniu.",
         )
-        add_body(
-            doc,
-            "System zawyża zatem własną pewność: nieznacznie na horyzoncie tygodniowym, "
-            "znacznie na dłuższych. Jest to ograniczenie warstwy kalibracji, a nie skutek braku "
-            "przewagi - model bez przewagi mógłby być skalibrowany doskonale. Kierunek poprawy "
-            "podaje rozdział 13.2.",
-        )
-    elif not facts["overconfident"]:
-        add_body(
-            doc,
-            "Deklarowana pewność nie przewyższa częstości trafień na każdym horyzoncie i w "
-            "każdej architekturze; zakresy obu wielkości podaje tabela powyżej.",
-        )
+        if temperatures:
+            add_body(
+                doc,
+                "Kalibracja silnie spłaszcza prognozy: średnia wartość bezwzględna przewagi "
+                f"spada z {_span(temperatures['edge_raw'])} przed kalibracją do "
+                f"{_span(temperatures['edge_calibrated'])} po niej, a mediana dopasowanej "
+                f"temperatury wynosi od {pl(temperatures['median_low'], '.0f')} do "
+                f"{pl(temperatures['median_high'], '.0f')}, zależnie od architektury i "
+                "horyzontu. Surowy model jest więc pewny swojej prognozy niemal zawsze, a "
+                "wycinek, na którym nie wykazuje umiejętności, sprowadza ją w pobliże 50%.",
+            )
+        if "baseline" in year["ece"]:
+            worst = [h for h, f in by_horizon.items()
+                     if f["ece"] and max(f["ece"], key=f["ece"].get) == "baseline"]
+            add_body(
+                doc,
+                "Model odniesienia nie jest kalibrowany: prognozuje częstość klas w oknie "
+                "treningowym, która na długich horyzontach nie przenosi się na okres prognozy. "
+                + (f"Na horyzoncie {_listing([HORIZON_LOCATIVE[h] for h in worst])} ma "
+                   "największy błąd kalibracji ze wszystkich architektur "
+                   f"({pl(year['ece']['baseline'])} na rocznym)." if worst else ""),
+            )
+
+
+def _learner_ece(runs: dict) -> dict[str, list[float]]:
+    """Per horizon, the mean ECE of each learning architecture."""
+    by_horizon = calibration_facts(runs)["by_horizon"] if runs else {}
+    return {h: [f["ece"][m] for m in LEARNERS if m in f["ece"]]
+            for h, f in by_horizon.items()
+            if any(m in f["ece"] for m in LEARNERS)}
+
+
+def _calibration_claim(runs: dict) -> str:
+    """The calibration bullet of section 1.5, from the runs."""
+    ece = _learner_ece(runs)
+    if "week" not in ece or "year" not in ece:
+        return ("Kalibrację prognoz opisuje rozdział 10.5.")
+    return (
+        "Po skalowaniu temperatury prognozy architektur uczących się są niemal skalibrowane "
+        f"na horyzoncie tygodniowym (ECE {_span(ece['week'])}), a błąd kalibracji rośnie z "
+        f"horyzontem do {_span(ece['year'])} na rocznym, na którym wycinek kalibracyjny "
+        "zawiera mniej niż jedną obserwację niezależną. Surowe prognozy tych architektur są "
+        "niemal pewne, więc bez kalibracji ich prawdopodobieństwa nie odpowiadałyby częstości "
+        "trafień."
+    )
+
+
+@functools.cache
+def temperature_facts() -> dict:
+    """How the calibrator treated the study's forecasts, read from the predictions.
+
+    Every trained payload of a calibrated model records the temperature it was
+    given and where that came from (section 8.8), with the probabilities before
+    calibration. Empty when the runs predate that record.
+    """
+    cells: dict[tuple[str, str], dict] = {}
+    for symbol, slug in sorted(study_runs()):
+        model = slug.split("_")[0]
+        if model not in LEARNERS:
+            continue
+        path = os.path.join(REPORT_ROOT, "predictions", symbol, slug, "predictions.jsonl")
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                for horizon in HORIZON_NAMES:
+                    payload = row.get(horizon) or {}
+                    if not payload.get("trained") or "temperature" not in payload:
+                        continue
+                    cell = cells.setdefault((horizon, model), {
+                        "fitted": [], "other": 0, "raw": [], "calibrated": []})
+                    if payload["temperature_source"] == "fitted":
+                        cell["fitted"].append(payload["temperature"])
+                    else:
+                        cell["other"] += 1
+                    before = payload["uncalibrated"]
+                    cell["raw"].append(abs(before["long"] - before["short"]))
+                    cell["calibrated"].append(abs(payload["P_long"] - payload["P_short"]))
+    if not cells:
+        return {}
+    medians = [float(np.median(c["fitted"])) for c in cells.values() if c["fitted"]]
+    above = [float(np.mean(np.asarray(c["fitted"]) > 10.0)) for c in cells.values() if c["fitted"]]
+    year = [c for (h, _), c in cells.items() if h == "year"]
+    year_total = sum(len(c["fitted"]) + c["other"] for c in year)
+    return {
+        "edge_raw": [float(np.mean(c["raw"])) for c in cells.values()],
+        "edge_calibrated": [float(np.mean(c["calibrated"])) for c in cells.values()],
+        "median_low": min(medians), "median_high": max(medians),
+        "above_ten": above,
+        "year_without_slice": (sum(c["other"] for c in year) / year_total) if year_total else 0.0,
+    }
+
+
+def _fit_rows_note(horizons: list[str]) -> str:
+    """How much the purge shortened the fitted rows at *horizons*, and what can be said of it."""
+    windows = _training_windows()
+    parts = []
+    for horizon in horizons:
+        if horizon not in windows:
+            continue
+        window, forward = windows[horizon]
+        trainable = window - forward
+        before = trainable - int(trainable * CALIBRATION_FRACTION)
+        parts.append(f"z {before} do {before - forward} wierszy")
+    if not parts:
+        return ""
+    return ("; tam przerwa skraca część uczącą najbardziej (" + _listing(parts) + "), a okres "
+            "oceny mieści mniej niż dziesięć bloków, więc tej różnicy nie da się ocenić "
+            "statystycznie")
+
+
+def _defects_calibration(doc: Document, runs: dict) -> None:
+    """Chapter 11.8: what the review of the calibration slice found, and what fixing it changed."""
+    add_heading(doc, "11.8. Granica uczenia i kalibracji", 2)
+    add_body(
+        doc,
+        "Rozrysowanie podziału okna treningowego na osi czasu (rozdział 8.8) ujawniło, że "
+        "wycinek kalibracyjny przylegał do części uczącej bez przerwy. Etykiety ostatnich F "
+        "wierszy uczących były liczone z cen przypadających na okres wycinka, więc kalibrator "
+        "- a w GRU i TFT także reguła wczesnego zatrzymania - oceniały model na wynikach, na "
+        "których się uczył. Na horyzoncie rocznym, gdzie wycinek jest krótszy od horyzontu, "
+        "dotyczyło to każdej jego świecy, a TFT liczył stratę do zatrzymania także na świecach "
+        "sprzed wycinka. Przegląd tej części systemu wykazał cztery dalsze usterki: siatkę "
+        "temperatur kończącą się na 10, która nie pozwalała spłaszczyć prognozy bez "
+        "umiejętności; różne uzupełnianie braków w obu sieciach; przesuwanie podziału przy "
+        "jednej klasie tylko w sieciach; okna bez wycinka pozostawione bez kalibracji.",
+    )
+    previous = load_runs(is_previous_study_run)
+    if not runs or not previous:
+        return
+    rows, accuracy_moves = [], {}
+    for horizon in HORIZON_NAMES:
+        cells = []
+        for field in ("accuracy", "confidence", "ece", "nll"):
+            before = [float(np.mean(horizon_values([r for s in SYMBOLS
+                                                    for r in previous.get((s, m), [])],
+                                                   horizon, field)))
+                      for m in LEARNERS
+                      if horizon_values([r for s in SYMBOLS for r in previous.get((s, m), [])],
+                                        horizon, field)]
+            after = [float(np.mean(horizon_values([r for s in SYMBOLS for r in runs.get((s, m), [])],
+                                                  horizon, field)))
+                     for m in LEARNERS
+                     if horizon_values([r for s in SYMBOLS for r in runs.get((s, m), [])],
+                                       horizon, field)]
+            if not before or not after:
+                break
+            cells.append(f"{np.mean(before):.3f} / {np.mean(after):.3f}")
+            if field == "accuracy":
+                accuracy_moves[horizon] = float(np.mean(after) - np.mean(before))
+        if len(cells) == 4:
+            rows.append([HORIZON_LABEL[horizon], *cells])
+    if not rows:
+        return
+    add_body(
+        doc,
+        "Po poprawkach badanie przeliczono w całości, na tym samym protokole. Tabela zestawia "
+        "średnie czterech architektur uczących się z obu przeliczeń.",
+    )
+    add_table(doc, ["Horyzont", "Trafność", "Pewność", "ECE", "Strata log."], rows,
+              [2.8, 3.3, 3.3, 3.3, 3.3], font=10)
+    add_caption(
+        doc, "Tabela",
+        "Średnie czterech architektur uczących się przed poprawkami granicy uczenia i "
+        "kalibracji i po nich (przed / po). Model odniesienia nie jest kalibrowany i w obu "
+        "przeliczeniach ma wyniki identyczne.",
+    )
+    small = [h for h, move in accuracy_moves.items() if abs(move) < 0.01]
+    large = {h: move for h, move in accuracy_moves.items() if abs(move) >= 0.01}
+    temperatures = temperature_facts()
+    add_body(
+        doc,
+        (f"Trafność zmieniła się na horyzoncie {_listing([HORIZON_LOCATIVE[h] for h in small])} "
+         "o mniej niż punkt procentowy - kierunek prognozy nie zależy od kalibracji, a krótsza "
+         "część ucząca zmienia model nieznacznie" if small else "")
+        + ("" if not large else
+           ("; " if small else "Trafność zmieniła się ") + "na "
+           + _listing([f"{HORIZON_LOCATIVE[h]} o {pl(100 * m, '+.1f')} pkt proc."
+                       for h, m in large.items()])
+           + _fit_rows_note(list(large)))
+        + ". Pewność, błąd kalibracji i strata logarytmiczna spadły na każdym horyzoncie."
+        + (" Główną przyczyną nadmiernej pewności była granica siatki temperatur: w nowym "
+           f"przeliczeniu temperatura dopasowana na wycinku przekracza 10 w "
+           f"{pl(100 * min(temperatures['above_ten']), '.0f')}-"
+           f"{pl(100 * max(temperatures['above_ten']), '.0f')}% okien, zależnie od architektury "
+           "i horyzontu." if temperatures else ""),
+    )
 
 
 COIN_BRIER, COIN_LOG_LOSS = 0.5, math.log(2.0)
@@ -4236,7 +4428,7 @@ DEFECTS = [
 ]
 
 
-def _chapter_11_verification(doc: Document) -> None:
+def _chapter_11_verification(doc: Document, runs: dict) -> None:
     add_heading(doc, "11. Weryfikacja poprawności implementacji", 1)
     add_body(
         doc,
@@ -4386,7 +4578,9 @@ def _chapter_11_verification(doc: Document) -> None:
         "defektem policzono ponownie.",
     )
 
-    add_heading(doc, "11.8. Zakres pakietu testów", 2)
+    _defects_calibration(doc, runs)
+
+    add_heading(doc, "11.9. Zakres pakietu testów", 2)
     modules = test_inventory()
     cases = sum(len(m.cases) for m in modules)
     add_body(
@@ -4525,11 +4719,15 @@ def _calibration_limit() -> list[str]:
         horizon: CALIBRATION_FRACTION * (window - forward) / forward
         for horizon, (window, forward) in windows.items()
     }
+    ece = _learner_ece(load_runs())
+    if not all(h in ece for h in ("week", "quarter", "year")):
+        return []
     return [
         "Kalibracja skalowaniem temperatury wymaga wycinka z wieloma obserwacjami "
         "niezależnymi. Na horyzontach kwartalnym i rocznym wycinek zawiera ich około "
-        f"{pl(observations['quarter'], '.1f')} i {pl(observations['year'], '.2f')}, więc "
-        "prognozy tych horyzontów deklarują pewność, której trafienia nie potwierdzają."
+        f"{pl(observations['quarter'], '.1f')} i {pl(observations['year'], '.2f')}, więc błąd "
+        f"kalibracji architektur uczących się pozostaje tam większy ({_span(ece['quarter'])} i "
+        f"{_span(ece['year'])}) niż na horyzoncie tygodniowym ({_span(ece['week'])})."
     ]
 
 
@@ -4573,8 +4771,10 @@ def _chapter_13_limits(doc: Document) -> None:
             ["Zmiana wielkości prognozowanej",
              "Zmienność jest prognozowalna tam, gdzie kierunek nie jest.", "średnia"],
             ["Kalibracja długich horyzontów",
-             "Ściąganie prognozy w stronę 50% tam, gdzie wycinek kalibracyjny ma zbyt mało "
-             "obserwacji niezależnych, aby wyznaczyć temperaturę.", "średnia"],
+             "Wyznaczanie temperatury na prognozach z wcześniejszych miesięcy, które leżą już "
+             "poza próbą, albo wspólnie dla kilku instrumentów, aby wycinek obejmował więcej "
+             "obserwacji niezależnych niż obecne około 2 na horyzoncie kwartalnym i 0,75 na "
+             "rocznym.", "średnia"],
             ["Rozszerzenie na inne rynki",
              "Wymaga obsługi nieciągłości notowań i zdarzeń korporacyjnych w warstwie "
              "pozyskiwania danych.", "średnia"],
@@ -4694,19 +4894,16 @@ def _chapter_14_summary(doc: Document, runs: dict) -> None:
         "który wyprodukował wynik pozornie pozytywny i przeszedł replikację poza próbą, zanim "
         "został obalony.",
     )
-    calibration = calibration_facts(runs)
-    week_ece = list(calibration["by_horizon"].get("week", {}).get("ece", {}).values())
-    year_ece = list(calibration["by_horizon"].get("year", {}).get("ece", {}).values())
-    if calibration["overconfident"] and week_ece and year_ece:
+    ece = _learner_ece(runs)
+    if "week" in ece and "year" in ece:
         add_body(
             doc,
-            "Osobnym wynikiem jest nadmierna pewność prognoz. Na każdym horyzoncie deklarowana "
-            "pewność przewyższa częstość trafień, a błąd kalibracji rośnie od "
-            f"{_span(week_ece)} na horyzoncie tygodniowym do {_span(year_ece)} na rocznym, "
-            "ponieważ wycinek kalibracyjny długich horyzontów zawiera za mało obserwacji "
-            "niezależnych, by wyznaczyć temperaturę. Prognoza bez przewagi powinna deklarować "
-            "pewność bliską 50%; poprawa warstwy kalibracji jest jednym z kierunków dalszych "
-            "prac.",
+            "Osobnym wynikiem jest kalibracja. Surowe prognozy architektur uczących się są "
+            "niemal pewne, a po skalowaniu temperatury deklarują one na horyzoncie "
+            f"tygodniowym pewność bliską częstości trafień (ECE {_span(ece['week'])}). Błąd "
+            f"kalibracji rośnie z horyzontem do {_span(ece['year'])} na rocznym, ponieważ "
+            "wycinek kalibracyjny długich horyzontów zawiera za mało obserwacji niezależnych, by "
+            "dokładnie wyznaczyć temperaturę; drogę poprawy wskazuje rozdział 13.2.",
         )
     page_break(doc)
 
@@ -4732,8 +4929,9 @@ def _check_thesis_against_data(runs: dict) -> None:
         problems.append(f"{len(higher)} measurements above chance survive Benjamini-Hochberg")
     if found["mismatched"]:
         problems.append(f"{found['mismatched']} recomputed intervals differ from the stored ones")
-    if not calibration_facts(runs)["overconfident"]:
-        problems.append("the forecasts are no longer overconfident on every horizon")
+    ece = _learner_ece(runs)
+    if "week" in ece and "year" in ece and max(ece["week"]) >= min(ece["year"]):
+        problems.append("the learners' calibration error no longer grows from week to year")
     for problem in problems:
         print(f"WARNING: thesis 1.3 / 1.5 no longer matches the data: {problem}")
 

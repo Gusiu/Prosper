@@ -96,6 +96,38 @@ def is_study_run(symbol: str, slug: str) -> bool:
     return (symbol, slug) in study_runs()
 
 
+@functools.cache
+def previous_study_runs(report_root: str = "data/reports") -> frozenset[tuple[str, str]]:
+    """The runs of the October study: the study's protocol, on code the study no longer runs.
+
+    Kept for one comparison only - what the fixes to the calibration slice
+    changed (chapter 11.8). They differ from the study's runs by their code
+    alone, so they are told apart by its tree.
+    """
+    selected = set()
+    for summary in pathlib.Path(report_root, "predictions").glob("*/*/run_summary.json"):
+        symbol, slug = summary.parent.parent.name, summary.parent.name
+        if symbol not in STUDY_SYMBOLS or slug.split("_")[0] not in STUDY_MODELS:
+            continue
+        try:
+            record = json.loads(summary.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if any(record.get(key) != value for key, value in STUDY_PROTOCOL.items()):
+            continue
+        if record.get("seed") not in STUDY_SEEDS:
+            continue
+        commit = (record.get("environment") or {}).get("git_commit")
+        if _package_tree(commit) == _package_tree(STUDY_CODE):
+            continue
+        selected.add((symbol, slug))
+    return frozenset(selected)
+
+
+def is_previous_study_run(symbol: str, slug: str) -> bool:
+    return (symbol, slug) in previous_study_runs()
+
+
 # ── features ─────────────────────────────────────────────────────────────────
 
 @dataclass
