@@ -5504,10 +5504,13 @@ SCREENSHOTS: list[tuple[str, str, str, str]] = [
      "zakładka „Evaluation” z tabelą metryk dla wybranego przebiegu"),
     ("08-ocena-stabilnosc.png", "Ocena - stabilność w czasie",
      "Strata logarytmiczna przebiegu badania GRU na BTCUSDT (ziarno 42) miesiąc po "
-     "miesiącu, od stycznia 2021 do czerwca 2026, osobno dla czterech horyzontów. Horyzonty "
-     "tygodniowy i miesięczny utrzymują niemal stały poziom, a kwartalny i roczny odrywają "
-     "się od niego na całe miesiące - tam, gdzie obserwacji niezależnych jest najmniej. "
-     "Linia roczna kończy się wcześniej, a miesiące o zbyt małej liczbie ocenionych świec są "
+     "miesiącu, od stycznia 2021 do czerwca 2026, osobno dla czterech horyzontów. Linia "
+     "tygodniowa przez większość miesięcy leży przy wartości ln 2 = 0,693, czyli stracie "
+     "prognozy 50%, i tylko dwa razy przekracza 1,0. Linie dłuższych horyzontów odchodzą od "
+     "niej dalej - miesięczna do 1,6, roczna do 2,8, a kwartalna do 3,5, w 2024 roku przez "
+     "pięć miesięcy z rzędu powyżej 1,0 - a na dłuższym horyzoncie miesiąc mieści mniej "
+     "obserwacji niezależnych. Linie kwartalna i roczna kończą się wcześniej, ponieważ ich "
+     "etykiety sięgają dalej w przyszłość; miesiące o zbyt małej liczbie ocenionych świec są "
      "oznaczone osobnym znacznikiem.",
      "wykres stabilności miesięcznej z widocznymi czterema horyzontami"),
     ("09-backtest-parametry.png", "Symulacja - założenia wykonawcze",
@@ -5521,14 +5524,18 @@ SCREENSHOTS: list[tuple[str, str, str, str]] = [
      "Wynik symulacji przebiegu badania GRU na BTCUSDT (ziarno 42, horyzont tygodniowy, "
      "styczeń 2020 - czerwiec 2026), podany łącznie z czterema punktami odniesienia: kupnem "
      "i trzymaniem, stałą ekspozycją o tym samym średnim udziale, percentylem względem "
-     "własnych przesunięć cyklicznych i regułą momentum bez modelu. Strategia zarabia 55,5%, "
-     "lecz przegrywa z kupnem i trzymaniem oraz ze stałą ekspozycją, a wobec własnych "
-     "przesunięć leży na 43. percentylu - poniżej losowego 50.",
+     "własnych przesunięć cyklicznych i regułą momentum bez modelu. Strategia zarabia 50,4%, "
+     "lecz przegrywa ze wszystkimi trzema regułami bez modelu - z kupnem i trzymaniem, ze "
+     "stałą ekspozycją i z regułą momentum - a wobec własnych przesunięć leży na 24. "
+     "percentylu, poniżej losowego 50.",
      "wynik backtestu z widoczną sekcją hipotez zerowych"),
     ("11-analiza-wykres.png", "Analiza - kalendarz prognoz",
      "Inspektor historyczny przebiegu: kalendarz jednego miesiąca, w którym każdy dzień "
      "podaje prognozowane prawdopodobieństwo wzrostu (L) i spadku (S) na najkrótszym "
-     "horyzoncie.",
+     "horyzoncie. Zrzut pokazuje czerwiec 2026 roku w przebiegu badania GRU na BTCUSDT "
+     "(ziarno 42): temperatura dopasowana dla tego miesiąca to górny kraniec siatki, 1000, "
+     "więc każda prognoza tygodniowa wynosi 50% (rozdział 8.8). Każdy dzień pokazuje 50% "
+     "w 30 z 78 miesięcy tego przebiegu.",
      "kalendarz prognoz wybranego przebiegu"),
 ]
 
