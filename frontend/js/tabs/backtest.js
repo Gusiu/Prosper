@@ -42,7 +42,7 @@ export function populateBacktestRuns(models) {
 
 // The horizon list is the server's, not a copy kept in the markup. The set and
 // its order change, and a stale <option> would silently simulate a horizon the
-// run never carried — the same class of defect as the "≈52w (365d)" label that
+// run never carried - the same class of defect as the "≈52w (365d)" label that
 // went on saying 365 after the year became 364 days.
 export async function renderBacktestHorizons() {
   const select = document.getElementById("backtest-horizon");
@@ -59,7 +59,7 @@ export async function renderBacktestHorizons() {
     .map(
       (spec) =>
         `<option value="${escapeHtml(spec.name)}">` +
-        `${escapeHtml(spec.name)} — ${escapeHtml(spec.label)}</option>`,
+        `${escapeHtml(spec.name)} - ${escapeHtml(spec.label)}</option>`,
     )
     .join("");
   if ([...select.options].some((option) => option.value === current)) {

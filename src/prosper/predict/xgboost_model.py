@@ -9,10 +9,8 @@ from typing import Any
 import numpy as np
 
 from prosper.config import Settings, get_settings
-from prosper.domain import DIRECTION_CLASSES
 from prosper.predict.calibration import (
     TemperatureCalibrator,
-    calibration_split,
     fit_calibrator_from_model,
 )
 from prosper.predict.defaults import DEFAULT_TRAIN_WINDOW_DAYS
@@ -58,11 +56,12 @@ class XGBoostForecaster(TabularForecaster):
         y_valid = [int(y_dirs[k]) for k in valid]
 
         # The newest slice of the training region is held out to fit the
-        # calibrator; both halves end before `train_end`, so no unrealised
-        # label reaches either (invariant 6).
-        split, _ = calibration_split(0, len(valid))
-        fit_rows = list(range(split))
-        cal_rows = list(range(split, len(valid)))
+        # calibrator; both parts end before `train_end`, so no unrealised
+        # label reaches either (invariant 6), and the fitted rows end a
+        # horizon before the slice (`TabularForecaster.holdout`).
+        fit_end, cal_start = self.holdout(horizon, pooled, valid)
+        fit_rows = list(range(fit_end))
+        cal_rows = list(range(cal_start, len(valid)))
         y_fit = [y_valid[k] for k in fit_rows] if fit_rows else y_valid
         if len(set(y_fit)) <= 1:
             y_fit, fit_rows, cal_rows = y_valid, list(range(len(valid))), []
@@ -100,11 +99,10 @@ class XGBoostForecaster(TabularForecaster):
         }
 
     def predict_horizon(self, fitted: dict[str, Any], row: np.ndarray) -> dict[str, Any]:
-        probabilities = self.direction_probabilities(
-            fitted["clf"], fitted["classes"], fitted["calibrator"], row
-        )
         return {
-            **{f"P_{d}": probabilities[d] for d in DIRECTION_CLASSES},
+            **self.direction_payload(
+                fitted["clf"], fitted["classes"], fitted["calibrator"], row
+            ),
             "depth_long_bins": fitted["depth"]["long"],
             "depth_short_bins": fitted["depth"]["short"],
             "trained": True,

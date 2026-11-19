@@ -28,7 +28,7 @@ def run_stability_api(
 
     This is the only view in the project that can distinguish a consistently
     mediocre model from one that worked in a single regime and stopped, which a
-    whole-run aggregate hides by construction. Returns are not part of it —
+    whole-run aggregate hides by construction. Returns are not part of it -
     `/api/backtest` owns those.
     """
     symbol = require_symbol(symbol)
@@ -57,7 +57,7 @@ def run_stability_api(
 
     months = report["months"]
     # One array per horizon per metric, aligned to `labels`, with null for a
-    # month a horizon could not be scored in — the chart needs the gap to stay
+    # month a horizon could not be scored in - the chart needs the gap to stay
     # a gap rather than close over it.
     series: dict[str, dict[str, list[Any]]] = {}
     for name in HORIZON_NAMES:

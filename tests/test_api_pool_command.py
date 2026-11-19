@@ -1,7 +1,7 @@
 """The API must not send a flag the CLI does not have, or omit one the caller chose.
 
 `api/commands.py` is the only place argv is built, and the rule it exists to
-enforce is that a parameter the caller did not choose is *left out* — Typer's
+enforce is that a parameter the caller did not choose is *left out* - Typer's
 default only applies to an absent flag, which is how the dashboard once trained 5
 epochs where the CLI trained 20.
 

@@ -1,0 +1,48 @@
+@startuml
+!include _styl.iuml
+
+package "Prezentacja" {
+  component "frontend/\nindex.html, js/tabs/*" as fe
+  component "api/\nserver, routes/, commands,\ntasks, validation" as api
+  component "cli.py\n(Typer)" as cli
+}
+
+package "Logika" {
+  component "binance/, pipeline/, qa/\npobieranie, agregacja,\nkontrola jakości" as dane
+  component "features/, labels/\ncechy; etykiety (forward.py)" as cechy
+  component "predict/\nwalk_forward, tabular, sequence,\nbaseline, ml, xgboost_model,\ngru, tft, window, pool" as predict
+  component "eval/\npredictions, significance,\nstability, backtest" as eval
+  component "planner/\nwindows (SequenceGrader)" as planner
+}
+
+package "Wspólne" {
+  component "storage/, inventory.py\nadresowanie i wersjonowanie\nartefaktów" as storage
+  component "domain.py, config.py\nhoryzonty, klasy kierunku,\nustawienia" as domain
+}
+
+database "./data" as data
+
+fe --> api : HTTP, JSON
+api --> cli : podproces\nz kolejki zadań
+api --> eval : stabilność,\nsymulacja
+api --> storage : inwentarz,\nprzebiegi
+cli --> dane
+cli --> cechy
+cli --> predict
+cli --> eval
+cli --> planner
+predict --> cechy : etykiety\n(forward.py)
+eval --> planner : SequenceGrader
+dane --> storage
+cechy --> storage
+predict --> storage
+eval --> storage
+planner --> storage
+storage --> data
+
+note bottom of domain
+  Wspólne słownictwo i ustawienia
+  są używane przez każdy moduł
+  logiki; strzałek do nich nie rysowano.
+end note
+@enduml

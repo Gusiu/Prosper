@@ -7,7 +7,7 @@ indistinguishable on disk, and which seed made which had to be recovered from a
 shell log that could as easily have been lost.
 
 It matters more than bookkeeping. The project's reproducibility claim is that
-re-running a configuration reproduces it byte for byte — a claim that cannot even
+re-running a configuration reproduces it byte for byte - a claim that cannot even
 be stated about a run whose configuration is unrecorded.
 
 The stamp is applied inside `write_run_summary` rather than by the callers,

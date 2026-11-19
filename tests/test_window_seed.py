@@ -3,12 +3,12 @@
 Both DL predictors seeded once before the walk-forward loop, so every horizon and
 every retraining window drew from one continuous stream. The number of training
 steps taken anywhere therefore shifted the weight initialisation, dropout masks
-and shuffling of everything downstream — which makes a controlled experiment
+and shuffling of everything downstream - which makes a controlled experiment
 impossible.
 
 Not hypothetically. Raising the `long` epoch ceiling from 10 to 20 on ETHUSDT tft
 moved the two horizons whose ceiling had not changed: `medium` gained 0.070
-accuracy and `short` 0.012, while `long` — the one actually changed — gained
+accuracy and `short` 0.012, while `long` - the one actually changed - gained
 0.022. The horizon under test improved *least*. Had the run not carried those two
 as an in-run control, it would have been reported as evidence the ceiling helps.
 """
@@ -36,7 +36,7 @@ def test_every_field_changes_the_seed() -> None:
 
 def test_the_model_name_is_hashed_not_summed() -> None:
     """The first version added character codes, and 'tft' and 'gru' both sum to
-    334 — so the two models shared every seed in the project."""
+    334 - so the two models shared every seed in the project."""
     assert sum(ord(c) for c in "tft") == sum(ord(c) for c in "gru") == 334
     assert window_seed(42, "tft", "long", 2025, 3) != window_seed(42, "gru", "long", 2025, 3)
 
@@ -149,7 +149,7 @@ def test_two_symbols_do_not_share_an_initialisation() -> None:
     there, so for a given retraining window *every symbol drew the same weights,
     the same dropout masks and the same batch order*. Four symbols trained under
     one base seed were therefore not four independent draws of "this model on a
-    new dataset" — they were one draw of the initialisation sequence applied to
+    new dataset" - they were one draw of the initialisation sequence applied to
     four datasets, and a four-symbol replication was read as independent evidence
     on that basis.
 

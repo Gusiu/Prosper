@@ -4,20 +4,18 @@ GRU and TFT read windows of consecutive bars from one symbol. At the first bar
 of each month both normalise the features on the bars before it, fit one model
 per horizon on the labelled rows of that horizon's window, and keep a
 calibrator and a realised depth distribution beside it. They differ in the
-network, in how a prediction is produced - GRU scores bar by bar, TFT predicts
-a whole month in one batched pass - and in how they normalise.
+network and in how a prediction is produced - GRU scores bar by bar, TFT
+predicts a whole month in one batched pass.
 
-That last difference is deliberate to keep, and worth knowing. Both scale by
-the median and interquartile range of the window, but a missing feature ends
-up at a different place: GRU scales first and then sets it to 0, the median;
-TFT sets it to a raw 0 first and then scales it. The first 89 bars of every
-symbol have missing features (indicator warm-up), and early training windows
-reach back that far, so unifying the two would change published GRU or TFT
-numbers. Each subclass therefore supplies its own `normalise`.
+They normalise the same way, with `robust_scale`. The first 89 bars of every
+symbol have missing features (indicator warm-up) and early training windows
+reach back that far, so how a missing value is scaled is part of what both
+networks are trained on, and comparing them is fair only under one rule.
 """
 
 from __future__ import annotations
 
+import warnings
 from abc import abstractmethod
 from collections.abc import Sequence
 from pathlib import Path
@@ -29,11 +27,47 @@ import polars as pl
 from prosper.config import Settings
 from prosper.domain import DIRECTION_CLASSES, IDX_TO_DIR, training_features
 from prosper.labels.forward import ForwardLabels
-from prosper.predict.calibration import TemperatureCalibrator
+from prosper.predict.calibration import (
+    TemperatureCalibrator,
+    TemperatureMemory,
+    calibration_fields,
+)
 from prosper.predict.defaults import summarise_epochs, window_seed
 from prosper.predict.failures import WindowFailures
 from prosper.predict.walk_forward import Month, RunPlan, uniform_depth
 from prosper.storage.layout import get_features_parquet_path
+
+
+def robust_scale(window: np.ndarray, features: np.ndarray) -> np.ndarray | None:
+    """*features* scaled by the median and interquartile range of *window*.
+
+    The statistics are taken over the values present: a missing value counted
+    as a zero would drag the median and widen the range of every column still
+    in its warm-up. A missing value itself becomes 0 after scaling, the window's
+    median - the value that tells the network nothing about the bar. Infinities
+    go to +-3 and everything is clipped to +-5, so one extreme bar cannot
+    dominate a sequence. A column with no value in the window, or no spread,
+    is scaled by 1 around 0.
+
+    Returns ``None`` when *window* is empty. That happens at the very first bar
+    of a symbol whose history begins inside the requested range - the causal
+    window reaches back from bar 0 and finds nothing - and a bar with no
+    history behind it has no training rows either, so the honest outcome is an
+    untrained bar (invariant 3), not an exception that loses the whole run.
+    """
+    if window.size == 0:
+        return None
+    present = np.where(np.isfinite(window), window, np.nan)
+    with warnings.catch_warnings():
+        # A column with no value present yields NaN statistics, handled below.
+        warnings.simplefilter("ignore", RuntimeWarning)
+        median = np.nanmedian(present, axis=0)
+        q75, q25 = np.nanpercentile(present, [75, 25], axis=0)
+    median = np.where(np.isfinite(median), median, 0.0)
+    iqr = q75 - q25
+    iqr = np.where(np.isfinite(iqr) & (iqr != 0), iqr, 1.0)
+    scaled = np.nan_to_num((features - median) / iqr, nan=0.0, posinf=3.0, neginf=-3.0)
+    return np.clip(scaled, -5.0, 5.0)
 
 
 class SequenceForecaster:
@@ -64,6 +98,7 @@ class SequenceForecaster:
         # Kept across months: a horizon that fails to fit has no model and so
         # never reaches its calibrator, whatever the cache holds.
         self.calibrators: dict[str, TemperatureCalibrator] = {}
+        self.temperatures = TemperatureMemory()
         self.depths: dict[str, dict[str, dict[str, float]]] = {}
         # How many epochs each horizon actually trained for, per window. The
         # budget is a ceiling, so this is a result, and without it whether
@@ -88,7 +123,12 @@ class SequenceForecaster:
             return
         for horizon in plan.horizons:
             if horizon.name in plan.selected:
-                self.models[horizon.name] = self.fit_horizon(plan, horizon.name, first, month)
+                model = self.fit_horizon(plan, horizon.name, first, month)
+                self.models[horizon.name] = model
+                if model is not None:
+                    self.calibrators[horizon.name] = self.temperatures.settle(
+                        horizon.name, self.calibrators.get(horizon.name, TemperatureCalibrator())
+                    )
         self.after_fit_month(plan, month, bars)
 
     def predict(self, bar: int, horizon: str) -> dict[str, Any] | None:
@@ -97,10 +137,13 @@ class SequenceForecaster:
         probabilities = self.probabilities(bar, horizon)
         if probabilities is None:
             return None
-        calibrated = self.calibrators.get(horizon, TemperatureCalibrator(1.0)).apply(probabilities)
+        calibrator = self.calibrators.get(horizon, TemperatureCalibrator(1.0))
+        calibrated = calibrator.apply(probabilities)
+        uncalibrated = {IDX_TO_DIR[k]: float(probabilities[k]) for k in range(len(DIRECTION_CLASSES))}
         depths = self.depths.get(horizon, {})
         return {
             **{f"P_{IDX_TO_DIR[k]}": float(calibrated[k]) for k in range(len(DIRECTION_CLASSES))},
+            **calibration_fields(uncalibrated, calibrator),
             "depth_long_bins": depths.get("long", uniform_depth(self.depth_labels)),
             "depth_short_bins": depths.get("short", uniform_depth(self.depth_labels)),
             "trained": True,
@@ -117,9 +160,9 @@ class SequenceForecaster:
 
     # ── what a subclass supplies ────────────────────────────────────────────
 
-    @abstractmethod
     def normalise(self, window: np.ndarray) -> np.ndarray | None:
         """All bars scaled by statistics of *window*, or None if it is empty."""
+        return robust_scale(window, self.features)
 
     @abstractmethod
     def fit_horizon(self, plan: RunPlan, horizon: str, first: int, month: Month) -> Any:

@@ -73,7 +73,7 @@ def test_one_symbol_pooled_matches_the_index_arithmetic_it_replaced() -> None:
     """The whole reason the single-symbol case goes through the pool as well.
 
     On a contiguous series the two must select exactly the same rows. Where they
-    could differ — a gap in the data — the timestamp version is the correct one,
+    could differ - a gap in the data - the timestamp version is the correct one,
     because it asks "had this outcome happened yet" rather than "how many rows
     back is it".
     """
@@ -222,7 +222,7 @@ def test_pooling_more_symbols_cannot_beat_one_over_the_correlation() -> None:
     """Why the annual horizon is not a pooling problem.
 
     `n / (1 + (n - 1) * rho)` tends to `1 / rho`, so at the measured 0.76 even a
-    hundred crypto symbols are worth about 1.3 — they share one dominant market
+    hundred crypto symbols are worth about 1.3 - they share one dominant market
     factor and pooling averages the part that differs, not the part that
     dominates. Predicting *relative* moves is the lever that removes it.
     """

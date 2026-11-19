@@ -1,46 +1,65 @@
-"""Generate the technical documentation as a .docx.
+"""Generate the engineering thesis as a .docx.
 
 The document is *generated*, not written by hand, for the reason the previous one
 was deleted: a hand-written write-up drifts from the code and then contradicts
-it. Every catalogue — features, CLI flags, HTTP routes, configuration, the test
-inventory — is read from the running system, and every result table is read from
+it. Every catalogue - features, CLI flags, HTTP routes, configuration, the test
+inventory - is read from the running system, and every result table is read from
 `data/reports/` at build time. The document therefore cannot state a number the
 artifacts do not contain, nor list a flag the CLI does not have.
 
     .venv/Scripts/python.exe scripts/build_documentation.py
 
-Writes `docs/Prosper_Dokumentacja_Techniczna.docx`, which is gitignored: this
+Writes `docs/Prosper_Praca_Inzynierska.docx`, which is gitignored: this
 script is the source of truth, the document is an artifact.
 """
 
 from __future__ import annotations
 
+import functools
 import glob
+import itertools
 import json
+import math
 import os
 import re
 import sys
+import unicodedata
 from collections import defaultdict
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 
 import numpy as np
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
-from docx.oxml import OxmlElement
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.image.image import Image as DocxImage
+from docx.opc.constants import CONTENT_TYPE as CT
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.opc.packuri import PackURI
+from docx.opc.part import XmlPart
+from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import documentation_pl as translations  # noqa: E402
 from documentation_sources import (  # noqa: E402
+    HORIZON_LABEL,
+    MODEL_LABEL,
     STUDY_MODELS,
+    STUDY_SEEDS,
     STUDY_SYMBOLS,
     api_reference,
     cli_reference,
     dataset_summary,
     feature_catalogue,
+    is_previous_study_run,
     is_study_run,
+    qa_summary,
     settings_reference,
+    study_runs,
     test_inventory,
 )
 
@@ -50,34 +69,56 @@ from prosper.domain import (  # noqa: E402
     HORIZON_NAMES,
     parse_depth_bins,
 )
+from prosper.eval.significance import (  # noqa: E402
+    DEFAULT_RESAMPLES,
+    accuracy_interval,
+    benjamini_hochberg,
+    block_bootstrap,
+    bootstrap_p_value,
+)
+from prosper.predict.calibration import (  # noqa: E402
+    CALIBRATION_FRACTION,
+    MIN_CALIBRATION_SAMPLES,
+)
 
 REPORT_ROOT = "data/reports"
 # Which runs are the study is decided in one place: documentation_sources.
 SYMBOLS = STUDY_SYMBOLS
 MODELS = STUDY_MODELS
-ACCENT = RGBColor(0x1F, 0x3B, 0x63)
 MUTED = RGBColor(0x55, 0x5F, 0x6B)
+BLACK = RGBColor(0, 0, 0)
+# PJATK's publishing requirements for theses ("Wymogi wydawnicze prac
+# dyplomowych"): Times New Roman, text at 12 pt with 1.5 line spacing, 2.5 cm
+# margins, chapter headings at 14 pt and sections at 12 pt, both bold.
+FONT = "Times New Roman"
+BODY_SIZE = 12
+LINE_SPACING = 1.5
+MARGIN_CM = 2.5
+HEADING_SIZES = {1: 14, 2: 12, 3: 12}
 
 _counters: dict[str, int] = defaultdict(int)
 
 # The formal details of the thesis. The title is a working one until the
-# supervisor approves it; the title page layout follows the PJATK template
-# once it is supplied.
+# supervisor approves it.
 THESIS_TITLE = (
     "Platforma badawcza do porównania architektur uczenia maszynowego w prognozowaniu "
     "kierunku zmian cen kryptowalut na podstawie historii notowań"
 )
-THESIS_TITLE_EN = (
-    "A research platform for comparing machine learning architectures in forecasting the "
-    "direction of cryptocurrency price changes from historical quotes"
-)
 AUTHOR = "Adrian Budzich"
 ALBUM_NUMBER = "30076"
-SUPERVISOR = "dr Michał Majewski"
+SUPERVISOR = "dr inż. Michał Majewski"
 UNIVERSITY = "Polsko-Japońska Akademia Technik Komputerowych"
-FIELD = "Informatyka"
+FACULTY = "Wydział Informatyki"
+# The PJATK template names the department after the faculty; the line is left
+# out until it is known.
+DEPARTMENT = ""
 SPECIALISATION = "Robotyka i Inteligentne Systemy Autonomiczne"
-YEAR = "2028"
+# The template's last line: place, month and year of the defence. The year
+# alone until the date is set.
+DEFENCE = "2028"
+# A working draft says so on its title page, dated by the build, so that the
+# versions sent for review can be told apart. False for the final version.
+DRAFT = True
 
 try:
     from documentation_figures import build_all as _build_figures
@@ -87,21 +128,32 @@ except Exception as _figure_error:  # matplotlib absent, or no artifacts yet
     print(f"[figury] pominięte: {_figure_error}")
     _FIGURES = {}
 
+try:
+    from documentation_diagrams import render_all as _render_diagrams
+    from documentation_diagrams import size_cm as _diagram_size
+
+    _DIAGRAMS = _render_diagrams()
+except Exception as _diagram_error:  # Java or PlantUML absent and nothing rendered before
+    print(f"[diagrams] skipped: {_diagram_error}")
+    _DIAGRAMS = {}
+
 
 # ── results read from the artifacts ──────────────────────────────────────────
 
-def load_runs() -> dict[tuple[str, str], list[dict]]:
-    """Every evaluated run on disk, keyed by (symbol, model).
+def load_runs(selected=None) -> dict[tuple[str, str], list[dict]]:
+    """Every evaluated run on disk that *selected* accepts (the study's by default),
+    keyed by (symbol, model).
 
     Reads what is there rather than what was expected: a partial recompute
     produces a partial table and says so, instead of failing or inventing rows.
     """
+    selected = selected or is_study_run
     found: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/metrics.json")):
         parts = path.replace("\\", "/").split("/")
         symbol, slug = parts[-3], parts[-2]
         model = slug.split("_")[0]
-        if not is_study_run(symbol, slug):
+        if not selected(symbol, slug):
             continue
         try:
             payload = json.load(open(path, encoding="utf-8"))
@@ -130,7 +182,7 @@ def horizon_values(runs: list[dict], horizon: str, field: str) -> list[float]:
 
 
 def fmt(value: float | None, places: int = 3) -> str:
-    return "—" if value is None else f"{value:.{places}f}"
+    return "-" if value is None else f"{value:.{places}f}"
 
 
 def pl(value: float, spec: str = ".3f") -> str:
@@ -154,17 +206,19 @@ def plain_dashes(text: str) -> str:
 
 def add_heading(doc: Document, text: str, level: int) -> None:
     heading = doc.add_heading(plain_dashes(text), level=level)
-    for run in heading.runs:
-        run.font.color.rgb = ACCENT
+    _start_page_if_pending(doc, heading)
 
 
-def add_body(doc: Document, text: str, *, italic: bool = False, size: float = 10) -> None:
+def add_body(doc: Document, text: str, *, italic: bool = False, size: float = BODY_SIZE,
+             compact: bool = False) -> None:
+    """A justified paragraph. Compact ones, for the reference appendices, are set
+    single-spaced: the 1.5 spacing PJATK asks for is the spacing of the text."""
     paragraph = doc.add_paragraph()
     paragraph.paragraph_format.space_after = Pt(6)
+    if compact:
+        paragraph.paragraph_format.line_spacing = 1.0
     paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    run = paragraph.add_run(plain_dashes(text))
-    run.italic = italic
-    run.font.size = Pt(size)
+    _write(doc, paragraph, text, size=size, italic=italic)
 
 
 def add_quote(doc: Document, text: str) -> None:
@@ -172,17 +226,46 @@ def add_quote(doc: Document, text: str) -> None:
     paragraph.paragraph_format.left_indent = Cm(1.0)
     paragraph.paragraph_format.space_after = Pt(10)
     paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    run = paragraph.add_run(plain_dashes(text))
-    run.bold = True
-    run.font.size = Pt(10.5)
+    _write(doc, paragraph, text, size=BODY_SIZE, bold=True)
 
 
 def add_bullets(doc: Document, items: list[str]) -> None:
     for item in items:
-        paragraph = doc.add_paragraph(plain_dashes(item), style="List Bullet")
+        paragraph = doc.add_paragraph(style="List Bullet")
         paragraph.paragraph_format.space_after = Pt(3)
-        for run in paragraph.runs:
-            run.font.size = Pt(10)
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        _write(doc, paragraph, item, size=BODY_SIZE)
+
+
+def add_label(doc: Document, text: str) -> None:
+    """A bold run-in label that opens a group of definitions."""
+    paragraph = doc.add_paragraph()
+    paragraph.paragraph_format.space_before = Pt(6)
+    paragraph.paragraph_format.space_after = Pt(2)
+    paragraph.paragraph_format.keep_with_next = True
+    run = paragraph.add_run(plain_dashes(text))
+    run.bold = True
+    run.font.size = Pt(BODY_SIZE)
+
+
+def add_definition(doc: Document, term: str, text: str, *, size: float = 11,
+                   compact: bool = False) -> None:
+    """A term in monospace and what it means, with a hanging indent - a list
+    where a two-column table would only add rules. An empty text leaves the
+    term on its own. Compact definitions are single-spaced, as in add_body."""
+    paragraph = doc.add_paragraph()
+    paragraph.paragraph_format.left_indent = Cm(0.6)
+    paragraph.paragraph_format.first_line_indent = Cm(-0.6)
+    paragraph.paragraph_format.space_after = Pt(2)
+    if compact:
+        paragraph.paragraph_format.line_spacing = 1.0
+    term_run = paragraph.add_run(plain_dashes(term))
+    term_run.bold = True
+    term_run.font.name = "Consolas"
+    term_run.font.size = Pt(size - 1)
+    if text:
+        text_run = paragraph.add_run(" - " + plain_dashes(text))
+        text_run.font.size = Pt(size)
 
 
 def add_code(doc: Document, lines: list[str]) -> None:
@@ -190,32 +273,296 @@ def add_code(doc: Document, lines: list[str]) -> None:
         paragraph = doc.add_paragraph()
         paragraph.paragraph_format.left_indent = Cm(0.8)
         paragraph.paragraph_format.space_after = Pt(0)
+        paragraph.paragraph_format.line_spacing = 1.0
         run = paragraph.add_run(plain_dashes(line))
         run.font.name = "Consolas"
-        run.font.size = Pt(8.5)
-    doc.add_paragraph()
+        run.font.size = Pt(9)
+    _spacer(doc)
+
+
+# ── citations ───────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Reference:
+    """One work the thesis cites. Authors are (surname, given names) pairs; *where*
+    is everything after the title - journal, volume, issue and pages, the
+    proceedings, or the publisher - with *asterisks* around what is set in italics."""
+
+    authors: tuple[tuple[str, str], ...]
+    title: str
+    where: str
+
+    def names(self, *, full: bool) -> str:
+        """"Fama, Eugene F." for the bibliography, "E. F. Fama" for a footnote,
+        where more than three authors shorten to the first and "i in."."""
+        if full:
+            (surname, given), *others = self.authors
+            return ", ".join([f"{surname}, {given}", *(f"{g} {s}" for s, g in others)])
+        shown = self.authors if len(self.authors) <= 3 else self.authors[:1]
+        initials = [" ".join(f"{part[0]}." for part in given.split()) + f" {surname}"
+                    for surname, given in shown]
+        return ", ".join(initials) + (" i in." if len(self.authors) > 3 else "")
+
+    def segments(self, *, full: bool) -> list[tuple[str, bool]]:
+        """The entry as (text, italic) pieces: names, the title in italics, the rest."""
+        pieces = [(f"{self.names(full=full)}, ", False), (self.title, True), (", ", False)]
+        for index, part in enumerate(re.split(r"\*([^*]+)\*", self.where)):
+            if part:
+                pieces.append((part, bool(index % 2)))
+        pieces.append((".", False))
+        return pieces
+
+    def sort_key(self) -> tuple[str, str]:
+        """Alphabetical by the first author's surname, then by title, as PJATK asks."""
+        folded = unicodedata.normalize("NFKD", self.authors[0][0])
+        return ("".join(c for c in folded if not unicodedata.combining(c)).lower(),
+                self.title.lower())
+
+
+# Every work cited, checked against the publishers' records on 2026-10-29.
+REFERENCES: dict[str, Reference] = {
+    "bailey2014": Reference(
+        (("Bailey", "David H."), ("López de Prado", "Marcos")),
+        "The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting, and "
+        "Non-Normality",
+        "„The Journal of Portfolio Management” 2014, t. 40, nr 5, s. 94-107"),
+    "benjamini1995": Reference(
+        (("Benjamini", "Yoav"), ("Hochberg", "Yosef")),
+        "Controlling the False Discovery Rate: A Practical and Powerful Approach to Multiple "
+        "Testing",
+        "„Journal of the Royal Statistical Society: Series B (Methodological)” 1995, t. 57, "
+        "nr 1, s. 289-300"),
+    "benjamini2001": Reference(
+        (("Benjamini", "Yoav"), ("Yekutieli", "Daniel")),
+        "The Control of the False Discovery Rate in Multiple Testing under Dependency",
+        "„The Annals of Statistics” 2001, t. 29, nr 4, s. 1165-1188"),
+    "brier1950": Reference(
+        (("Brier", "Glenn W."),),
+        "Verification of Forecasts Expressed in Terms of Probability",
+        "„Monthly Weather Review” 1950, t. 78, nr 1, s. 1-3"),
+    "chen2016": Reference(
+        (("Chen", "Tianqi"), ("Guestrin", "Carlos")),
+        "XGBoost: A Scalable Tree Boosting System",
+        "[w:] *Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge "
+        "Discovery and Data Mining*, San Francisco 2016, s. 785-794"),
+    "cho2014": Reference(
+        (("Cho", "Kyunghyun"), ("van Merriënboer", "Bart"), ("Gulcehre", "Caglar"),
+         ("Bahdanau", "Dzmitry"), ("Bougares", "Fethi"), ("Schwenk", "Holger"),
+         ("Bengio", "Yoshua")),
+        "Learning Phrase Representations using RNN Encoder-Decoder for Statistical Machine "
+        "Translation",
+        "[w:] *Proceedings of the 2014 Conference on Empirical Methods in Natural Language "
+        "Processing (EMNLP)*, Doha 2014, s. 1724-1734"),
+    "cont2001": Reference(
+        (("Cont", "Rama"),),
+        "Empirical Properties of Asset Returns: Stylized Facts and Statistical Issues",
+        "„Quantitative Finance” 2001, t. 1, nr 2, s. 223-236"),
+    "efron1993": Reference(
+        (("Efron", "Bradley"), ("Tibshirani", "Robert J.")),
+        "An Introduction to the Bootstrap",
+        "Chapman & Hall, New York 1993"),
+    "fama1970": Reference(
+        (("Fama", "Eugene F."),),
+        "Efficient Capital Markets: A Review of Theory and Empirical Work",
+        "„The Journal of Finance” 1970, t. 25, nr 2, s. 383-417"),
+    "gneiting2007": Reference(
+        (("Gneiting", "Tilmann"), ("Raftery", "Adrian E.")),
+        "Strictly Proper Scoring Rules, Prediction, and Estimation",
+        "„Journal of the American Statistical Association” 2007, t. 102, nr 477, s. 359-378"),
+    "guo2017": Reference(
+        (("Guo", "Chuan"), ("Pleiss", "Geoff"), ("Sun", "Yu"), ("Weinberger", "Kilian Q.")),
+        "On Calibration of Modern Neural Networks",
+        "[w:] *Proceedings of the 34th International Conference on Machine Learning*, PMLR 70, "
+        "Sydney 2017, s. 1321-1330"),
+    "kunsch1989": Reference(
+        (("Künsch", "Hans R."),),
+        "The Jackknife and the Bootstrap for General Stationary Observations",
+        "„The Annals of Statistics” 1989, t. 17, nr 3, s. 1217-1241"),
+    "lim2021": Reference(
+        (("Lim", "Bryan"), ("Arık", "Sercan Ö."), ("Loeff", "Nicolas"), ("Pfister", "Tomas")),
+        "Temporal Fusion Transformers for Interpretable Multi-horizon Time Series Forecasting",
+        "„International Journal of Forecasting” 2021, t. 37, nr 4, s. 1748-1764"),
+    "lopezdeprado2018": Reference(
+        (("López de Prado", "Marcos"),),
+        "Advances in Financial Machine Learning",
+        "Wiley, Hoboken 2018"),
+    "politis1994": Reference(
+        (("Politis", "Dimitris N."), ("Romano", "Joseph P.")),
+        "The Stationary Bootstrap",
+        "„Journal of the American Statistical Association” 1994, t. 89, nr 428, "
+        "s. 1303-1313"),
+}
+
+# A citation in the text: [@key] becomes a footnote naming REFERENCES[key].
+_CITATION = re.compile(r"\[@([a-z0-9]+)\]")
+_FOOTNOTES_XML = (
+    '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:footnote w:type="separator" w:id="-1"><w:p><w:pPr><w:spacing w:after="0" '
+    'w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:separator/></w:r></w:p></w:footnote>'
+    '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:pPr><w:spacing w:after="0" '
+    'w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:continuationSeparator/></w:r></w:p>'
+    '</w:footnote></w:footnotes>'
+)
+FOOTNOTE_SIZE = 10
+# What has been cited so far, in document order: a first citation is given in
+# full, a later one as "op. cit.", and one repeating the previous as "Ibidem.".
+_citations: dict = {"cited": set(), "last": None, "count": 0, "root": None, "styles": None}
+
+
+def _reset_citations() -> None:
+    _citations.update(cited=set(), last=None, count=0, root=None, styles=None)
+
+
+def _footnote_part(doc: Document):
+    """The footnotes part with its two separators, and the styles footnotes use.
+
+    The python-docx template has neither, so both are made on first use: the
+    part, its relationship, the settings entry naming the separators, and a
+    footnote text and footnote reference style.
+    """
+    if _citations["root"] is not None:
+        return _citations["root"], _citations["styles"]
+    part = XmlPart(PackURI("/word/footnotes.xml"), CT.WML_FOOTNOTES,
+                   parse_xml(_FOOTNOTES_XML), doc.part.package)
+    doc.part.relate_to(part, RT.FOOTNOTES)
+    settings = doc.settings.element
+    listed = OxmlElement("w:footnotePr")
+    for note_id in ("-1", "0"):
+        separator = OxmlElement("w:footnote")
+        separator.set(qn("w:id"), note_id)
+        listed.append(separator)
+    # Schema order: footnotePr comes right before compat in w:settings.
+    compat = settings.find(qn("w:compat"))
+    if compat is not None:
+        compat.addprevious(listed)
+    else:
+        settings.append(listed)
+
+    text_style = doc.styles.add_style("Footnote Text", WD_STYLE_TYPE.PARAGRAPH)
+    text_style.base_style = doc.styles["Normal"]
+    text_style.font.size = Pt(FOOTNOTE_SIZE)
+    text_style.paragraph_format.line_spacing = 1.0
+    text_style.paragraph_format.space_after = Pt(0)
+    text_style.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    mark_style = doc.styles.add_style("Footnote Reference", WD_STYLE_TYPE.CHARACTER)
+    mark_style.font.superscript = True
+    _citations["root"], _citations["styles"] = part.element, (text_style.style_id,
+                                                              mark_style.style_id)
+    return _citations["root"], _citations["styles"]
+
+
+def _footnote(doc: Document, paragraph, key: str) -> None:
+    """Cite REFERENCES[key] with a footnote marked at the end of *paragraph*."""
+    reference = REFERENCES[key]
+    if key == _citations["last"]:
+        segments = [("Ibidem.", False)]
+    elif key in _citations["cited"]:
+        segments = [(f"{reference.names(full=False)}, op. cit.", False)]
+    else:
+        segments = reference.segments(full=False)
+    _citations["cited"].add(key)
+    _citations["last"] = key
+    _citations["count"] += 1
+    note_id = str(_citations["count"])
+    root, (text_style, mark_style) = _footnote_part(doc)
+
+    def mark() -> OxmlElement:
+        run = OxmlElement("w:r")
+        properties = OxmlElement("w:rPr")
+        style = OxmlElement("w:rStyle")
+        style.set(qn("w:val"), mark_style)
+        properties.append(style)
+        run.append(properties)
+        return run
+
+    note = OxmlElement("w:footnote")
+    note.set(qn("w:id"), note_id)
+    body = OxmlElement("w:p")
+    paragraph_properties = OxmlElement("w:pPr")
+    style = OxmlElement("w:pStyle")
+    style.set(qn("w:val"), text_style)
+    paragraph_properties.append(style)
+    body.append(paragraph_properties)
+    number = mark()
+    number.append(OxmlElement("w:footnoteRef"))
+    body.append(number)
+    for text, italic in [(" ", False), *segments]:
+        run = OxmlElement("w:r")
+        if italic:
+            properties = OxmlElement("w:rPr")
+            properties.append(OxmlElement("w:i"))
+            run.append(properties)
+        content = OxmlElement("w:t")
+        content.set(qn("xml:space"), "preserve")
+        content.text = plain_dashes(text)
+        run.append(content)
+        body.append(run)
+    note.append(body)
+    root.append(note)
+
+    reference_run = mark()
+    pointer = OxmlElement("w:footnoteReference")
+    pointer.set(qn("w:id"), note_id)
+    reference_run.append(pointer)
+    paragraph._p.append(reference_run)
+
+
+def _write(doc: Document, paragraph, text: str, *, size: float, italic: bool = False,
+           bold: bool = False) -> None:
+    """Add *text* to *paragraph*, every [@key] in it becoming a footnote."""
+    for index, part in enumerate(_CITATION.split(plain_dashes(text))):
+        if index % 2:
+            _footnote(doc, paragraph, part)
+        elif part:
+            run = paragraph.add_run(part)
+            run.italic = italic
+            run.bold = bold
+            run.font.size = Pt(size)
+
+
+def _cited_inline(text: str) -> str:
+    """*text* with every [@key] spelled out where a footnote cannot go, such as a
+    caption's source line: in short when the work was cited before, else in full."""
+    def spelled(match: re.Match) -> str:
+        reference = REFERENCES[match.group(1)]
+        if match.group(1) in _citations["cited"]:
+            return f"{reference.names(full=False)}, op. cit."
+        return "".join(text for text, _ in reference.segments(full=False)).rstrip(".")
+    return _CITATION.sub(spelled, text)
+
+
+def _spacer(doc: Document) -> None:
+    """A small gap after a table or a code block; an empty line at 1.5 spacing
+    would leave a hole as tall as two lines of text."""
+    paragraph = doc.add_paragraph()
+    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.line_spacing = Pt(8)
 
 
 def add_table(
     doc: Document, header: list[str], rows: list[list[str]], widths: list[float],
-    *, font: float = 8.5,
+    *, font: float = 10,
 ) -> None:
     """A table with explicit column widths, set on every cell.
 
     Word ignores a width set only on the column, so it has to go on each cell or
     the layout collapses to equal columns. The header row repeats on every page,
-    which matters here: several of these tables run for pages.
+    which matters here: several of these tables run for pages. Cells are set
+    single-spaced; the text's 1.5 spacing would double the height of every row.
     """
     table = doc.add_table(rows=1, cols=len(header))
-    table.style = "Light Grid Accent 1"
+    table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
     for index, label in enumerate(header):
         cell = table.rows[0].cells[index]
         cell.text = ""
+        cell.paragraphs[0].paragraph_format.line_spacing = 1.0
         run = cell.paragraphs[0].add_run(plain_dashes(label))
         run.bold = True
         run.font.size = Pt(font)
+
+    _horizontal_rules(table)
 
     header_properties = table.rows[0]._tr.get_or_add_trPr()
     repeat = OxmlElement("w:tblHeader")
@@ -228,15 +575,114 @@ def add_table(
             cells[index].text = ""
             paragraph = cells[index].paragraphs[0]
             paragraph.paragraph_format.space_after = Pt(0)
-            run = paragraph.add_run(plain_dashes(str(value)))
-            run.font.size = Pt(font)
+            paragraph.paragraph_format.line_spacing = 1.0
+            _write(doc, paragraph, str(value), size=font)
     for row in table.rows:
         for index, cell in enumerate(row.cells):
             cell.width = Cm(widths[index])
-    doc.add_paragraph()
+    _hold_together(table, _estimated_height([header, *rows], widths, font))
+    _spacer(doc)
 
 
-def _field(paragraph, instruction: str, shown: str) -> None:
+# A table up to this share of the text block moves to the next page whole,
+# caption included, rather than leave its caption and first rows behind.
+KEEP_TOGETHER_SHARE = 0.55
+TEXT_HEIGHT_PT = (29.7 - 2 * MARGIN_CM) / 2.54 * 72
+# A longer table starts only where its header and this many rows still fit.
+OPENING_ROWS = 2
+
+
+def _estimated_height(rows: list[list[str]], widths: list[float], font: float) -> float:
+    """Rough height of a table in points, from how many lines each cell wraps to.
+
+    A Times New Roman character is about 0.45 of the font size wide; a row is as
+    tall as its tallest cell, plus the cell margins.
+    """
+    height = 0.0
+    for values in rows:
+        lines = max(
+            max(1, math.ceil(len(str(value)) / max(1.0, width / (0.45 * font * 0.03528))))
+            for value, width in zip(values, widths, strict=False)
+        )
+        height += lines * font * 1.2 + 2
+    return height
+
+
+def _hold_together(table, height: float) -> None:
+    """Keep a table's rows whole and its start, end or all of it on one page.
+
+    Every row refuses to break across pages. A table short enough to move
+    whole keeps every row with the next, so it travels with its caption; a
+    longer one keeps its header with the first rows, and its last row with the
+    note and source beneath it.
+    """
+    whole = height <= KEEP_TOGETHER_SHARE * TEXT_HEIGHT_PT
+    last = len(table.rows) - 1
+    for index, row in enumerate(table.rows):
+        properties = row._tr.get_or_add_trPr()
+        no_split = OxmlElement("w:cantSplit")
+        # Schema order: cantSplit comes before tblHeader within w:trPr.
+        header = properties.find(qn("w:tblHeader"))
+        if header is not None:
+            header.addprevious(no_split)
+        else:
+            properties.append(no_split)
+        if whole or index <= OPENING_ROWS or index == last:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    paragraph.paragraph_format.keep_with_next = True
+
+
+# Colours of the table rules: the accent for the frame, a light grey between rows.
+RULE_COLOUR = "1F3B63"
+HAIRLINE_COLOUR = "C9D1DB"
+HEADER_FILL = "EEF2F7"
+# Elements that must follow w:tblBorders inside w:tblPr, in schema order.
+_AFTER_TABLE_BORDERS = ("shd", "tblLayout", "tblCellMar", "tblLook", "tblCaption",
+                        "tblDescription")
+
+
+def _border(name: str, size: int, colour: str = "auto"):
+    element = OxmlElement(f"w:{name}")
+    if size:
+        element.set(qn("w:val"), "single")
+        element.set(qn("w:sz"), str(size))
+        element.set(qn("w:space"), "0")
+        element.set(qn("w:color"), colour)
+    else:
+        element.set(qn("w:val"), "nil")
+    return element
+
+
+def _horizontal_rules(table) -> None:
+    """Horizontal rules only: a frame above and below, a rule under the header,
+    hairlines between rows and nothing vertical - the plain academic table, which
+    reads as well as a grid and prints better in black and white."""
+    properties = table._tbl.tblPr
+    borders = OxmlElement("w:tblBorders")
+    for name, size, colour in (("top", 8, RULE_COLOUR), ("left", 0, ""),
+                               ("bottom", 8, RULE_COLOUR), ("right", 0, ""),
+                               ("insideH", 2, HAIRLINE_COLOUR), ("insideV", 0, "")):
+        borders.append(_border(name, size, colour))
+    successor = next((child for child in properties
+                      if child.tag in {qn(f"w:{n}") for n in _AFTER_TABLE_BORDERS}), None)
+    if successor is not None:
+        successor.addprevious(borders)
+    else:
+        properties.append(borders)
+    for cell in table.rows[0].cells:
+        cell_properties = cell._tc.get_or_add_tcPr()
+        cell_borders = OxmlElement("w:tcBorders")
+        cell_borders.append(_border("bottom", 6, RULE_COLOUR))
+        cell_properties.append(cell_borders)
+        shading = OxmlElement("w:shd")
+        shading.set(qn("w:val"), "clear")
+        shading.set(qn("w:color"), "auto")
+        shading.set(qn("w:fill"), HEADER_FILL)
+        cell_properties.append(shading)
+
+
+def _field(paragraph, instruction: str, shown: str, *, size: float, bold: bool) -> None:
     """A Word field: *instruction* computed by Word, *shown* until it updates."""
     parts = []
     for kind in ("begin", "instr", "separate", "text", "end"):
@@ -253,40 +699,84 @@ def _field(paragraph, instruction: str, shown: str) -> None:
         parts.append(element)
     for element in parts:
         run = paragraph.add_run()
-        run.italic = True
-        run.font.size = Pt(8.5)
-        run.font.color.rgb = MUTED
+        run.bold = bold
+        run.font.size = Pt(size)
         run._r.append(element)
 
 
-def add_caption(doc: Document, kind: str, text: str) -> None:
-    """"Tabela N. text", where N is a SEQ field: the lists of tables and figures
-    at the end of the document are built by Word from these fields."""
+# The caption sizes: the title as in PJATK's example, the note and the source smaller.
+CAPTION_SIZE = 11
+NOTE_SIZE = 10
+DEFAULT_SOURCE = "opracowanie własne"
+
+
+def add_caption(doc: Document, kind: str, text: str, *, source: str = DEFAULT_SOURCE) -> None:
+    """Caption the table or figure just added, the way PJATK asks for it.
+
+    The title - "Tabela N. Title", bold, with no full stop - goes above the
+    element; under it go the rest of *text* as a note and the line "Źródło:
+    source." N is a SEQ field, so Word builds the lists of tables and figures
+    from the titles, one line per entry.
+    """
     _counters[kind] += 1
-    paragraph = doc.add_paragraph()
-    paragraph.paragraph_format.space_after = Pt(12)
-
-    def styled(fragment: str) -> None:
-        run = paragraph.add_run(plain_dashes(fragment))
-        run.italic = True
-        run.font.size = Pt(8.5)
-        run.font.color.rgb = MUTED
-
-    # Only the first sentence goes in the numbered caption, so the lists of
-    # tables and figures stay one line per entry; the rest follows beneath.
     match = re.search(r"(?<=[^\s.]{2})\. (?=[A-ZĄĆĘŁŃÓŚŹŻ„])", text)
-    title, rest = (text[: match.start() + 1], text[match.end():]) if match else (text, "")
-    styled(f"{kind} ")
-    _field(paragraph, f"SEQ {kind} \\* ARABIC", str(_counters[kind]))
-    styled(f". {title}")
+    title, rest = (text[: match.start()], text[match.end():]) if match else (text, "")
+    title = title.rstrip(".")
+
+    heading = _caption_paragraph(doc, space_before=6, space_after=4)
+    heading.paragraph_format.keep_with_next = True
+    for fragment, is_field in ((f"{kind} ", False), (None, True), (f". {title}", False)):
+        if is_field:
+            _field(heading, f"SEQ {kind} \\* ARABIC", str(_counters[kind]),
+                   size=CAPTION_SIZE, bold=True)
+            continue
+        run = heading.add_run(plain_dashes(fragment))
+        run.bold = True
+        run.font.size = Pt(CAPTION_SIZE)
+
+    below = []
     if rest:
-        paragraph.paragraph_format.space_after = Pt(2)
-        follow = doc.add_paragraph()
-        follow.paragraph_format.space_after = Pt(12)
-        run = follow.add_run(plain_dashes(rest))
-        run.italic = True
-        run.font.size = Pt(8.5)
-        run.font.color.rgb = MUTED
+        note = _caption_paragraph(doc, space_before=4, space_after=2)
+        note.paragraph_format.keep_with_next = True
+        _write(doc, note, rest, size=NOTE_SIZE, italic=True)
+        below.append(note)
+    origin = _caption_paragraph(doc, space_before=2 if rest else 4, space_after=12)
+    origin.add_run(plain_dashes(f"Źródło: {_cited_inline(source)}.")).font.size = Pt(NOTE_SIZE)
+    below.append(origin)
+
+    element = _captioned_element(heading)
+    if element is None:
+        return
+    element.addprevious(heading._p)
+    for paragraph in reversed(below):
+        element.addnext(paragraph._p)
+
+
+def _caption_paragraph(doc: Document, *, space_before: float, space_after: float):
+    paragraph = doc.add_paragraph()
+    paragraph.paragraph_format.space_before = Pt(space_before)
+    paragraph.paragraph_format.space_after = Pt(space_after)
+    paragraph.paragraph_format.line_spacing = 1.0
+    # A caption is never split across pages; it moves with its table or figure.
+    paragraph.paragraph_format.keep_together = True
+    return paragraph
+
+
+def _captioned_element(caption):
+    """The table, picture or placeholder a caption belongs to.
+
+    Captions are written after the element, so it is the nearest element before
+    the caption that is not an empty paragraph - a table, or a paragraph holding
+    a picture. None when there is neither, and the caption then stays put.
+    """
+    previous = caption._p.getprevious()
+    while previous is not None and previous.tag == qn("w:p"):
+        if previous.find(f".//{qn('w:drawing')}") is not None:
+            return previous
+        if "".join(previous.itertext()).strip():
+            return None
+        previous = previous.getprevious()
+    return previous if previous is not None and previous.tag == qn("w:tbl") else None
 
 
 def add_figure(doc: Document, key: str, caption: str) -> None:
@@ -304,11 +794,48 @@ def add_figure(doc: Document, key: str, caption: str) -> None:
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     paragraph.paragraph_format.space_before = Pt(6)
     paragraph.paragraph_format.space_after = Pt(2)
+    paragraph.paragraph_format.keep_with_next = True
     paragraph.add_run().add_picture(path, width=Cm(15.5))
     add_caption(doc, "Rysunek", caption)
 
-def add_toc(doc: Document, switches: str = '\\o "1-3" \\h \\z \\u') -> None:
-    """A field Word fills in on open; python-docx cannot compute page numbers."""
+# The text block of the page, and the height that still leaves room for a caption.
+DIAGRAM_MAX_WIDTH_CM = 16.0
+DIAGRAM_MAX_HEIGHT_CM = 19.0
+
+
+def add_diagram(doc: Document, key: str, caption: str) -> None:
+    """Place a UML diagram at its natural size, shrunk only as far as the page needs.
+
+    Natural size keeps the diagram's text at the size it was drawn with; scaling
+    every diagram to the full width would blow small ones up and leave large ones
+    no smaller than they must be.
+    """
+    path = _DIAGRAMS.get(key)
+    if not path or not os.path.exists(path):
+        print(f"WARNING: diagram {key} was not rendered; the thesis omits it")
+        return
+    _embed_diagram(doc, path, caption)
+
+
+def _embed_diagram(doc: Document, path, caption: str) -> None:
+    width, height = _diagram_size(path)
+    scale = min(1.0, DIAGRAM_MAX_WIDTH_CM / width, DIAGRAM_MAX_HEIGHT_CM / height)
+    paragraph = doc.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_before = Pt(6)
+    paragraph.paragraph_format.space_after = Pt(2)
+    paragraph.paragraph_format.keep_with_next = True
+    paragraph.add_run().add_picture(str(path), width=Cm(width * scale))
+    add_caption(doc, "Rysunek", caption)
+
+
+def add_toc(doc: Document, switches: str = '\\o "1-2" \\h \\z \\u') -> None:
+    """A field Word fills in on open; python-docx cannot compute page numbers.
+
+    The contents list chapters and sections, as PJATK asks. The third level
+    holds the appendices' test modules and commands and the screenshots of
+    section 12.6, and with it the contents ran to seven pages.
+    """
     paragraph = doc.add_paragraph()
     run = paragraph.add_run()
     begin = OxmlElement("w:fldChar")
@@ -329,41 +856,76 @@ def add_toc(doc: Document, switches: str = '\\o "1-3" \\h \\z \\u') -> None:
 def add_front_heading(doc: Document, text: str) -> None:
     """A heading for front and back matter that stays out of the table of contents."""
     paragraph = doc.add_paragraph()
+    _start_page_if_pending(doc, paragraph)
     paragraph.paragraph_format.space_after = Pt(12)
     run = paragraph.add_run(text)
     run.bold = True
-    run.font.size = Pt(16)
-    run.font.color.rgb = ACCENT
+    run.font.size = Pt(HEADING_SIZES[1])
+
+
+# Where the next heading must start a new page: the index its paragraph will
+# take in the document body, or None when no break is pending.
+_page_break_at: int | None = None
 
 
 def page_break(doc: Document) -> None:
-    doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+    """Start what follows on a new page.
+
+    The break is carried by the next heading (page_break_before) rather than by
+    an empty paragraph holding one: a chapter that ends at the foot of a page
+    would push that paragraph onto a page of its own and leave the page blank.
+    """
+    global _page_break_at
+    # The body ends with the section properties, and new paragraphs go before them.
+    _page_break_at = len(doc.element.body) - 1
+
+
+def _start_page_if_pending(doc: Document, paragraph) -> None:
+    global _page_break_at
+    if _page_break_at is None:
+        return
+    position = list(doc.element.body).index(paragraph._p)
+    if position != _page_break_at:
+        print(f"WARNING: a page break meant for body element {_page_break_at} "
+              f"landed on element {position}")
+    paragraph.paragraph_format.page_break_before = True
+    _page_break_at = None
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-def build(path: str = "docs/Prosper_Dokumentacja_Techniczna.docx") -> str:
+def build(path: str = "docs/Prosper_Praca_Inzynierska.docx") -> str:
+    _reset_citations()
     runs = load_runs()
     _check_thesis_against_data(runs)
     doc = Document()
+    _document_properties(doc)
 
     section = doc.sections[0]
     section.page_width, section.page_height = Cm(21.0), Cm(29.7)
-    section.left_margin = section.right_margin = Cm(2.3)
-    section.top_margin = section.bottom_margin = Cm(2.0)
+    section.left_margin = section.right_margin = Cm(MARGIN_CM)
+    section.top_margin = section.bottom_margin = Cm(MARGIN_CM)
+    _page_numbers(section)
 
     normal = doc.styles["Normal"]
-    normal.font.name = "Calibri"
-    normal.font.size = Pt(10)
+    _set_typeface(normal, BODY_SIZE)
+    normal.paragraph_format.line_spacing = LINE_SPACING
+    for level, size in HEADING_SIZES.items():
+        heading = doc.styles[f"Heading {level}"]
+        _set_typeface(heading, size, bold=True)
+        heading.font.italic = False
+        heading.paragraph_format.space_before = Pt({1: 24, 2: 18, 3: 12}[level])
+        heading.paragraph_format.space_after = Pt({1: 12, 2: 6, 3: 4}[level])
 
     _title_page(doc)
     page_break(doc)
-    _abstracts(doc, runs)
+    _abstract(doc, runs)
 
     add_front_heading(doc, "Spis treści")
     add_toc(doc)
     page_break(doc)
+    _abbreviations(doc)
 
-    _chapter_1_introduction(doc)
+    _chapter_1_introduction(doc, runs)
     _chapter_2_requirements(doc)
     _chapter_3_theory(doc)
     _chapter_3_equations(doc)
@@ -374,14 +936,14 @@ def build(path: str = "docs/Prosper_Dokumentacja_Techniczna.docx") -> str:
     _chapter_8_models(doc)
     _chapter_9_methodology(doc)
     _chapter_10_results(doc, runs)
-    _chapter_11_verification(doc)
+    _chapter_11_verification(doc, runs)
     _chapter_12_interfaces(doc)
     _chapter_12a_worked_example(doc)
     _chapter_12b_screenshots(doc)
     _chapter_13_limits(doc)
     _chapter_14_summary(doc, runs)
-    _chapter_14_bibliography(doc)
     _lists_of_tables_and_figures(doc)
+    _bibliography(doc)
     _appendix_tests(doc)
     _appendix_cli(doc)
     _appendix_api(doc)
@@ -391,48 +953,113 @@ def build(path: str = "docs/Prosper_Dokumentacja_Techniczna.docx") -> str:
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     doc.save(path)
+    translations.report()
     return path
+
+
+def _set_typeface(style, size: float, *, bold: bool | None = None) -> None:
+    """Set a style in the thesis typeface, black, at *size*, for every script.
+
+    Word prefers a theme font or colour over a named one, so the theme
+    attributes the template puts on its styles are removed, not overridden.
+    """
+    style.font.name = FONT
+    style.font.size = Pt(size)
+    if bold is not None:
+        style.font.bold = bold
+    style.font.color.rgb = BLACK
+    properties = style.element.get_or_add_rPr()
+    fonts = properties.get_or_add_rFonts()
+    for script in ("ascii", "hAnsi", "eastAsia", "cs"):
+        fonts.set(qn(f"w:{script}"), FONT)
+    for theme in ("asciiTheme", "hAnsiTheme", "eastAsiaTheme", "cstheme"):
+        fonts.attrib.pop(qn(f"w:{theme}"), None)
+    colour = properties.find(qn("w:color"))
+    if colour is not None:
+        for theme in ("themeColor", "themeShade", "themeTint"):
+            colour.attrib.pop(qn(f"w:{theme}"), None)
+
+
+def _page_numbers(section) -> None:
+    """A centred page number at the foot of every page but the title page, which
+    is counted without showing its number."""
+    section.different_first_page_header_footer = True
+    paragraph = section.footer.paragraphs[0]
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for kind, value in (("begin", None), ("instr", "PAGE"), ("separate", None),
+                        ("text", "1"), ("end", None)):
+        if kind == "instr":
+            element = OxmlElement("w:instrText")
+            element.set(qn("xml:space"), "preserve")
+            element.text = f" {value} "
+        elif kind == "text":
+            element = OxmlElement("w:t")
+            element.text = value
+        else:
+            element = OxmlElement("w:fldChar")
+            element.set(qn("w:fldCharType"), kind)
+        run = paragraph.add_run()
+        run.font.size = Pt(11)
+        run._r.append(element)
 
 
 # ── front matter ─────────────────────────────────────────────────────────────
 
+def _document_properties(doc: Document) -> None:
+    """What a file browser or a PDF viewer shows before the thesis is opened.
+
+    Word carries these into the exported PDF. Left alone, the python-docx
+    template names the library as the author and dates the file 2013.
+    """
+    properties = doc.core_properties
+    properties.title = THESIS_TITLE
+    properties.subject = "Praca inżynierska"
+    properties.author = AUTHOR
+    properties.keywords = ", ".join(KEYWORDS)
+    properties.comments = ""
+    built = datetime.now(UTC)
+    properties.created = built
+    properties.modified = built
+
+
 def _title_page(doc: Document) -> None:
-    """Until the PJATK template arrives: the usual fields, in the usual order."""
+    """The PJATK title page template, field by field and in its order: faculty,
+    department, specialisation, author, album number, title, kind of thesis,
+    supervisor, and place, month and year of the defence. The university's
+    name stands where the template has its logo."""
 
     def line(text: str, size: float, *, bold: bool = False, italic: bool = False,
-             before: float = 0, after: float = 4, colour=None) -> None:
+             before: float = 0, after: float = 4) -> None:
         paragraph = doc.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         paragraph.paragraph_format.space_before = Pt(before)
         paragraph.paragraph_format.space_after = Pt(after)
+        paragraph.paragraph_format.line_spacing = 1.0
         run = paragraph.add_run(text)
         run.font.size = Pt(size)
         run.bold = bold
         run.italic = italic
-        if colour is not None:
-            run.font.color.rgb = colour
 
-    line(UNIVERSITY, 14, bold=True, before=30)
-    line(f"Kierunek: {FIELD}", 11)
-    line(f"Specjalizacja: {SPECIALISATION}", 11, after=70)
+    line(UNIVERSITY, 15, bold=True, before=20, after=30)
+    line(FACULTY, 13, bold=True)
+    if DEPARTMENT:
+        line(DEPARTMENT, 12)
+    line(f"Specjalizacja: {SPECIALISATION}", 12, after=80)
     line(AUTHOR, 14, bold=True)
-    line(f"Nr albumu {ALBUM_NUMBER}", 11, after=50)
-    line(THESIS_TITLE, 18, bold=True, colour=ACCENT, after=10)
-    line(THESIS_TITLE_EN, 11, italic=True, colour=MUTED, after=50)
+    line(f"Nr albumu {ALBUM_NUMBER}", 12, after=70)
+    line(THESIS_TITLE, 16, bold=True, after=70)
     line("Praca inżynierska", 13, after=4)
-    line(f"Promotor: {SUPERVISOR}", 12, after=110)
-    line(YEAR, 11)
+    if DRAFT:
+        line(f"Wersja robocza z {date.today():%d.%m.%Y}", 11, italic=True)
+    line(f"Promotor: {SUPERVISOR}", 12, before=12, after=120)
+    line(DEFENCE, 12)
 
 
-KEYWORDS_PL = [
-    "uczenie maszynowe", "prognozowanie szeregów czasowych", "kryptowaluty",
-    "hipoteza efektywności rynku", "walidacja krocząca", "kalibracja prognoz",
-    "Temporal Fusion Transformer",
-]
-KEYWORDS_EN = [
-    "machine learning", "time series forecasting", "cryptocurrencies",
-    "efficient market hypothesis", "walk-forward validation", "forecast calibration",
-    "Temporal Fusion Transformer",
+# PJATK: three to five keywords, in alphabetical order, lowercase unless a proper
+# name, none longer than three words.
+KEYWORDS = [
+    "hipoteza efektywności rynku", "kryptowaluty", "prognozowanie szeregów czasowych",
+    "uczenie maszynowe", "walidacja krocząca",
 ]
 
 
@@ -518,15 +1145,6 @@ def architecture_spread(runs: dict) -> dict[str, dict]:
     return spread
 
 
-def learners_beyond_noise(spread: dict[str, dict]) -> list[str]:
-    """Horizons on which the learning architectures lie further apart than a seed moves them."""
-    return [
-        horizon for horizon, cell in spread.items()
-        if cell["noise"] is not None and cell["range_learners"] is not None
-        and cell["range_learners"] > cell["noise"]
-    ]
-
-
 def study_facts(runs: dict) -> dict:
     """The few numbers the abstracts and the summary quote, all read from the artifacts.
 
@@ -564,123 +1182,376 @@ def study_facts(runs: dict) -> dict:
         }
     facts["rank_correlation"] = rank_agreement(runs)[1]
     facts["spread"] = architecture_spread(runs)
-    facts["beyond_noise"] = learners_beyond_noise(facts["spread"])
     return facts
 
 
-def abstract_texts(runs: dict) -> tuple[list[str], list[str]]:
-    """Streszczenie and abstract. Every number in them is read from the runs."""
+# The p-values of section 10.9 come from a longer run of the interval's own
+# resampling: under the same seed its first DEFAULT_RESAMPLES draws are the
+# published interval's. The length is set by the correction, not by taste: B
+# draws cannot give a p below 2 / (B + 1), and Benjamini-Hochberg asks the
+# smallest of ~240 values to clear 0.05 / 240, about 2e-4.
+P_VALUE_RESAMPLES = 20_000
+# A measurement that survives the correction is re-measured with ten times the
+# draws, so that its survival is not a matter of where the resampling stopped.
+PRECISION_RESAMPLES = 200_000
+FALSE_DISCOVERY_RATE = 0.05
+CHANCE = 0.5
+
+_departures_cache: dict[tuple, dict] = {}
+
+
+def _scored(symbol: str, slug: str, horizon: str, columns: list[str]):
+    """The scored rows of one run at one horizon, in the chronological order the
+    evaluation wrote them in - the order the block bootstrap needs."""
+    import polars
+
+    path = f"{REPORT_ROOT}/evaluations/{symbol}/{slug}/predictions_quality.parquet"
+    frame = polars.read_parquet(path, columns=sorted({"horizon", "status", *columns}))
+    return frame.filter((polars.col("status") == "scored") & (polars.col("horizon") == horizon))
+
+
+def _correct(frame) -> tuple[np.ndarray, int]:
+    return (np.asarray([bool(v) for v in frame["correct"].to_list()], dtype=float),
+            int(frame["forward_steps"][0] or 1))
+
+
+def departures(runs: dict) -> dict:
+    """Every distinct measurement tested against a coin flip, with its
+    Benjamini-Hochberg q-value over all of them.
+
+    The intervals are recomputed from the scored rows and compared with the ones
+    the evaluation stored, so a p-value is never read off data that differs
+    from what the tables show. Takes a few minutes, so it is computed once.
+    """
+    key = tuple(sorted((s, m, r["slug"]) for (s, m), v in runs.items() for r in v))
+    if key in _departures_cache:
+        return _departures_cache[key]
+
+    distinct = distinct_runs(runs)
+    measurements, mismatched = [], 0
+    for (symbol, model), entries in sorted(distinct.items()):
+        for run in entries:
+            for horizon in HORIZON_NAMES:
+                stored = (run["by_horizon"].get(horizon) or {}).get("accuracy_ci") or {}
+                frame = _scored(symbol, run["slug"], horizon, ["forward_steps", "correct"])
+                if frame.height == 0:
+                    continue
+                values, block = _correct(frame)
+                interval = accuracy_interval(values.astype(bool), block)
+                if (interval.low, interval.high) != (stored.get("low"), stored.get("high")):
+                    mismatched += 1
+                if not interval.estimable:
+                    continue
+                measurements.append({
+                    "symbol": symbol, "model": model, "slug": run["slug"],
+                    "seed": run["seed"] if len(entries) > 1 else None,
+                    "horizon": horizon, "accuracy": interval.point,
+                    "low": interval.low, "high": interval.high, "block": block,
+                    "p": bootstrap_p_value(values, block, CHANCE, resamples=P_VALUE_RESAMPLES),
+                })
+    for m, q in zip(measurements, benjamini_hochberg([m["p"] for m in measurements])):
+        m["q"] = q
+
+    # The survivors once more, with ten times the draws and with the block doubled.
+    survivors = [i for i, m in enumerate(measurements) if m["q"] < FALSE_DISCOVERY_RATE]
+    precise = [m["p"] for m in measurements]
+    for i in survivors:
+        m = measurements[i]
+        values, block = _correct(_scored(m["symbol"], m["slug"], m["horizon"],
+                                         ["forward_steps", "correct"]))
+        m["p_precise"] = precise[i] = bootstrap_p_value(
+            values, block, CHANCE, resamples=PRECISION_RESAMPLES)
+        m["p_double_block"] = bootstrap_p_value(values, 2 * block, CHANCE,
+                                                resamples=P_VALUE_RESAMPLES)
+    q_precise = benjamini_hochberg(precise)
+    for i in survivors:
+        measurements[i]["q_precise"] = q_precise[i]
+
+    result = {"measurements": measurements, "mismatched": mismatched}
+    _departures_cache[key] = result
+    return result
+
+
+_paired_cache: dict[tuple, list[dict]] = {}
+
+
+def _panel_mean(rows: np.ndarray) -> float:
+    return float(np.nanmean(rows))
+
+
+def paired_differences(runs: dict) -> list[dict]:
+    """Every pair of architectures compared on the same forecasts, per horizon.
+
+    For one instrument and seed the two runs forecast the same bars. On the bars
+    both scored, the difference of their hits - and of their log losses - is one
+    cell of a panel whose rows are dates; the mean over the panel is the
+    difference between the architectures. Its interval is the moving-block
+    bootstrap of section 9.2 drawing whole dates, so every instrument is
+    resampled on the same days and their common movement stays in the interval.
+    A seed-invariant model's identical runs stand in for one another and the
+    baseline's single run for every seed. Benjamini-Hochberg runs over the pairs
+    and horizons of each measure separately.
+    """
+    import polars
+
+    key = tuple(sorted((s, m, r["slug"]) for (s, m), v in runs.items() for r in v))
+    if key in _paired_cache:
+        return _paired_cache[key]
+
+    def run_for(entries: dict[int, dict], seed: int) -> dict | None:
+        return entries.get(seed) or (next(iter(entries.values())) if len(entries) == 1 else None)
+
+    results: list[dict] = []
+    for horizon in HORIZON_NAMES:
+        for first, second in itertools.combinations(MODELS, 2):
+            cells: dict[str, list[dict]] = {"accuracy": [], "log_loss": []}
+            block = 1
+            for symbol in SYMBOLS:
+                a_runs = {r["seed"]: r for r in runs.get((symbol, first), [])}
+                b_runs = {r["seed"]: r for r in runs.get((symbol, second), [])}
+                if not a_runs or not b_runs:
+                    continue
+                for seed in STUDY_SEEDS:
+                    a, b = run_for(a_runs, seed), run_for(b_runs, seed)
+                    if a is None or b is None:
+                        continue
+                    joined = _scored(symbol, a["slug"], horizon,
+                                     ["date", "forward_steps", "correct", "nll"]).join(
+                        _scored(symbol, b["slug"], horizon, ["date", "correct", "nll"]),
+                        on="date", suffix="_b")
+                    if joined.height == 0:
+                        continue
+                    block = int(joined["forward_steps"][0] or 1)
+                    dates = joined["date"].to_list()
+                    hits = (joined["correct"].cast(polars.Float64)
+                            - joined["correct_b"].cast(polars.Float64)).to_list()
+                    losses = (joined["nll"] - joined["nll_b"]).to_list()
+                    cells["accuracy"].append(dict(zip(dates, hits, strict=True)))
+                    cells["log_loss"].append(dict(zip(dates, losses, strict=True)))
+            for measure, series in cells.items():
+                if not series:
+                    continue
+                dates = sorted(set().union(*series))
+                panel = np.array([[cell.get(d, np.nan) for cell in series] for d in dates])
+                interval = block_bootstrap(panel, block, _panel_mean)
+                p_value = (bootstrap_p_value(panel, block, 0.0, _panel_mean,
+                                             resamples=P_VALUE_RESAMPLES)
+                           if interval.estimable else None)
+                results.append({
+                    "horizon": horizon, "first": first, "second": second, "measure": measure,
+                    "difference": interval.point, "low": interval.low, "high": interval.high,
+                    "cells": len(series), "dates": len(dates), "p": p_value, "q": None,
+                })
+    for measure in ("accuracy", "log_loss"):
+        tested = [r for r in results if r["measure"] == measure and r["p"] is not None]
+        for record, q in zip(tested, benjamini_hochberg([r["p"] for r in tested]), strict=True):
+            record["q"] = q
+    _paired_cache[key] = results
+    return results
+
+
+def _side_runs(sides: list) -> float:
+    """Mean length of a stretch of consecutive bars predicting the same side."""
+    changes = sum(1 for a, b in zip(sides, sides[1:]) if a != b)
+    return len(sides) / (changes + 1) if sides else 0.0
+
+
+def _mean_pairwise_correlation(series: dict[str, dict]) -> tuple[float, int]:
+    """Mean correlation over every pair of symbols, on the dates all of them share."""
+    common = set.intersection(*(set(values) for values in series.values()))
+    dates = sorted(common)
+    matrix = np.array([[values[d] for d in dates] for values in series.values()], dtype=float)
+    corr = np.corrcoef(matrix)
+    upper = corr[np.triu_indices(len(series), k=1)]
+    return float(np.mean(upper)), len(dates)
+
+
+def effective_count(n: int, rho: float) -> float:
+    """How many independent series *n* equicorrelated ones are worth for a mean."""
+    return n / (1 + (n - 1) * rho)
+
+
+def baseline_lag(runs: dict, horizon: str = "quarter", symbol: str = "BTCUSDT") -> dict:
+    """What section 10.9 says about the baseline at one horizon: its year-by-year
+    record on one symbol, how long it holds a side, and how much the symbols
+    share."""
+    distinct = distinct_runs(runs)
+    returns, hits, holds, by_year = {}, {}, [], []
+    for name in SYMBOLS:
+        entries = distinct.get((name, "baseline"), [])
+        if not entries:
+            continue
+        frame = _scored(name, entries[0]["slug"], horizon,
+                        ["date", "correct", "pred_direction", "actual_direction", "actual_return"])
+        if frame.height == 0:
+            continue
+        dates = [str(d)[:10] for d in frame["date"].to_list()]
+        returns[name] = dict(zip(dates, frame["actual_return"].to_list()))
+        hits[name] = dict(zip(dates, (float(bool(v)) for v in frame["correct"].to_list())))
+        holds.append(_side_runs(frame["pred_direction"].to_list()))
+        if name == symbol:
+            years: dict[str, list] = defaultdict(list)
+            for date, predicted, actual, correct in zip(
+                dates, frame["pred_direction"].to_list(), frame["actual_direction"].to_list(),
+                frame["correct"].to_list(),
+            ):
+                years[date[:4]].append((predicted == "long", actual == "long", bool(correct)))
+            by_year = [
+                {"year": year, "bars": len(rows),
+                 "predicted_long": float(np.mean([r[0] for r in rows])),
+                 "actual_long": float(np.mean([r[1] for r in rows])),
+                 "accuracy": float(np.mean([r[2] for r in rows]))}
+                for year, rows in sorted(years.items())
+            ]
+    if len(returns) < 2 or not by_year:
+        return {}
+    rho_returns, days = _mean_pairwise_correlation(returns)
+    rho_hits, _ = _mean_pairwise_correlation(hits)
+    slug = distinct[(symbol, "baseline")][0]["slug"]
+    summary = f"{REPORT_ROOT}/predictions/{symbol}/{slug}/run_summary.json"
+    window = {}
+    if os.path.exists(summary):
+        windows = json.load(open(summary, encoding="utf-8")).get("training_windows") or {}
+        window = windows.get(horizon, {})
+    return {
+        "symbols": len(returns), "days": days, "by_year": by_year, "hold": float(np.mean(holds)),
+        "rho_returns": rho_returns, "rho_hits": rho_hits,
+        "window_bars": window.get("window_bars"), "forward_bars": window.get("forward_bars"),
+    }
+
+
+# PJATK's limits for the abstract: at most 1000 characters with spaces under the
+# university-wide rules (the Gdańsk faculty allows 400-1500).
+ABSTRACT_CHARACTERS = (400, 1000)
+
+
+def abstract_text(runs: dict) -> str:
+    """The streszczenie. Every number in it is read from the runs."""
     f = study_facts(runs)
-    week = f["by_horizon"].get("week", {})
-    month = f["by_horizon"].get("month", {})
-
-    powered_above = week.get("above", 0) + month.get("above", 0)
-    powered = week.get("estimable", 0) + month.get("estimable", 0)
-    # One side of a two-sided 95% interval: what chance alone puts above it.
-    expected = round(powered * 0.025)
-    by_chance = powered_above <= 1.5 * expected + 1
-    rho = f["rank_correlation"]
-    horizons = len(f["spread"])
-    within = horizons - len(f["beyond_noise"])
-    deterministic = set(f["seed_invariant"]) == {"ml", "xgboost"}
-
-    polish = [
-        "Praca dotyczy pytania, w jakim stopniu architektury uczenia maszynowego różnego "
-        "rodzaju potrafią przewidzieć kierunek zmiany ceny aktywa wyłącznie na podstawie "
-        "historii jego notowań. W ramach pracy zaprojektowano i zbudowano platformę Prosper, "
-        "obejmującą pozyskiwanie danych giełdy Binance, kontrolę ich jakości, wyznaczanie cech "
-        "i etykiet, trening pięciu architektur - od modelu odniesienia, przez dwie implementacje "
-        "wzmacniania gradientowego (scikit-learn i XGBoost), po sieć rekurencyjną GRU i Temporal "
-        "Fusion Transformer - we wspólnym protokole kroczącym, ocenę regułami oceny właściwej z "
-        "przedziałami ufności uwzględniającymi nakładanie się etykiet oraz symulację handlową "
-        "z czterema hipotezami zerowymi. System udostępnia interfejs wiersza poleceń i panel "
-        "przeglądarkowy.",
-        f"Badanie objęło {f['runs']} przebiegów na {f['symbols']} instrumentach, w czterech "
-        "horyzontach od tygodnia do roku, każdą konfigurację pod trzema ziarnami inicjalizacji"
-        + (". Oba modele gradientowe uczą się deterministycznie, więc różnych pomiarów jest "
-           f"{f['distinct']}. " if deterministic else f"; różnych pomiarów jest {f['distinct']}. ")
-        + "Na horyzontach tygodniowym i miesięcznym, jedynych o wystarczającej mocy "
-        f"statystycznej, trafność istotnie wyższą od losowej dało {powered_above} z {powered} "
-        "pomiarów - "
-        + ("nie więcej, niż przy braku jakiejkolwiek przewagi daje sam przypadek"
-           if by_chance else "więcej, niż przy braku przewagi dałby sam przypadek")
-        + f" (oczekiwanie: około {expected}). Na horyzoncie rocznym liczba obserwacji "
-        "niezależnych nie pozwala na żaden rozstrzygający pomiar. Różnice między "
-        "architekturami uczącymi się mieszczą się w rozrzucie wynikającym z losowej "
-        f"inicjalizacji na {within} z {horizons} horyzontów, a ich ranking zmienia się z "
-        f"horyzontem (średnia korelacja rang {pl(rho, '+.2f')}), więc nie są właściwością "
-        "architektury. Wynik jest zgodny ze słabą formą hipotezy efektywności "
-        "rynku i stanowi górne ograniczenie przewagi możliwej do uzyskania z samych notowań. "
-        "Pozytywnym wynikiem inżynierskim jest kalibracja: system poprawnie raportuje własną "
-        "niepewność.",
-    ]
-    english = [
-        "This thesis asks how well machine learning architectures of different kinds can "
-        "forecast the direction of an asset's price from its quotation history alone. It "
-        "presents Prosper, a platform designed and built for the purpose: it acquires Binance "
-        "market data and checks its quality, derives features and labels, trains five "
-        "architectures - a frequency baseline, gradient-boosted trees from scikit-learn and "
-        "from XGBoost, a GRU recurrent network and a Temporal Fusion Transformer - under one "
-        "walk-forward "
-        "protocol, evaluates them with proper scoring rules and confidence intervals that "
-        "account for overlapping labels, and simulates trading against four null hypotheses. "
-        "It is operated from a command line and a browser dashboard.",
-        f"The study comprises {f['runs']} runs on {f['symbols']} instruments, over four "
-        "horizons from a week to a year, each configuration under three initialisation seeds"
-        + (". Both gradient-boosting models learn deterministically, which leaves "
-           f"{f['distinct']} distinct measurements. " if deterministic
-           else f"; {f['distinct']} of the measurements are distinct. ")
-        + "On the weekly and monthly horizons, the only ones with enough statistical power, "
-        f"{powered_above} of {powered} measurements reached an accuracy significantly above "
-        "chance - "
-        + ("no more than chance alone produces without any edge"
-           if by_chance else "more than chance alone would produce")
-        + f" (about {expected} expected). At the yearly horizon the number of independent "
-        "observations allows no conclusive measurement. The differences between the learning "
-        f"architectures stay within the spread of random initialisation on {within} of "
-        f"{horizons} horizons, and their ranking changes with the horizon (mean rank "
-        f"correlation {rho:+.2f}), so they are not a property of the architecture. The result "
-        "is consistent with the weak form of the "
-        "efficient market hypothesis and bounds the edge obtainable from prices alone. "
-        "Calibration is a positive engineering result: the system reports its own "
-        "uncertainty correctly.",
-    ]
-
-    return polish, english
+    learner = paired_facts(runs)["learner_significant"]
+    higher = [m for m in departures(runs)["measurements"]
+              if m["q"] < FALSE_DISCOVERY_RATE and m["accuracy"] > CHANCE]
+    defects = len(DEFECTS)
+    text = (
+        "Praca bada, czy architektury uczenia maszynowego przewidują kierunek zmiany ceny "
+        "kryptowaluty na podstawie samej historii notowań. W tym celu zbudowano platformę "
+        "Prosper, która pobiera dane giełdy Binance, kontroluje ich jakość, wyznacza cechy i "
+        "etykiety, trenuje pięć architektur - od modelu odniesienia po Temporal Fusion "
+        "Transformer - we wspólnym protokole kroczącym i ocenia prognozy regułami oceny "
+        f"właściwej. W {f['runs']} przebiegach na {f['symbols']} kryptowalutach i czterech "
+        "horyzontach "
+        + ("żadna architektura nie osiągnęła trafności istotnie wyższej od losowej po "
+           "poprawce na wielokrotne porównania" if not higher else
+           f"{len(higher)} "
+           + _plural(len(higher), "pomiar przekroczył", "pomiary przekroczyły",
+                     "pomiarów przekroczyło")
+           + " losowość także po poprawce na wielokrotne porównania")
+        + (", a porównane parami na tych samych prognozach architektury uczące się nie różniły "
+           "się istotnie" if not learner else
+           f", a w porównaniu parami na tych samych prognozach {len(learner)} "
+           + _plural(len(learner), "para architektur uczących się różniła",
+                     "pary architektur uczących się różniły",
+                     "par architektur uczących się różniło") + " się istotnie")
+        + ". Wynik jest zgodny ze słabą formą hipotezy efektywności rynku."
+        + (" Prognozy okazały się przy tym zbyt pewne siebie."
+           if calibration_facts(runs)["overconfident"] else "")
+        + f" Warstwa weryfikacji wykryła {COUNT_WORDS.get(defects, str(defects))} "
+        + _plural(defects, "defekt", "defekty", "defektów")
+        + ", w tym jeden dający pozornie pozytywny wynik."
+    )
+    low, high = ABSTRACT_CHARACTERS
+    if not low <= len(text) <= high:
+        print(f"WARNING: the abstract has {len(text)} characters; PJATK allows {low}-{high}")
+    return text
 
 
-def _abstracts(doc: Document, runs: dict) -> None:
-    """Streszczenie and abstract, each with keywords, before the table of contents."""
-    polish, english = abstract_texts(runs)
-    for heading, text, label, words in (
-        ("Streszczenie", polish, "Słowa kluczowe", KEYWORDS_PL),
-        ("Abstract", english, "Keywords", KEYWORDS_EN),
-    ):
-        add_front_heading(doc, heading)
-        for paragraph_text in text:
-            add_body(doc, paragraph_text)
-        keywords = doc.add_paragraph()
-        keywords.paragraph_format.space_before = Pt(8)
-        lead = keywords.add_run(f"{label}: ")
-        lead.bold = True
-        lead.font.size = Pt(10)
-        rest = keywords.add_run(", ".join(words))
-        rest.font.size = Pt(10)
-        page_break(doc)
+def _abstract(doc: Document, runs: dict) -> None:
+    """The streszczenie with its keywords, before the table of contents. PJATK asks
+    for an abstract in a second language only when the thesis is written in one."""
+    add_front_heading(doc, "Streszczenie")
+    add_body(doc, abstract_text(runs))
+    keywords = doc.add_paragraph()
+    keywords.paragraph_format.space_before = Pt(8)
+    lead = keywords.add_run("Słowa kluczowe: ")
+    lead.bold = True
+    lead.font.size = Pt(BODY_SIZE)
+    rest = keywords.add_run(", ".join(KEYWORDS))
+    rest.font.size = Pt(BODY_SIZE)
+    page_break(doc)
 
 
 def _lists_of_tables_and_figures(doc: Document) -> None:
-    add_front_heading(doc, "Spis rysunków")
-    add_toc(doc, '\\h \\z \\c "Rysunek"')
-    add_front_heading(doc, "Spis tabel")
+    """The two lists PJATK places after the summary, tables first."""
+    add_heading(doc, "Wykaz tabel", 1)
     add_toc(doc, '\\h \\z \\c "Tabela"')
+    page_break(doc)
+    add_heading(doc, "Wykaz rysunków", 1)
+    add_toc(doc, '\\h \\z \\c "Rysunek"')
+    page_break(doc)
+
+
+# The abbreviations the text uses, for the list PJATK puts after the contents.
+ABBREVIATIONS = {
+    "API": "interfejs programistyczny aplikacji (ang. Application Programming Interface)",
+    "CLI": "interfejs wiersza poleceń (ang. Command-Line Interface)",
+    "CORS": "mechanizm zezwoleń na zapytania z innych domen (ang. Cross-Origin Resource "
+            "Sharing)",
+    "CPU": "procesor główny (ang. Central Processing Unit)",
+    "CSS": "kaskadowe arkusze stylów (ang. Cascading Style Sheets)",
+    "CSV": "plik tekstowy z wartościami rozdzielonymi przecinkami (ang. Comma-Separated "
+           "Values)",
+    "CUDA": "platforma obliczeń na procesorach graficznych firmy NVIDIA",
+    "DNS": "system nazw domenowych (ang. Domain Name System)",
+    "ECE": "oczekiwany błąd kalibracji (ang. Expected Calibration Error)",
+    "ES": "ECMAScript, standard języka JavaScript; moduły ES to jego natywne moduły",
+    "GRU": "rekurencyjna sieć z bramkami (ang. Gated Recurrent Unit)",
+    "HTTP": "protokół przesyłania dokumentów hipertekstowych (ang. Hypertext Transfer "
+            "Protocol)",
+    "IP": "protokół internetowy (ang. Internet Protocol); adres IP to adres maszyny w sieci",
+    "ISO": "Międzynarodowa Organizacja Normalizacyjna; data ISO to zapis RRRR-MM-DD",
+    "JS": "dywergencja Jensena-Shannona",
+    "JSON": "tekstowy format wymiany danych (ang. JavaScript Object Notation)",
+    "KL": "dywergencja Kullbacka-Leiblera",
+    "MACD": "wskaźnik zbieżności i rozbieżności średnich kroczących (ang. Moving Average "
+            "Convergence Divergence)",
+    "OBV": "wolumen skumulowany (ang. On-Balance Volume)",
+    "OHLC": "cena otwarcia, maksimum, minimum i zamknięcia świecy (ang. Open, High, Low, "
+            "Close)",
+    "OHLCV": "OHLC wraz z wolumenem (ang. Volume)",
+    "REST": "styl budowy interfejsów sieciowych (ang. Representational State Transfer)",
+    "ROI": "stopa zwrotu z inwestycji (ang. Return on Investment)",
+    "SHA-256": "kryptograficzna funkcja skrótu o długości 256 bitów",
+    "SPOT": "rynek kasowy: transakcje z natychmiastową dostawą aktywa",
+    "TFT": "Temporal Fusion Transformer",
+    "UML": "zunifikowany język modelowania (ang. Unified Modeling Language)",
+    "USDT": "Tether, kryptowaluta powiązana z dolarem amerykańskim; waluta kwotowana par "
+            "badanych instrumentów",
+    "UTC": "uniwersalny czas koordynowany (ang. Coordinated Universal Time)",
+    "WF": "wymaganie funkcjonalne (rozdział 2.2)",
+    "WN": "wymaganie niefunkcjonalne (rozdział 2.3)",
+    "ZIP": "format archiwum z kompresją",
+}
+
+
+def _abbreviations(doc: Document) -> None:
+    add_heading(doc, "Wykaz skrótów", 1)
+    for abbreviation, meaning in sorted(ABBREVIATIONS.items()):
+        paragraph = doc.add_paragraph()
+        paragraph.paragraph_format.left_indent = Cm(2.2)
+        paragraph.paragraph_format.first_line_indent = Cm(-2.2)
+        paragraph.paragraph_format.space_after = Pt(2)
+        paragraph.paragraph_format.tab_stops.add_tab_stop(Cm(2.2))
+        term = paragraph.add_run(abbreviation)
+        term.bold = True
+        term.font.size = Pt(BODY_SIZE)
+        paragraph.add_run("\t" + plain_dashes(meaning)).font.size = Pt(BODY_SIZE)
     page_break(doc)
 
 
 # ── 1 ────────────────────────────────────────────────────────────────────────
 
-def _chapter_1_introduction(doc: Document) -> None:
-    add_heading(doc, "1. Wprowadzenie", 1)
+def _chapter_1_introduction(doc: Document, runs: dict) -> None:
+    add_heading(doc, "1. Wstęp", 1)
 
     add_heading(doc, "1.1. Kontekst", 2)
     add_body(
@@ -708,55 +1579,47 @@ def _chapter_1_introduction(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Ograniczenie do samych notowań nie jest uproszczeniem przyjętym dla wygody. Pytanie "
-        "„czy z historii cen da się przewidzieć cenę” jest treścią słabej formy hipotezy "
-        "efektywności rynku (Fama, 1970) i stanowi jedną z trzech kanonicznych postaci tej "
-        "hipotezy. Analiza fundamentalna należy do formy półsilnej i odpowiada na inne pytanie; "
-        "nie jest bogatszą wersją pytania zadanego tutaj. Praca testuje formę słabą przy użyciu "
-        "architektur, które w chwili jej sformułowania nie istniały.",
+        "Ograniczenie do samych notowań wynika z pytania badawczego. Pytanie, czy z historii "
+        "cen da się przewidzieć cenę, jest treścią słabej formy hipotezy efektywności "
+        "rynku[@fama1970], jednej z jej trzech postaci (rozdział 3.1). Praca testuje formę słabą "
+        "przy użyciu architektur, które w chwili jej sformułowania nie istniały.",
     )
 
     add_heading(doc, "1.3. Teza", 2)
     add_quote(
         doc,
-        "Żadna z badanych architektur uczenia maszynowego nie osiąga w prognozie kierunku ceny "
-        "z samej historii notowań trafności istotnie wyższej od losowej, a wszystkie wypadają "
-        "poniżej reguły opartej na częstości klasy większościowej. Różnice między "
-        "architekturami uczącymi się nie wykraczają wyraźnie poza rozrzut wynikający z losowej "
-        "inicjalizacji, a ich porządek zmienia się wraz z horyzontem, nie odzwierciedlają więc "
-        "właściwości architektury. Orzeczenie tego wymaga warstwy weryfikacji zdolnej odróżnić "
-        "brak różnicy od niedostatecznej dokładności pomiaru.",
+        "Na podstawie samej historii notowań żadna z badanych architektur uczenia maszynowego "
+        "nie prognozuje kierunku zmian cen kryptowalut istotnie trafniej niż losowo, a "
+        "porównane na tych samych prognozach architektury uczące się nie różnią się między "
+        "sobą istotnie.",
     )
     add_body(
         doc,
-        "Teza rozstrzyga trzy rzeczy naraz i warto je rozdzielić. Pierwsza dotyczy poziomu: "
-        "żadna architektura nie przekracza progu losowego, a punktem odniesienia nie jest "
-        "0,500, lecz częstość klasy liczniejszej, ponieważ w badanym okresie klasy nie są "
-        "zrównoważone. Druga dotyczy różnic: między architekturami uczącymi się są one tego "
-        "samego rzędu co szum samej inicjalizacji, więc ranking tych architektur nie ma "
-        "podstaw; wyraźnie odróżnia się jedynie model odniesienia, słabszy od nich na "
-        "horyzontach dłuższych niż tydzień. Trzecia dotyczy trwałości: architektura najlepsza "
-        "na jednym horyzoncie bywa najgorsza na innym - czego należy oczekiwać, gdy różnice "
-        "mieszczą się w szumie.",
+        "Tezę obaliłby pomiar, w którym któraś architektura na horyzoncie o wystarczającej "
+        "mocy statystycznej osiąga trafność istotnie wyższą od losowej, albo w którym dwie "
+        "architektury uczące się, porównane na tych samych świecach, różnią się trafnością "
+        "istotnie - w obu przypadkach także po poprawce na wielokrotne porównania.",
     )
-
     add_body(
         doc,
-        "Zdanie ostatnie tezy jest metodyczne. Stwierdzenie „architektury nie różnią się "
-        "między sobą” jest nieodróżnialne od stwierdzenia „pomiar był zbyt zaszumiony, aby je "
-        "rozróżnić”, dopóki poziom szumu nie zostanie zmierzony. Z tego powodu każdą "
-        "konfigurację uruchomiono wielokrotnie pod różnymi ziarnami generatora liczb losowych, "
-        "a rozdział 10 raportuje rozstęp między architekturami obok rozrzutu wynikającego z "
-        "samej inicjalizacji oraz stabilność rankingu między horyzontami.",
+        "Trafność losowa to 0,5, a obok niej punktem odniesienia jest częstość klasy "
+        "liczniejszej, ponieważ w badanym okresie wzrosty i spadki nie są równie częste "
+        "(rozdział 10.4). Druga część tezy wymaga zmierzenia szumu: stwierdzenie, że "
+        "architektury nie różnią się między sobą, jest nieodróżnialne od stwierdzenia, że "
+        "pomiar był zbyt zaszumiony, aby je rozróżnić, dopóki poziom szumu nie zostanie "
+        "zmierzony. Dlatego architektury porównuje się parami na tych samych świecach, a "
+        "przedział ufności różnicy pokazuje, jak dużą różnicę pomiar by wykrył. Każdą "
+        "konfigurację uruchomiono przy tym pod trzema ziarnami generatora liczb losowych, a "
+        "rozdział 10 zestawia ponadto rozstęp między architekturami z rozrzutem wynikającym z "
+        "samej inicjalizacji i sprawdza, czy kolejność architektur utrzymuje się między "
+        "horyzontami.",
     )
 
     add_heading(doc, "1.4. Uzasadnienie wyboru rynku", 2)
     add_body(
         doc,
-        "Pierwotnym zamiarem był system uniwersalny, obejmujący rynek akcji, walutowy i "
-        "kryptowalut. Zakres ograniczono do kryptowalut z powodów metodologicznych, a nie "
-        "wyłącznie z powodu złożoności implementacji: rynki różnią się w sposób, który wprowadza "
-        "do pomiaru zmienne niezwiązane z badanym modelem.",
+        "Badanie prowadzono na rynku kryptowalut, ponieważ jego budowa pozwala mierzyć "
+        "zachowanie modelu bez zmiennych, które wprowadza sam system obrotu:",
     )
     add_bullets(
         doc,
@@ -778,39 +1641,58 @@ def _chapter_1_introduction(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Wybrano zatem rynek, na którym mierzone jest zachowanie modelu, a nie artefakty "
-        "specyficzne dla danego systemu obrotu. Rozszerzenie na pozostałe rynki pozostaje "
-        "kierunkiem dalszych prac (rozdział 13).",
+        "Rozszerzenie badania na inne rynki wymaga osobnej obsługi każdej z tych różnic i "
+        "należy do kierunków dalszych prac (rozdział 13.2).",
     )
 
     add_heading(doc, "1.5. Twierdzenia szczegółowe", 2)
+    paired = paired_facts(runs) if runs else None
+    calibration_claim = _calibration_claim(runs)
+    correlation = rank_agreement(runs)[1] if runs else float("nan")
+    if paired is None:
+        comparison = ("Różnice między architekturami uczącymi się ocenia test parami na tych "
+                      "samych prognozach (rozdział 10.1).")
+    else:
+        learner, others = paired["learner_significant"], [
+            r for r in paired["significant"] if r not in paired["learner_significant"]]
+        comparison = (
+            ("Porównane parami na tych samych prognozach architektury uczące się nie różnią "
+             "się istotnie po poprawce na wielokrotne porównania"
+             if not learner else
+             f"Porównane parami na tych samych prognozach architektury uczące się różnią się "
+             f"istotnie w {len(learner)} z {paired['learner_tested']} porównań")
+            + (f", a ich kolejność zmienia się wraz z horyzontem, przy średniej korelacji rang "
+               f"{pl(correlation, '+.2f')}" if not math.isnan(correlation) else "")
+            + ". Wybór architektury na podstawie tych wyników nie ma podstaw. "
+            + ("Model odniesienia różni się od nich istotnie w " + str(len(others))
+               + " porównaniach." if others else
+               "Także model odniesienia nie różni się istotnie od żadnej z nich.")
+        )
     add_bullets(
         doc,
         [
             "Żadna z pięciu badanych architektur nie osiąga trafności kierunkowej istotnie "
-            "większej od losowej na horyzoncie o wystarczającej mocy statystycznej. Jest to "
-            "wynik ograniczony od góry, a nie twierdzenie o niemożliwości prognozowania.",
-            "Różnice między architekturami uczącymi się są tego samego rzędu co rozrzut "
-            "wynikający z ziarna inicjalizacji, a ranking architektur zmienia się wraz z "
-            "horyzontem, przy korelacji rang bliskiej zeru. Wybór architektury na podstawie tych "
-            "wyników nie ma podstaw; wyraźnie odróżnia się jedynie model odniesienia, słabszy od "
-            "pozostałych na horyzontach dłuższych niż tydzień.",
+            "większej od losowej na horyzoncie o wystarczającej mocy statystycznej. Wynik "
+            "dotyczy badanych konfiguracji, dziewięciu instrumentów i lat 2020-2026: o modelach "
+            "większych, inaczej strojonych albo uczonych na innych danych nie rozstrzyga.",
+            comparison,
             "Trafność pojedynczego przebiegu obarczona jest szumem inicjalizacji, którego "
             "przedział ufności liczony wewnątrz tego przebiegu nie obejmuje. Każdą "
             "konfigurację uruchomiono zatem trzykrotnie, pod różnymi ziarnami. Dla obu modeli "
             "gradientowych ziarno nie zmienia wyniku - uczą się bez podpróbkowania - więc szum "
             "inicjalizacji mierzą wyłącznie GRU i TFT.",
-            "Kalibracja prognoz jest osiągalna tam, gdzie trafność nie jest: system poprawnie "
-            "raportuje własną niepewność, co stanowi osobny, pozytywny wynik inżynierski.",
-            "Wiążącym ograniczeniem jest liczba niezależnych obserwacji, nie pojemność modelu. "
-            "Wynika ona z arytmetyki nakładających się etykiet i nie podlega strojeniu.",
+            calibration_claim,
+            "Moc oceny i dokładność kalibracji ogranicza liczba niezależnych obserwacji, którą "
+            "w przybliżeniu wyznacza iloraz liczby świec i długości horyzontu. Wynika ona z "
+            "nakładania się etykiet, więc jest taka sama dla każdego modelu i nie zależy od "
+            "jego konfiguracji.",
             "Symulacja handlowa nie jest miarą jakości prognozy. Ten sam przebieg pod różnymi "
             "politykami ekspozycji daje wyniki rozpięte od głębokiej straty do wielokrotnego "
             "zysku, więc może służyć wyłącznie jako kontekst ekonomiczny.",
         ],
     )
 
-    add_heading(doc, "1.6. Struktura dokumentu", 2)
+    add_heading(doc, "1.6. Struktura pracy", 2)
     add_table(
         doc,
         ["Rozdział", "Zawartość"],
@@ -834,7 +1716,7 @@ def _chapter_1_introduction(doc: Document) -> None:
         ],
         [2.5, 13.5],
     )
-    add_caption(doc, "Tabela", "Układ dokumentu.")
+    add_caption(doc, "Tabela", "Układ pracy.")
     page_break(doc)
 
 
@@ -891,7 +1773,7 @@ def _chapter_2_requirements(doc: Document) -> None:
         "Rozdział ten podaje zatem wymagania w trzech zestawieniach: funkcjonalne "
         "(podrozdział 2.2), niefunkcjonalne (2.3) oraz osobno te, które wyprowadzono w trakcie "
         "badania wraz ze wskazaniem, co je wymusiło (2.4). Podrozdział 2.5 wyznacza granice "
-        "zakresu, czyli zadania świadomie pozostawione poza systemem, a 2.6 podaje kryteria "
+        "zakresu, czyli zadania, które nie należą do systemu, a 2.6 podaje kryteria "
         "akceptacji wraz z ich obecnym stanem. Numeracja wymagań jest przywoływana w dalszych "
         "rozdziałach tam, gdzie opisywana jest realizacja.",
     )
@@ -902,10 +1784,7 @@ def _chapter_2_requirements(doc: Document) -> None:
         "Wymagania funkcjonalne opisują, co system ma robić. Uporządkowano je zgodnie z "
         "kolejnością etapów potoku przetwarzania, ponieważ taka jest też kolejność zależności: "
         "żaden etap nie może zostać zrealizowany przed poprzednim. Kolumna Weryfikacja wskazuje "
-        "moduł testowy, na podstawie którego można stwierdzić spełnienie wymagania. Nazwy w tej "
-        "kolumnie sprawdzane są przy generowaniu dokumentu wobec zawartości katalogu testów: "
-        "odwołanie do modułu, którego nie ma, przerywa budowę, ponieważ wymaganie wskazujące "
-        "nieistniejący test czyta się jako pokryte i jest gorsze od wymagania bez testu.",
+        "moduł testowy, na podstawie którego można stwierdzić spełnienie wymagania.",
     )
     add_table(
         doc,
@@ -973,7 +1852,8 @@ def _chapter_2_requirements(doc: Document) -> None:
             ["WF-12",
              "Ocena przebiegu regułami oceny właściwej wraz z przedziałami ufności "
              "uwzględniającymi nakładanie się etykiet.",
-             "prosper eval predictions; trafność, Brier, logloss, ECE, bootstrap blokowy",
+             "prosper eval predictions; trafność, wynik Briera, strata logarytmiczna, ECE, "
+             "bootstrap blokowy",
              _verified_by("test_prediction_evaluation.py", "test_significance.py")],
             ["WF-13",
              "Ocena stabilności prognozy w czasie, w podziale na miesiące, z oznaczeniem "
@@ -1029,13 +1909,25 @@ def _chapter_2_requirements(doc: Document) -> None:
              _verified_by("test_data_manager.py", "test_inventory_cache.py")],
         ],
         [1.5, 5.2, 4.4, 4.4],
-        font=8,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
         "Wymagania funkcjonalne. Kolumna Realizacja wskazuje polecenie lub moduł, kolumna "
         "Weryfikacja - moduł testowy, który sprawdza spełnienie. Pełny inwentarz testów wraz z "
         "opisem każdego przypadku zawiera załącznik A.",
+    )
+    add_body(
+        doc,
+        "Rysunek poniżej zestawia te same wymagania jako przypadki użycia: pokazuje, które "
+        "czynności inicjuje badacz, które sięgają do zewnętrznych źródeł danych i które są "
+        "częścią innych.",
+    )
+    add_diagram(
+        doc, "przypadki_uzycia",
+        "Diagram przypadków użycia. W nawiasach numery wymagań funkcjonalnych z tabeli "
+        "powyżej. Relacja «include» oznacza czynność wykonywaną zawsze w ramach innej, a "
+        "«extend» - wykonywaną opcjonalnie.",
     )
 
     add_heading(doc, "2.3. Wymagania niefunkcjonalne", 2)
@@ -1150,7 +2042,7 @@ def _chapter_2_requirements(doc: Document) -> None:
              _verified_by("test_walk_forward.py", "test_train_window.py")],
         ],
         [1.5, 5.2, 4.6, 4.2],
-        font=8,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
@@ -1163,10 +2055,9 @@ def _chapter_2_requirements(doc: Document) -> None:
     add_body(
         doc,
         "Poniższe zestawienie podaje wymagania, których nie dało się sformułować przed "
-        "uruchomieniem systemu, wraz z obserwacją, która je wymusiła. Zestawienie to jest "
-        "elementem metodyki, nie kroniką pomyłek: w każdym z tych przypadków wcześniejsze "
-        "brzmienie wymagania było wewnętrznie spójne i dawało wyniki wyglądające poprawnie. "
-        "Właśnie dlatego wykrycie wymagało pomiaru, a nie przeglądu kodu.",
+        "uruchomieniem systemu, wraz z obserwacją, która je wymusiła. W każdym z tych "
+        "przypadków wcześniejsze brzmienie wymagania było wewnętrznie spójne i dawało wyniki "
+        "wyglądające poprawnie, dlatego wykrycie wymagało pomiaru, a nie przeglądu kodu.",
     )
     add_table(
         doc,
@@ -1223,14 +2114,26 @@ def _chapter_2_requirements(doc: Document) -> None:
              "Przy zbyt wąskim oknie dwa horyzonty zwracały stały rozkład, a warstwa oceny "
              "punktowała tę stałą jako prognozę.",
              "11.2"],
+            ["Wycinek kalibracyjny oddzielony jest od wierszy uczących przerwą jednego "
+             "horyzontu.",
+             "Wycinek przylegający do części uczącej.",
+             "Etykiety ostatnich wierszy uczących liczono z cen z okresu wycinka, więc "
+             "kalibrator i reguła zatrzymania oceniały model na wynikach, na których się uczył.",
+             "11.8"],
+            ["Siatka temperatur sięga 1000, aby kalibrator mógł spłaszczyć prognozę bez "
+             "umiejętności.",
+             "Siatka od 0,5 do 10.",
+             "Temperatura stawała na granicy siatki w większości okien, a prognozy pozostawały "
+             "zbyt pewne mimo kalibracji.",
+             "11.8"],
         ],
         [4.4, 3.4, 6.0, 1.7],
-        font=8,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
         "Wymagania wyprowadzone z pomiaru. Kolumna Opis wskazuje podrozdział zawierający pełne "
-        "omówienie. Wspólną cechą tych ośmiu przypadków jest to, że brzmienie pierwotne nie "
+        "omówienie. Wspólną cechą tych dziesięciu przypadków jest to, że brzmienie pierwotne nie "
         "powodowało awarii - powodowało wynik, i to zwykle wynik lepszy od prawdziwego.",
     )
     add_body(
@@ -1247,10 +2150,8 @@ def _chapter_2_requirements(doc: Document) -> None:
     add_heading(doc, "2.5. Granice zakresu", 2)
     add_body(
         doc,
-        "Poniższe zadania pozostawiono świadomie poza systemem. Każde z nich jest wykonalne, a "
-        "część była rozważana na wczesnym etapie; podanie powodu rezygnacji jest istotniejsze "
-        "od samej listy, ponieważ w kilku przypadkach powodem jest wynik pomiaru, nie brak "
-        "czasu.",
+        "Tabela poniżej wymienia zadania, które nie należą do systemu, wraz z powodem każdej "
+        "z tych decyzji.",
     )
     add_table(
         doc,
@@ -1266,12 +2167,10 @@ def _chapter_2_requirements(doc: Document) -> None:
              "podejmowania na jej podstawie decyzji finansowych, a moduł wykonawczy "
              "sugerowałby, że jest odwrotnie."],
             ["Obsługa rynków innych niż kryptowaluty: akcje, kontrakty terminowe, waluty.",
-             "Zamierzenie pierwotne obejmowało system uniwersalny. Zrezygnowano z niego, gdy "
-             "okazało się, że różnice w kalendarzu notowań, godzinach sesji, podziałach akcji "
-             "i dostępności danych historycznych wymagają osobnej warstwy pozyskiwania dla "
-             "każdego rynku. Wykonanie jednego rynku rzetelnie ma większą wartość niż czterech "
-             "powierzchownie. Sam potok jest jednak od rynku niezależny - opisano to jako "
-             "kierunek dalszych prac w rozdziale 13.2."],
+             "Różnice w kalendarzu notowań, godzinach sesji, podziałach akcji i dostępności "
+             "danych historycznych wymagają osobnej warstwy pozyskiwania danych dla każdego "
+             "rynku (rozdział 1.4). Sam potok jest od rynku niezależny, więc rozszerzenie "
+             "dotyczy tylko tej warstwy (rozdział 13.2)."],
             ["Dane z arkusza zleceń i mikrostruktura rynku.",
              "Binance Public Data udostępnia archiwa arkusza w rozdzielczości, przy której "
              "kilka lat historii dla jednego symbolu przekracza rozmiar całego obecnego "
@@ -1281,7 +2180,7 @@ def _chapter_2_requirements(doc: Document) -> None:
              "Wymagałaby wiarygodnej prognozy jako danych wejściowych. Jest to zadanie "
              "następujące po rozstrzygnięciu pytania badawczego, nie równoległe do niego."],
             ["Automatyczny dobór hiperparametrów.",
-             "Przy zmierzonej liczbie obserwacji niezależnych przeszukiwanie przestrzeni "
+             "Przy tak małej liczbie obserwacji niezależnych przeszukiwanie przestrzeni "
              "hiperparametrów wybrałoby konfigurację najlepiej dopasowaną do szumu okresu "
              "oceny. Zestawy parametrów są zatem ustalone i wspólne dla wszystkich symboli."],
             ["Prognoza wielkości ruchu jako pojedynczej wartości liczbowej.",
@@ -1293,23 +2192,21 @@ def _chapter_2_requirements(doc: Document) -> None:
              "zwiększyłaby objętość kodu bez związku z pytaniem badawczym."],
         ],
         [5.2, 10.8],
-        font=8.5,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
-        "Granice zakresu wraz z uzasadnieniem. Trzy pierwsze pozycje odpowiadają decyzjom "
-        "podjętym w trakcie projektu, pozostałe - przyjętym od początku.",
+        "Granice zakresu wraz z uzasadnieniem.",
     )
 
     add_heading(doc, "2.6. Kryteria akceptacji", 2)
     add_body(
         doc,
         "Kryteria akceptacji sformułowano tak, aby dało się je rozstrzygnąć pomiarem, a nie "
-        "oceną. Warto zwrócić uwagę, że żadne z nich nie odnosi się do trafności prognozy. "
-        "Byłoby to kryterium nierozstrzygalne w chwili formułowania i zarazem zachęta do "
-        "powtarzania pomiaru aż do uzyskania wartości oczekiwanej - czyli dokładnie ten sposób "
-        "pracy, którego cała metodyka rozdziału 9 ma unikać. System jest zdatny wtedy, gdy "
-        "mierzy poprawnie, niezależnie od tego, co zmierzy.",
+        "oceną. Dotyczą one poprawności pomiaru, a nie jego wyniku: system jest zdatny wtedy, "
+        "gdy mierzy poprawnie, niezależnie od tego, co zmierzy. Dzięki temu wynik badania nie "
+        "wpływa na ocenę systemu i nie ma powodu powtarzać pomiaru do uzyskania oczekiwanej "
+        "wartości, czego metodyka rozdziału 9 ma unikać.",
     )
     _acceptance_criteria(doc)
     page_break(doc)
@@ -1325,7 +2222,8 @@ def _acceptance_criteria(doc: Document) -> None:
         ["Kryterium", "Miara", "Stan"],
         [
             ["Komplet testów przechodzi bez błędów.",
-             f"pytest; {len(modules)} modułów, {cases} udokumentowanych przypadków",
+             f"pytest; {len(modules)} {_plural(len(modules), 'moduł', 'moduły', 'modułów')}, "
+             f"{cases} {_plural(cases, 'udokumentowany przypadek', 'udokumentowane przypadki', 'udokumentowanych przypadków')}",
              "spełnione"],
             ["Kontrola statyczna nie zgłasza uwag.",
              "ruff check .",
@@ -1361,11 +2259,11 @@ def _acceptance_criteria(doc: Document) -> None:
              "spełnione"],
         ],
         [6.4, 6.2, 3.4],
-        font=8.5,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
-        "Kryteria akceptacji wraz ze stanem na dzień wygenerowania dokumentu. Odtwarzalność "
+        "Kryteria akceptacji wraz z ich obecnym stanem. Odtwarzalność "
         "co do bajtu zweryfikowano dla każdej architektury, w tym obu sieci neuronowych, na "
         "procesorze CPU, na którym policzono wszystkie wyniki, przy stałej liczbie wątków "
         "(rozdział 9.6). Na procesorze "
@@ -1384,7 +2282,8 @@ def _chapter_3_theory(doc: Document) -> None:
         doc,
         "Hipoteza efektywności rynku orzeka, że ceny odzwierciedlają dostępne informacje, przez "
         "co systematyczne osiąganie ponadprzeciętnych stóp zwrotu na podstawie tych informacji "
-        "jest niemożliwe. Fama wyróżnił trzy formy, różniące się zakresem zbioru informacyjnego.",
+        "jest niemożliwe. Fama[@fama1970] wyróżnił trzy formy, różniące się zakresem zbioru "
+        "informacyjnego.",
     )
     add_table(
         doc,
@@ -1402,12 +2301,13 @@ def _chapter_3_theory(doc: Document) -> None:
         ],
         [2.2, 4.5, 5.0, 4.3],
     )
-    add_caption(doc, "Tabela", "Trzy formy hipotezy efektywności rynku wg Famy (1970).")
+    add_caption(doc, "Tabela", "Trzy formy hipotezy efektywności rynku.",
+                source="opracowanie własne na podstawie: [@fama1970]")
     add_body(
         doc,
-        "Badanie ograniczone do historii notowań testuje formę słabą. Nie jest to wersja uboższa "
-        "badania fundamentalnego, lecz inne pytanie: forma słaba pyta, czy w samym szeregu "
-        "cenowym pozostaje struktura możliwa do wykorzystania. Odrzucenie tej hipotezy wymagałoby "
+        "Badanie ograniczone do historii notowań testuje formę słabą, która pyta, czy w samym "
+        "szeregu cenowym pozostaje struktura możliwa do wykorzystania. Odrzucenie tej hipotezy "
+        "wymagałoby "
         "wykazania przewagi istotnie większej od losowej; jej nieodrzucenie - co jest wynikiem "
         "niniejszej pracy - nie dowodzi jej prawdziwości, lecz wyznacza górne ograniczenie na "
         "wielkość ewentualnej przewagi.",
@@ -1417,7 +2317,7 @@ def _chapter_3_theory(doc: Document) -> None:
     add_body(
         doc,
         "Szeregi zwrotów aktywów wykazują zbiór własności powtarzalnych na różnych rynkach i "
-        "w różnych okresach, zebranych i usystematyzowanych przez Conta (2001). Cztery z nich "
+        "w różnych okresach, zebranych i usystematyzowanych przez Conta[@cont2001]. Cztery z nich "
         "mają bezpośredni wpływ na konstrukcję opisywanego systemu.",
     )
     add_bullets(
@@ -1447,32 +2347,38 @@ def _chapter_3_theory(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Nie wprowadzono klasy „bez zmiany”. Próg oddzielający ruch istotny od nieistotnego "
-        "byłby dodatkowym, arbitralnym parametrem badania, a jego wartość wpływałaby na "
-        "raportowaną trafność. Wielkość ruchu jest natomiast prognozowana osobno, jako rozkład "
-        "na kubełkach głębokości (rozdział 7).",
+        "Klasy są dwie, ponieważ każdy próg oddzielający ruch istotny od nieistotnego byłby "
+        "dodatkowym, arbitralnym parametrem badania, a jego wartość wpływałaby na raportowaną "
+        "trafność. Wielkość ruchu prognozowana jest osobno, jako rozkład na kubełkach "
+        "głębokości (rozdział 7).",
     )
 
     add_heading(doc, "3.4. Reguły oceny właściwej", 2)
     add_body(
         doc,
-        "Regułą właściwą (Gneiting i Raftery, 2007) nazywamy funkcję oceny prognozy "
+        "Regułą właściwą[@gneiting2007] nazywamy funkcję oceny prognozy "
         "probabilistycznej, która osiąga "
         "optimum wtedy i tylko wtedy, gdy prognoza podaje prawdziwe prawdopodobieństwo. Reguła "
         "niewłaściwa nagradza zniekształcanie prognozy - na przykład sama trafność nagradza "
-        "deklarowanie skrajnej pewności.",
+        "deklarowanie skrajnej pewności. System stosuje dwie reguły właściwe: wynik "
+        "Briera[@brier1950], czyli sumę kwadratów różnic między prawdopodobieństwami obu klas a "
+        "wynikiem, uśrednioną po prognozach, oraz stratę logarytmiczną, nazywaną też "
+        "entropią krzyżową - średnią ujemnego "
+        "logarytmu prawdopodobieństwa, które model przypisał klasie, która wystąpiła. Obok nich "
+        "raportuje trafność i oczekiwany błąd kalibracji.",
     )
     add_table(
         doc,
         ["Miara", "Definicja", "Zakres", "Interpretacja"],
         [
-            ["Trafność", "udział poprawnie wskazanych kierunków", "0–1",
+            ["Trafność", "udział poprawnie wskazanych kierunków", "0-1",
              "niewłaściwa, ale bezpośrednio interpretowalna"],
-            ["Brier", "średni kwadrat różnicy prognozy i wyniku", "0–1",
-             "właściwa; kwadratowa kara za pewność błędną"],
-            ["Logarytmiczna", "średnia ujemnego logarytmu prawdopodobieństwa trafnej klasy",
-             "0–∞", "właściwa; kara nieograniczona"],
-            ["ECE", "średnia rozbieżność deklarowanej pewności i częstości trafień", "0–1",
+            ["Wynik Briera", "suma po obu klasach kwadratów różnic prognozy i wyniku", "0-2",
+             "właściwa; kwadratowa kara za pewność błędną; prognoza 0,5 daje 0,5"],
+            ["Strata logarytmiczna (entropia krzyżowa)",
+             "średnia ujemnego logarytmu prawdopodobieństwa klasy, która wystąpiła",
+             "0-∞", "właściwa; kara nieograniczona"],
+            ["ECE", "średnia rozbieżność deklarowanej pewności i częstości trafień", "0-1",
              "mierzy kalibrację, nie zdolność rozróżniania"],
         ],
         [2.6, 6.2, 1.8, 5.4],
@@ -1488,14 +2394,17 @@ def _chapter_3_theory(doc: Document) -> None:
     )
 
     add_heading(doc, "3.5. Kalibracja probabilistyczna", 2)
-    add_figure(doc, "niezawodnosc", "Krzywe niezawodności: deklarowana pewność wobec zrealizowanej częstości trafień, zbiorczo po wszystkich przebiegach. Przekątna oznacza kalibrację doskonałą.")
     add_body(
         doc,
         "Kalibracja to zgodność deklarowanej pewności z rzeczywistą częstością: spośród świec, "
         "którym model przypisał prawdopodobieństwo 0,6, mniej więcej sześćdziesiąt procent "
-        "powinno zrealizować prognozowany kierunek. System stosuje skalowanie temperaturą - "
-        "jednoparametrową transformację logitów, która zmienia ostrość rozkładu, nie zmieniając "
-        "porządku klas.",
+        "powinno zrealizować prognozowany kierunek. System stosuje skalowanie "
+        "temperaturą[@guo2017]. Działa ono na logitach, czyli surowych wynikach modelu sprzed "
+        "zamiany na prawdopodobieństwa; dla dwóch klas logit to logarytm ilorazu szans, "
+        "ln(p / (1 − p)). Skalowanie dzieli logity przez jeden parametr, temperaturę T: przy "
+        "T > 1 rozkład spłaszcza się w stronę równych prawdopodobieństw, przy T < 1 wyostrza "
+        "się, a kolejność klas się nie zmienia. Temperaturę wybiera się tak, aby strata "
+        "logarytmiczna na danych odłożonych z uczenia była najmniejsza.",
     )
     add_body(
         doc,
@@ -1517,10 +2426,12 @@ def _chapter_3_theory(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Bootstrap blokowy (Künsch, 1989; Politis i Romano, 1994) losuje ciągi kolejnych "
-        "obserwacji o długości równej rozpiętości "
-        "horyzontu, dzięki czemu zachowuje zależność wewnątrz bloku i szacuje wariancję, która "
-        "nie jest zaniżona. Efektywna liczba obserwacji wynosi w przybliżeniu liczbę świec "
+        "Bootstrap blokowy[@kunsch1989] losuje ciągi kolejnych obserwacji o stałej długości - "
+        "w tym systemie równej rozpiętości horyzontu - dzięki czemu zachowuje zależność "
+        "wewnątrz bloku i szacuje wariancję, która nie jest zaniżona. Odmiana "
+        "stacjonarna[@politis1994] losuje bloki o losowej długości; system stosuje bloki stałe, "
+        "ponieważ zasięg zależności między etykietami jest znany i równy rozpiętości "
+        "horyzontu. Efektywna liczba obserwacji wynosi w przybliżeniu liczbę świec "
         "podzieloną przez rozpiętość horyzontu; poniżej dziesięciu bloków system odmawia podania "
         "przedziału zamiast podać przedział fałszywie wąski.",
     )
@@ -1531,15 +2442,25 @@ def _chapter_3_theory(doc: Document) -> None:
 
 def _chapter_4_architecture(doc: Document) -> None:
     add_heading(doc, "4. Architektura systemu", 1)
+    add_body(
+        doc,
+        "System działa na jednym komputerze i korzysta z dwóch publicznych usług giełdy "
+        "Binance. Badacz obsługuje go z przeglądarki albo bezpośrednio z wiersza poleceń; obie "
+        "drogi prowadzą do tych samych poleceń i tego samego jeziora danych.",
+    )
+    add_diagram(
+        doc, "kontekst",
+        "Kontekst systemu. Panel nie wykonuje obliczeń: serwer przekłada formularze na "
+        "polecenia wiersza poleceń i uruchamia je kolejno jako podprocesy.",
+    )
 
     add_heading(doc, "4.1. Potok przetwarzania", 2)
     add_body(
         doc,
         "System realizuje potok o ośmiu etapach. Każdy etap zapisuje wersjonowany artefakt na "
-        "dysku, a każdy kolejny etap wskazuje artefakt źródłowy po nazwie. Nie istnieje "
-        "współdzielony katalog „najnowszych” wyników - wcześniejsza wersja systemu taki katalog "
-        "miała i skutkowało to przypisywaniem wyników ostatnio uruchomionego modelu wszystkim "
-        "pozostałym (rozdział 11).",
+        "dysku, a każdy kolejny etap wskazuje artefakt źródłowy po nazwie, więc wynik zawsze "
+        "należy do przebiegu, który go wytworzył. Wspólny katalog najnowszych wyników "
+        "przypisywał wyniki ostatnio uruchomionego modelu wszystkim pozostałym (rozdział 11.3).",
     )
     add_table(
         doc,
@@ -1562,6 +2483,11 @@ def _chapter_4_architecture(doc: Document) -> None:
         [2.3, 3.4, 5.0, 5.6],
     )
     add_caption(doc, "Tabela", "Etapy potoku, ich wejścia i artefakty.")
+    add_diagram(
+        doc, "potok",
+        "Diagram aktywności potoku przetwarzania. Cztery etapy weryfikacji czytają ten sam "
+        "przebieg niezależnie od siebie; ranking zestawia przebiegi, które przeszły ocenę.",
+    )
 
     add_heading(doc, "4.2. Warstwy", 2)
     add_bullets(
@@ -1593,6 +2519,12 @@ def _chapter_4_architecture(doc: Document) -> None:
             "innych domen i odrzuca nagłówek Host wskazujący inną maszynę.",
         ],
     )
+    add_diagram(
+        doc, "komponenty",
+        "Diagram komponentów. Strzałka oznacza zależność wywołania. Serwer HTTP woła "
+        "bezpośrednio tylko lekkie operacje - stabilność, symulację i inwentarz - a wszystko, "
+        "co trwa dłużej, uruchamia przez wiersz poleceń.",
+    )
 
     add_heading(doc, "4.3. Decyzje technologiczne", 2)
     add_table(
@@ -1620,14 +2552,19 @@ def _chapter_4_architecture(doc: Document) -> None:
              "ekosystemu pakietów JavaScript.",
              "Brak transpilacji ogranicza użycie najnowszej składni."],
             ["Typer jako warstwa wiersza poleceń",
-             "Deklaratywne definicje poleceń z typowaniem; pomoc generowana z sygnatur, dzięki "
-             "czemu referencja w załączniku B jest odczytem, a nie przepisaniem.",
+             "Deklaratywne definicje poleceń z typowaniem; pomoc i walidacja argumentów "
+             "wynikają z sygnatur funkcji.",
              "Domyślne wartości obowiązują tylko przy nieobecności flagi, co wymaga ostrożności "
              "w warstwie API."],
         ],
         [3.6, 7.4, 5.0],
     )
     add_caption(doc, "Tabela", "Decyzje architektoniczne wraz z ich kosztem.")
+    add_diagram(
+        doc, "wdrozenie",
+        "Diagram wdrożenia. Serwer i wątek roboczy kolejki działają w jednym procesie, a każde "
+        "polecenie z kolejki - w osobnym podprocesie, jedno po drugim.",
+    )
 
     add_heading(doc, "4.4. Wersjonowanie artefaktów", 2)
     add_body(
@@ -1635,7 +2572,7 @@ def _chapter_4_architecture(doc: Document) -> None:
         "Każdy przebieg prognozy zapisywany jest w katalogu o nazwie złożonej z modelu, "
         "interwału i znacznika czasu. Wszystkie artefakty pochodne - ocena, stabilność, "
         "rekomendacje, symulacja - powstają w katalogach o tej samej nazwie, w osobnych "
-        "drzewach. Dzięki temu każda liczba w dokumentacji daje się prześledzić wstecz do "
+        "drzewach. Dzięki temu każda liczba w pracy daje się prześledzić wstecz do "
         "przebiegu, który ją wytworzył.",
     )
     add_code(
@@ -1656,6 +2593,12 @@ def _chapter_4_architecture(doc: Document) -> None:
         "Usunięcie przebiegu usuwa wszystkie jego artefakty pochodne. W przeciwnym razie "
         "narzędzie przeglądające drzewo ocen raportowałoby wyniki przebiegu, którego predykcje "
         "już nie istnieją, obok wyników bieżących.",
+    )
+    add_diagram(
+        doc, "artefakty",
+        "Model artefaktów. Romb oznacza kompozycję: artefakt pochodny istnieje tylko razem z "
+        "przebiegiem, z którego powstał. Linie przerywane wskazują, z czego dany artefakt "
+        "wyznaczono.",
     )
     page_break(doc)
 
@@ -1740,11 +2683,11 @@ def _chapter_5_data(doc: Document) -> None:
         )
         add_caption(
             doc, "Tabela",
-            "Zakres danych dziennych w jeziorze danych, zmierzony w chwili budowania dokumentu. "
+            "Zakres danych dziennych w jeziorze danych. "
             "Symbole o krótszej historii ograniczają horyzont roczny (rozdział 9.3).",
         )
     else:
-        add_body(doc, "Jezioro danych jest puste — uruchom etap pobrania.", italic=True)
+        add_body(doc, "Jezioro danych jest puste - uruchom etap pobrania.", italic=True)
     page_break(doc)
 
 
@@ -1756,9 +2699,10 @@ def _chapter_6_features(doc: Document) -> None:
     add_heading(doc, "6.1. Zasada: niezmienniczość względem skali", 2)
     add_body(
         doc,
-        "Zbiór cech treningowych jest listą włączającą, nie wykluczającą. Wcześniejsza wersja "
-        "przekazywała modelowi każdą kolumnę poza kilkoma nazwanymi wyjątkami, przez co do "
-        "wejścia trafiały bezwzględne poziomy cen. Przy jednym instrumencie było to nieszkodliwe, "
+        "Zbiór cech treningowych jest listą włączającą: model widzi tylko kolumny wymienione "
+        "z nazwy. Lista wykluczająca, przekazująca modelowi każdą kolumnę poza kilkoma "
+        "nazwanymi wyjątkami, wpuszczała do wejścia bezwzględne poziomy cen. Przy jednym "
+        "instrumencie było to nieszkodliwe, "
         "ponieważ normalizacja usuwa poziom; przy uczeniu na kilku instrumentach naraz stawało "
         "się etykietą instrumentu - zmierzone różnice sięgały 553-krotności dla średniej "
         "kroczącej i 387-krotności dla histogramu MACD.",
@@ -1778,26 +2722,61 @@ def _chapter_6_features(doc: Document) -> None:
         by_group[feature.group].append(feature)
     add_body(
         doc,
-        f"Model odczytuje {len(catalogue)} kolumn, zgrupowanych poniżej według rodzaju "
-        "informacji. Nazwy pochodzą wprost z definicji w kodzie, więc katalog nie może "
-        "rozminąć się z tym, co modele faktycznie czytają.",
+        f"Model odczytuje {len(catalogue)} kolumn w {len(by_group)} grupach według rodzaju "
+        "informacji.",
     )
-    for group in sorted(by_group):
-        add_heading(doc, f"6.2.{sorted(by_group).index(group) + 1}. {group}", 3)
-        add_table(
-            doc,
-            ["Kolumna", "Opis"],
-            [[f.name, f.description] for f in by_group[group]],
-            [4.5, 11.5],
+    try:
+        from documentation_diagrams import render_source
+
+        picture = render_source("cechy", _feature_map_source(by_group, len(catalogue)))
+    except Exception as error:  # Java or PlantUML absent and nothing rendered before
+        print(f"[diagrams] feature map skipped: {error}")
+        picture = None
+    if picture:
+        _embed_diagram(
+            doc, picture,
+            f"Mapa {len(catalogue)} cech treningowych w {len(by_group)} grupach. Opis każdej "
+            "cechy podano poniżej, w tym samym podziale.",
         )
-    add_caption(
-        doc, "Tabela",
-        f"Pełny katalog {len(catalogue)} cech treningowych w {len(by_group)} grupach.",
-    )
+    for group in sorted(by_group):
+        add_label(doc, group)
+        for feature in by_group[group]:
+            add_definition(doc, feature.name, feature.description)
     page_break(doc)
 
 
 # ── 7 ────────────────────────────────────────────────────────────────────────
+
+def _feature_map_source(by_group: dict[str, list], total: int) -> str:
+    """PlantUML source of the feature map, built from the catalogue itself.
+
+    Groups go to the side with fewer features so far, which keeps the two halves
+    of the map about the same height.
+    """
+    lines = [
+        "@startmindmap",
+        "skinparam dpi 200",
+        "<style>",
+        "mindmapDiagram {",
+        "  node { BackgroundColor #EEF2F7; LineColor #1F3B63; FontName Calibri;"
+        " FontSize 12; RoundCorner 6; Padding 4; Margin 4 }",
+        "  rootNode { BackgroundColor #DCE4EE; FontStyle bold }",
+        "  boxless { FontName Consolas; FontSize 10; FontColor #26303C; Padding 1;"
+        " Margin 1 }",
+        "  arrow { LineColor #1F3B63 }",
+        "}",
+        "</style>",
+        f"+ Cechy treningowe ({total})",
+    ]
+    sides = {"+": 0, "-": 0}
+    for group in sorted(by_group, key=lambda g: -len(by_group[g])):
+        side = min(sides, key=lambda key: sides[key])
+        sides[side] += len(by_group[group])
+        lines.append(f"{side * 2} {group}")
+        lines.extend(f"{side * 3}_ {feature.name}" for feature in by_group[group])
+    lines.append("@endmindmap")
+    return "\n".join(lines) + "\n"
+
 
 def _chapter_7_labels(doc: Document) -> None:
     add_heading(doc, "7. Etykiety", 1)
@@ -1805,11 +2784,9 @@ def _chapter_7_labels(doc: Document) -> None:
         doc,
         "Etykieta opisuje, co rynek zrobił w horyzoncie: stronę zwrotu w przód i przedział jego "
         "wielkości. Jej definicja istnieje w systemie w jednym miejscu (labels/forward.py) i "
-        "korzysta z niej każdy z pięciu modeli oraz plik etykiet, który rysuje panel. Nie zawsze "
-        "tak było: ta sama pętla znajdowała się w czterech modelach, a osobny etap potoku "
-        "zapisywał piątą wersję - jeden horyzont, przesunięty o wiersze zamiast o okres "
-        "kalendarzowy - której nie czytał żaden model. Kopie dawały zgodne wyniki, ale nic nie "
-        "gwarantowało, że zgodność przetrwa następną zmianę. Scalenie zweryfikowano porównaniem "
+        "korzysta z niej każdy z pięciu modeli oraz plik etykiet, który rysuje panel, więc "
+        "zgodność etykiet między modelami wynika z budowy systemu i przetrwa każdą zmianę "
+        "definicji. Scalenie wcześniejszych kopii tej pętli zweryfikowano porównaniem "
         "bajtowym prognoz wszystkich modeli przed zmianą i po niej.",
     )
 
@@ -1817,11 +2794,9 @@ def _chapter_7_labels(doc: Document) -> None:
     add_body(
         doc,
         "Etykieta kierunku jest znakiem zwrotu w przód na zadanym horyzoncie i przyjmuje dwie "
-        "wartości. Nie istnieje klasa pośrednia ani próg oddzielający ruch istotny od "
-        "nieistotnego: taki próg byłby dodatkowym parametrem badania, wpływającym na raportowaną "
-        "trafność, a jego uzasadnienie musiałoby odwoływać się do kosztów transakcyjnych, czyli "
-        "do warstwy decyzyjnej, a nie do danych. Zwrot dokładnie zerowy nie ma strony i jest "
-        "wykluczany z oceny.",
+        "wartości (rozdział 3.3). Próg oddzielający ruch istotny od nieistotnego zależy od "
+        "kosztów transakcyjnych, więc należy do warstwy decyzyjnej, a nie do etykiety. Zwrot "
+        "dokładnie zerowy nie ma strony i jest wykluczany z oceny.",
     )
 
     add_heading(doc, "7.2. Głębokość", 2)
@@ -1837,7 +2812,7 @@ def _chapter_7_labels(doc: Document) -> None:
     add_table(
         doc,
         ["Kubełek", "Zakres ruchu [%]"],
-        [[label, label.replace("-", " – ").replace("+", " i więcej")] for label in labels],
+        [[label, label.replace("-", " - ").replace("+", " i więcej")] for label in labels],
         [4.0, 6.0],
     )
     add_caption(doc, "Tabela", "Kubełki głębokości ruchu.")
@@ -1861,22 +2836,23 @@ def _chapter_7_labels(doc: Document) -> None:
         doc,
         ["Nazwa", "Dni", "Tygodni", "Uzasadnienie"],
         [
-            [h.name, str(h.forward_days), str(h.forward_days // 7), reason]
+            [f"{HORIZON_LABEL[h.name]} ({h.name})", str(h.forward_days),
+             str(h.forward_days // 7), reason]
             for h, reason in zip(
                 DEFAULT_HORIZONS,
                 [
                     "najkrótszy horyzont zachowujący pełną moc statystyczną przy dostępnej "
                     "historii",
                     "cztery tygodnie; podstawowy horyzont decyzyjny",
-                    "trzynaście tygodni; zastąpił półrocze, ponieważ okno dwuletnie zawiera 7,0 "
-                    "obserwacji niezależnych dla kwartału wobec 3,0 dla półrocza",
+                    "trzynaście tygodni; okno dwuletnie zawiera 7,0 obserwacji niezależnych "
+                    "dla kwartału, a dla półrocza zawierałoby 3,0",
                     "cztery kwartały dokładnie; 364 dni zamiast 365, ponieważ 365 nie dzieli się "
                     "przez 7 i zaokrąglało się odmiennie przy różnych interwałach",
                 ],
                 strict=False,
             )
         ],
-        [2.2, 1.6, 1.8, 10.4],
+        [3.0, 1.4, 1.6, 10.0],
     )
     add_caption(doc, "Tabela", "Zbiór horyzontów prognostycznych.")
     add_body(
@@ -1897,7 +2873,7 @@ def _chapter_8_models(doc: Document) -> None:
     add_body(
         doc,
         "Porównywanych jest pięć rodzin o rosnącej pojemności i rosnącym koszcie obliczeniowym. "
-        "Wszystkie realizują ten sam protokół kroczący (7.6) i wystawiają identyczny interfejs, "
+        "Wszystkie realizują ten sam protokół kroczący (8.6) i wystawiają identyczny interfejs, "
         "dzięki czemu różnice w wynikach można przypisać architekturze, a nie sposobowi jej "
         "uruchomienia.",
     )
@@ -1905,15 +2881,28 @@ def _chapter_8_models(doc: Document) -> None:
         doc,
         ["Model", "Rodzaj", "Pojemność", "Koszt (1 symbol, 4 horyzonty)"],
         [
-            ["baseline", "częstości empiryczne z wygładzaniem Laplace'a", "brak parametrów", "~8 s"],
-            ["ml", "gradient boosting na histogramach", "50 iteracji, 15 liści", "~190 s"],
-            ["xgboost", "gradient boosting", "100 drzew, głębokość 6", "~30 s"],
-            ["gru", "rekurencyjna sieć bramkowa", "2 warstwy, 64 jednostki", "~600 s"],
-            ["tft", "Temporal Fusion Transformer", "32 jednostki, 2 głowice uwagi", "~5900 s"],
+            # The identifier in brackets is the name the command line takes.
+            [f"{MODEL_LABEL[model]} ({model})", kind, capacity, cost]
+            for model, kind, capacity, cost in (
+                ("baseline", "częstości empiryczne z wygładzaniem Laplace'a", "brak parametrów",
+                 "~8 s"),
+                ("ml", "wzmacnianie gradientowe na histogramach", "50 iteracji, 15 liści",
+                 "~190 s"),
+                ("xgboost", "wzmacnianie gradientowe drzew", "100 drzew, głębokość 6", "~30 s"),
+                ("gru", "rekurencyjna sieć bramkowa", "2 warstwy, 64 jednostki", "~600 s"),
+                ("tft", "Temporal Fusion Transformer", "32 jednostki, 2 głowice uwagi",
+                 "~5900 s"),
+            )
         ],
-        [2.4, 6.0, 4.0, 3.6],
+        [3.6, 5.2, 3.8, 3.4],
     )
     add_caption(doc, "Tabela", "Porównywane rodziny modeli. Czasy zmierzone na 16 rdzeniach CPU.")
+    add_diagram(
+        doc, "prognosty",
+        "Diagram klas prognostów. Pętla krocząca zna wyłącznie protokół Forecaster; części "
+        "wspólne modeli tablicowych i sekwencyjnych leżą w klasach abstrakcyjnych, a "
+        "konkretne architektury dostarczają tylko dopasowania i prognozy.",
+    )
 
     add_heading(doc, "8.1. Model odniesienia", 2)
     add_body(
@@ -1927,11 +2916,11 @@ def _chapter_8_models(doc: Document) -> None:
     )
 
     add_heading(doc, "8.2. Modele gradientowe", 2)
-    add_figure(doc, "waznosc", "Względna ważność cech w modelu gradientowym. Rozkład jest płaski - żadna cecha nie dominuje, co jest spójne z brakiem wykrywalnej struktury w danych wejściowych.")
+    add_figure(doc, "waznosc", "Względna ważność cech w modelu XGBoost. Osiemnaście najważniejszych cech jednego przebiegu na BTCUSDT, horyzont tygodniowy. Rozkład jest płaski - żadna cecha nie dominuje, co jest spójne z brakiem wykrywalnej struktury w danych wejściowych.")
     add_body(
         doc,
-        "Dwie implementacje wzmacniania gradientowego - z biblioteki scikit-learn i z XGBoost "
-        "(Chen i Guestrin, 2016) - "
+        "Dwie implementacje wzmacniania gradientowego - z biblioteki scikit-learn i z "
+        "XGBoost[@chen2016] - "
         "reprezentują podejście tabelaryczne, w którym każda świeca jest niezależnym wektorem "
         "cech. Nie modelują zależności czasowej wprost; informacja o przeszłości wchodzi "
         "wyłącznie przez cechy liczone na oknach. Są tanie obliczeniowo, co pozwala uruchamiać "
@@ -1941,7 +2930,7 @@ def _chapter_8_models(doc: Document) -> None:
     add_heading(doc, "8.3. Sieć rekurencyjna GRU", 2)
     add_body(
         doc,
-        "Sieć rekurencyjna z bramkami (Cho i in., 2014) przetwarza sekwencję kolejnych świec, "
+        "Sieć rekurencyjna z bramkami[@cho2014] przetwarza sekwencję kolejnych świec, "
         "utrzymując stan "
         "ukryty. Bramki aktualizacji i resetu regulują, jaka część stanu przechodzi dalej, co "
         "łagodzi problem zanikającego gradientu występujący w prostych sieciach rekurencyjnych. "
@@ -1952,7 +2941,7 @@ def _chapter_8_models(doc: Document) -> None:
     add_heading(doc, "8.4. Temporal Fusion Transformer", 2)
     add_body(
         doc,
-        "Architektura (Lim i in., 2021) łącząca kodowanie rekurencyjne z mechanizmem uwagi po "
+        "Architektura[@lim2021] łącząca kodowanie rekurencyjne z mechanizmem uwagi po "
         "osi czasu oraz "
         "sieciami wyboru zmiennych, które uczą się wagi poszczególnych cech. Jest to model o "
         "największej pojemności w zestawieniu i zarazem najdroższy - jeden przebieg na jednym "
@@ -1962,8 +2951,8 @@ def _chapter_8_models(doc: Document) -> None:
     add_body(
         doc,
         "Prognoza całego miesiąca douczania powstaje w jednym przebiegu wsadowym, z historią "
-        "celu zamaskowaną na granicy miesiąca. Konstrukcja osobnego zbioru dla każdej świecy "
-        "była pierwotną przyczyną wielogodzinnego czasu wykonania i została zastąpiona.",
+        "celu zamaskowaną na granicy miesiąca, ponieważ budowa osobnego zbioru dla każdej "
+        "świecy wydłużała przebieg do wielu godzin.",
     )
 
     add_heading(doc, "8.5. Trening wielosymbolowy", 2)
@@ -1997,6 +2986,14 @@ def _chapter_8_models(doc: Document) -> None:
     )
     add_body(
         doc,
+        "Okres oceny obejmuje świece od 1 stycznia 2020 do 30 czerwca 2026. Każda prognoza "
+        "oceniana jest na własnej etykiecie, zrealizowanej F świec później, więc ocena prognoz "
+        "rocznych kończy się rok przed końcem danych. Najnowszą część okna treningowego model "
+        "oddaje kalibratorowi (rozdział 8.8), a wszystkie etykiety, na których się uczył albo "
+        "był kalibrowany, zrealizowały się przed prognozą.",
+    )
+    add_body(
+        doc,
         "Protokół ten jest zapisany w systemie raz (predict/walk_forward.py), a każda z pięciu "
         "architektur dostarcza jedynie dwóch operacji: dopasowania na początku miesiąca i "
         "prognozy dla pojedynczej świecy. Wcześniej pętla była powielona w każdym modelu i "
@@ -2008,19 +3005,26 @@ def _chapter_8_models(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Jedna rozbieżność została świadomie zachowana. GRU i TFT normalizują cechy medianą i "
-        "rozstępem międzykwartylowym, lecz brakującą wartość traktują inaczej: GRU zastępuje ją "
-        "zerem po przeskalowaniu, czyli medianą okna, a TFT zerem przed przeskalowaniem. "
-        "Pierwsze 89 świec każdego symbolu ma braki wynikające z rozruchu wskaźników, a "
-        "najwcześniejsze okna sięgają tak daleko, więc ujednolicenie zmieniłoby opublikowane "
-        "wyniki jednej z sieci i wymagałoby ponownego przeliczenia.",
+        "Pierwsze 89 świec każdego symbolu ma braki cech wynikające z rozruchu wskaźników, a "
+        "najwcześniejsze okna treningowe sięgają tak daleko. Obie sieci normalizują cechy "
+        "medianą i rozstępem międzykwartylowym okna, liczonymi z wartości obecnych, a brakującą "
+        "wartość zastępują medianą okna, czyli zerem po przeskalowaniu - wartością, która nie "
+        "mówi sieci nic o danej świecy. Reguła jest wspólna, aby dla tych samych świec obie "
+        "sieci uczyły się na tych samych wejściach; modele gradientowe obsługują braki natywnie, "
+        "kierując je w każdym podziale drzewa w stronę wyznaczoną podczas uczenia.",
+    )
+    add_diagram(
+        doc, "petla_kroczaca",
+        "Diagram aktywności protokołu kroczącego. Horyzont, którego nie dało się wytrenować, "
+        "nie znika z wyniku, lecz zostaje jawnie oznaczony, więc liczba wierszy przebiegu nie "
+        "zależy od modelu.",
     )
 
     add_heading(doc, "8.7. Okno treningowe wyprowadzane z horyzontu", 2)
     add_body(
         doc,
-        "Szerokość okna nie jest parametrem konfiguracyjnym, lecz wynika z horyzontu i "
-        "dostępnej historii. Kolidują tu dwa wymagania. Model potrzebuje wierszy - kilkuset, aby "
+        "Szerokość okna wynika z horyzontu i dostępnej historii. Kolidują tu dwa "
+        "wymagania. Model potrzebuje wierszy - kilkuset, aby "
         "dopasowanie kilkudziesięciu cech nie było rysowaniem krzywej przez punkty. Statystyka "
         "potrzebuje obserwacji niezależnych, których okno o szerokości W zawiera (W − F) / F. "
         "Pierwsze wymaganie wiąże na horyzontach krótkich, drugie na długich.",
@@ -2028,9 +3032,8 @@ def _chapter_8_models(doc: Document) -> None:
     add_body(
         doc,
         "Okno wynosi zatem F + max(minimalna liczba wierszy, 3F) i jest przycinane przez długość "
-        "historii. Poszerzanie okna dla wszystkich horyzontów nie jest rozwiązaniem: historia "
-        "jest skończona, więc każda świeca oddana treningowi to świeca, której nie da się "
-        "ocenić. Dla najdłuższego dostępnego szeregu maksimum tego, co można osiągnąć po obu "
+        "historii. Historia jest skończona, więc każda świeca oddana treningowi to świeca, "
+        "której nie da się ocenić. Dla najdłuższego dostępnego szeregu maksimum tego, co można osiągnąć po obu "
         "stronach jednocześnie, wynosi około 3,45 obserwacji - przy oknie równym połowie "
         "historii.",
     )
@@ -2038,10 +3041,45 @@ def _chapter_8_models(doc: Document) -> None:
     add_heading(doc, "8.8. Kalibracja i kryterium zatrzymania", 2)
     add_body(
         doc,
-        "Prawdopodobieństwa kalibrowane są skalowaniem temperatury (Guo i in., 2017) na "
-        "wycinku wydzielonym "
-        "wewnątrz okna treningowego - nigdy na świecach późniejszych, ponieważ kalibrator "
-        "widziałby wtedy etykiety niedostępne prognozie.",
+        "Prawdopodobieństwa kalibrowane są skalowaniem temperatury[@guo2017] na "
+        "wycinku wydzielonym wewnątrz okna treningowego - nigdy na świecach późniejszych, "
+        "ponieważ kalibrator widziałby wtedy etykiety niedostępne prognozie. Wycinek obejmuje "
+        f"najnowsze {CALIBRATION_FRACTION:.0%} wierszy, których etykiety są już znane, czyli "
+        "okres najbliższy prognozie. Model uczy się tylko na wierszach starszych od wycinka o "
+        "co najmniej jeden horyzont. Etykieta świecy k zależy od cen aż do świecy k+F, więc bez "
+        "tej przerwy etykiety ostatnich F wierszy uczących byłyby liczone z cen przypadających "
+        "na okres wycinka, a kalibrator oceniałby model na wynikach, na których był uczony. Ta "
+        "sama przerwa oddziela okno treningowe od prognozowanej świecy. Oś czasu jednej "
+        "prognozy przedstawia rysunek poniżej.",
+    )
+    add_figure(
+        doc, "os_czasu",
+        "Oś czasu jednej prognozy na horyzoncie kwartalnym i rocznym. Pod paskami zaznaczono "
+        "świece, z których cen liczona jest etykieta: najnowszej świecy uczącej, najstarszej "
+        "i najnowszej świecy wycinka oraz samej prognozy. Żadna cena nie należy do etykiet po "
+        "obu stronach granicy, a na horyzoncie rocznym wycinek jest krótszy od jednej etykiety.",
+    )
+    add_body(
+        doc,
+        "Gdy wiersze uczące albo wycinek zawierają tylko jedną klasę, podział przesuwa się do "
+        "najbliższego, przy którym obie części zawierają obie klasy, a wycinek co najmniej "
+        f"{MIN_CALIBRATION_SAMPLES} wierszy; gdy takiego nie ma, model uczy się na całym oknie. "
+        "Reguła jest jedna dla wszystkich architektur, aby na tym samym oknie żadna nie "
+        "zachowywała kalibratora, który inna traci. Temperaturę wybiera się z siatki od 0,5 do "
+        "1000, minimalizując stratę logarytmiczną na wycinku. Siatka sięga tak wysoko, "
+        "ponieważ surowe prognozy modeli są niemal pewne, a wycinek, na którym model nie "
+        "wykazuje umiejętności, wymaga prognozy bliskiej 50%: temperatura 1000 zamienia "
+        "prawdopodobieństwo 0,99 w 0,501. Skalowanie nie zmienia kolejności klas, więc kierunek "
+        "prognozy, a z nim trafność, nie zależą od kalibracji.",
+    )
+    add_body(
+        doc,
+        "Okno bez wycinka przejmuje temperaturę wyznaczoną ostatnio na tym samym horyzoncie "
+        "przebiegu, czyli na wycinku zrealizowanym wcześniej. Przed pierwszym takim wyznaczeniem "
+        "prognoza nie dostaje pewności ponad losową - przyjmuje górny kraniec siatki. "
+        "Pozostawienie takiego okna bez kalibracji uczyniłoby prognozy z najmniejszej ilości "
+        "danych najpewniejszymi w całym przebiegu. Liczba obserwacji niezależnych w wycinku "
+        "maleje wraz z horyzontem, czego skutki pokazuje rozdział 10.5.",
     )
     add_body(
         doc,
@@ -2071,15 +3109,22 @@ def _chapter_9_methodology(doc: Document) -> None:
         doc,
         "Model oceniany jest trafnością, wynikiem Briera, stratą logarytmiczną i oczekiwanym "
         "błędem kalibracji. Żadna z tych miar nie ma parametru, który dałoby się dobrać tak, aby "
-        "wynik wyglądał lepiej. Jest to własność celowa i odróżnia je od symulacji handlowej, "
-        "której wynik zależy od kilkunastu decyzji wykonawczych.",
+        "wynik wyglądał lepiej, więc wynik oceny nie zależy od decyzji badacza - w "
+        "odróżnieniu od symulacji handlowej, której wynik zależy od kilkunastu decyzji "
+        "wykonawczych.",
+    )
+    add_diagram(
+        doc, "ocena",
+        "Diagram aktywności oceny przebiegu. Świeca, której wynik nie jest jeszcze znany albo "
+        "której zwrot wynosi dokładnie zero, nie dostaje oceny; ma osobny status, aby nie "
+        "zniekształcać średnich.",
     )
 
     add_heading(doc, "9.2. Przedziały ufności przy nakładających się etykietach", 2)
     add_body(
         doc,
         "Każda trafność jest średnią po świecach o nakładających się etykietach - problem "
-        "opisany szczegółowo przez López de Prado (2018) w kontekście uczenia maszynowego na "
+        "opisany szczegółowo przez López de Prado[@lopezdeprado2018] w kontekście uczenia maszynowego na "
         "danych finansowych. Naiwny przedział "
         "ufności traktuje je jako niezależne i wychodzi kilkukrotnie za wąski, przez co wynik "
         "nieodróżnialny od losowego wyglądałby na istotny. System stosuje bootstrap blokowy o "
@@ -2088,10 +3133,25 @@ def _chapter_9_methodology(doc: Document) -> None:
     add_body(
         doc,
         "Poniżej dziesięciu bloków przedział nie jest wyznaczany, lecz odmawiany wraz z podaniem "
-        "przyczyny. Próg ten wynika z obserwacji, a nie z konwencji: przy trzech blokach dwa z "
+        "przyczyny. Próg ten wynika z obserwacji: przy trzech blokach dwa z "
         "pięćdziesięciu pięciu wyznaczonych przedziałów nie obejmowały własnej oceny punktowej, "
         "ponieważ cztery bloki losowane z szeregu zawierającego trzy nie są w stanie go "
         "odtworzyć.",
+    )
+    add_body(
+        doc,
+        "Z tego samego próbkowania odczytywana jest wartość p dla hipotezy, że trafność wynosi "
+        "0,5: odsetek wylosowanych trafności leżących po drugiej stronie 0,5 niż większość z "
+        "nich, podwojony. Jest to test, który odwraca przedział percentylowy[@efron1993], "
+        "więc p spada poniżej 0,05 tam, gdzie 95-procentowy przedział nie "
+        "obejmuje 0,5 - oba odczyty pochodzą z tych samych losowań i nie mogą sobie przeczyć. "
+        "Pomiarów jest jednak kilkaset, a przy takiej liczbie próg 0,05 przekracza kilkanaście z "
+        "nich nawet wtedy, gdy żaden model nie ma przewagi. Wartości p koryguje się zatem "
+        "procedurą Benjaminiego i Hochberga[@benjamini1995], która ogranicza oczekiwany odsetek "
+        "fałszywych odkryć wśród pomiarów uznanych za istotne. Gwarancja ta obowiązuje także "
+        "przy dodatniej zależności między testami[@benjamini2001], a z taką "
+        "zależnością ma się tu do czynienia: ziarna jednej konfiguracji widzą te same dane, a "
+        "kursy instrumentów poruszają się razem.",
     )
 
     add_heading(doc, "9.3. Moc statystyczna jako ograniczenie", 2)
@@ -2117,7 +3177,7 @@ def _chapter_9_methodology(doc: Document) -> None:
     )
 
     add_heading(doc, "9.5. Symulacja handlowa i cztery hipotezy zerowe", 2)
-    add_figure(doc, "kapital", "Przebieg wartości portfela dla pięciu architektur wobec strategii kup i trzymaj, skala logarytmiczna. Żadna strategia oparta na prognozie nie zbliża się do prostego trzymania pozycji w badanym okresie.")
+    add_figure(doc, "kapital", "Przebieg wartości portfela na BTCUSDT dla pięciu architektur wobec strategii kup i trzymaj. Po jednym przebiegu każdej architektury, skala logarytmiczna. Żadna strategia oparta na prognozie nie zbliża się do prostego trzymania pozycji w badanym okresie.")
     add_body(
         doc,
         "Symulacja nie jest oceną prognozy. Ten sam przebieg odtworzony pod pięcioma politykami "
@@ -2130,7 +3190,7 @@ def _chapter_9_methodology(doc: Document) -> None:
         doc,
         ["Punkt odniesienia", "Co usuwa", "Siła"],
         [
-            ["Kup i trzymaj", "nic — punkt odniesienia rynkowy", "najsłabszy"],
+            ["Kup i trzymaj", "nic - punkt odniesienia rynkowy", "najsłabszy"],
             ["Stała ekspozycja równa średniej strategii",
              "efekt samego poziomu zaangażowania", "średni"],
             ["Ta sama ścieżka ekspozycji przesunięta cyklicznie",
@@ -2147,6 +3207,26 @@ def _chapter_9_methodology(doc: Document) -> None:
         "wyłącznie jej ułożenie w czasie. Jeżeli rzeczywiste ułożenie nie wypada lepiej niż "
         "dowolne przesunięte, prognoza nie wnosi wyczucia momentu, a osiągnięty wynik pochodzi z "
         "poziomu zaangażowania.",
+    )
+    add_body(
+        doc,
+        "Symulacja nie ocenia prognozy własną regułą. Każdą świecę klasyfikuje ten sam "
+        "oceniacz, który wyznacza rekomendacje (pierwszy rysunek poniżej), dzięki czemu werdykt "
+        "w raporcie rekomendacji i w symulacji nie może się rozejść. Symulacja przekłada "
+        "werdykt na docelową ekspozycję i dopiero na końcu zestawia wynik z czterema punktami "
+        "odniesienia (drugi rysunek).",
+    )
+    add_diagram(
+        doc, "rekomendacje",
+        "Diagram aktywności wyznaczania rekomendacji. Progi przewagi są stałe, ponieważ "
+        "przewaga jest różnicą dwóch prawdopodobieństw; progi ryzyka są kwantylami ryzyka "
+        "zaobserwowanego wcześniej, więc żadna świeca nie wpływa na własny werdykt.",
+    )
+    add_diagram(
+        doc, "symulacja",
+        "Diagram aktywności symulacji handlowej. Transakcja następuje po cenie otwarcia dnia "
+        "następującego po sygnale, więc symulacja nie korzysta z ceny, której w chwili "
+        "decyzji nie znano.",
     )
 
     add_heading(doc, "9.6. Odtwarzalność i ziarnowanie", 2)
@@ -2197,7 +3277,7 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
     seeds = sorted({r["seed"] for v in runs.values() for r in v if r["seed"] is not None})
     add_body(
         doc,
-        f"Podstawą tabel jest {total} przebiegów odczytanych z artefaktów projektu"
+        f"Podstawą tabel jest {total} przebiegów badania"
         + (f", pod ziarnami: {', '.join(str(s) for s in seeds)}." if seeds else ".")
         + " Wszystkie policzono na czterech wątkach procesora (rozdział 9.6). Każdą konfigurację "
         "uruchomiono wielokrotnie, ponieważ pojedynczy przebieg niesie szum inicjalizacji, "
@@ -2207,7 +3287,8 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
     if invariant:
         add_body(
             doc,
-            f"Dla architektur {_listing(invariant)} trzy ziarna dają na każdym symbolu wynik "
+            f"Dla architektur {_listing([MODEL_LABEL[m] for m in invariant])} trzy ziarna dają "
+            "na każdym symbolu wynik "
             "identyczny co do bajtu: uczą się deterministycznie, bez podpróbkowania wierszy i "
             f"cech. Różnych pomiarów jest zatem {sum(len(v) for v in distinct_runs(runs).values())}"
             ", a rozrzut inicjalizacji wyznaczają wyłącznie pozostałe architektury.",
@@ -2216,119 +3297,237 @@ def _chapter_10_results(doc: Document, runs: dict) -> None:
     if not runs:
         add_body(
             doc,
-            "UWAGA: w katalogu artefaktów nie znaleziono ocenionych przebiegów. Tabele wyników "
-            "wypełnią się po zakończeniu przeliczeń; dokument należy wtedy wygenerować ponownie.",
+            "UWAGA: brak ocenionych przebiegów, więc tabele wyników są puste.",
             italic=True,
         )
         page_break(doc)
         return
 
-    add_heading(doc, "10.1. Ranking architektur wobec podłogi szumu", 2)
+    add_heading(doc, "10.1. Porównanie architektur", 2)
     add_body(
         doc,
-        "Tabele poniżej odpowiadają wprost na pytanie badawcze. Wielkością rozstrzygającą jest "
-        "porównanie rozstępu między architekturami z rozrzutem tej samej architektury pod "
-        "różnymi ziarnami. Jeżeli rozstęp nie przekracza rozrzutu, ranking architektur nie ma "
-        "podstaw. Rozrzut liczony jest wyłącznie z architektur, których wynik ziarno zmienia: "
-        "modele deterministyczne wniosłyby do średniej zera i zaniżyły poziom szumu, zamieniając "
-        "remis w ranking. Rozstęp podawany jest dwukrotnie - dla wszystkich architektur i dla "
-        "samych uczących się - ponieważ model odniesienia nie uczy się i na dłuższych "
-        "horyzontach odstaje od reszty.",
+        "Pierwsza tabela podaje średnią trafność każdej architektury i zestawia rozstęp tych "
+        "średnich z rozrzutem tej samej architektury pod różnymi ziarnami. Jest to opis skali: "
+        "średnie pochodzą z przebiegów na różnych instrumentach, a zestawienie rozstępu z "
+        "rozrzutem nie testuje różnicy między dwiema architekturami na tych samych "
+        "obserwacjach - taki test podają dwie kolejne tabele. Rozrzut liczony jest wyłącznie "
+        "z architektur, których wynik ziarno zmienia: modele deterministyczne wniosłyby do "
+        "średniej zera i zaniżyły poziom szumu. Rozstęp podawany jest dwukrotnie - dla "
+        "wszystkich architektur i dla samych uczących się - ponieważ model odniesienia nie "
+        "uczy się i na dłuższych horyzontach odstaje od reszty.",
     )
 
     spread = architecture_spread(runs)
     distinct = distinct_runs(runs)
-    for horizon in HORIZON_NAMES:
-        cell = spread[horizon]
-        means = cell["means"]
-        if len(means) < 2:
-            continue
-        order = sorted(means, key=lambda m: -means[m])
-        labels = {}
-        for model in order:
-            taken = sum(len(horizon_values(runs.get((symbol, model), []), horizon, "accuracy"))
-                        for symbol in SYMBOLS)
+    tested = [h for h in HORIZON_NAMES if len(spread[h]["means"]) >= 2]
+    models = [m for m in MODELS if any(m in spread[h]["means"] for h in tested)]
+    if tested and models:
+        rows = []
+        for model in models:
+            row = [MODEL_LABEL[model]]
+            for horizon in tested:
+                means = spread[horizon]["means"]
+                if model not in means:
+                    row.append("-")
+                    continue
+                rank = sorted(means, key=lambda m: -means[m]).index(model) + 1
+                row.append(f"{means[model]:.3f} ({rank})")
+            rows.append(row)
+        for label, key in (("rozstęp - wszystkie", "range"),
+                           ("rozstęp - uczące się", "range_learners"),
+                           ("rozrzut ziarna", "noise")):
+            rows.append([label] + [fmt(spread[h][key]) for h in tested])
+        add_table(doc, ["Architektura", *(HORIZON_LABEL[h] for h in tested)], rows,
+                  [4.4] + [2.9] * len(tested), font=10)
+        counts = []
+        for model in models:
+            taken = sum(len(horizon_values(runs.get((s, model), []), tested[0], "accuracy"))
+                        for s in SYMBOLS)
             different = sum(
-                len(horizon_values(distinct.get((symbol, model), []), horizon, "accuracy"))
-                for symbol in SYMBOLS
+                len(horizon_values(distinct.get((s, model), []), tested[0], "accuracy"))
+                for s in SYMBOLS
             )
-            labels[model] = str(taken) if different == taken else f"{taken} ({different} różnych)"
-
-        add_body(doc, f"Horyzont „{horizon}”:")
-        add_table(
-            doc,
-            ["Poz.", "Architektura", "Przebiegów", "Trafność średnia"],
-            [[str(rank), model, labels[model], fmt(means[model])]
-             for rank, model in enumerate(order, start=1)],
-            [1.6, 4.6, 3.6, 3.4],
-            font=9,
-        )
-        noise, every, learners = cell["noise"], cell["range"], cell["range_learners"]
-        if noise is None:
-            add_caption(
-                doc, "Tabela",
-                f"Horyzont „{horizon}”. Rozstęp: {pl(every)}. Brak powtórzeń pod różnymi "
-                "ziarnami - rozrzutu inicjalizacji nie zmierzono.",
-            )
-            continue
-        if learners <= noise:
-            verdict = ("architektury uczące się mieszczą się w rozrzucie ziarna, więc ich "
-                       "ranking nie ma podstaw")
-            if every > noise:
-                verdict += "; rozstęp całego zestawienia wynika z modelu odniesienia"
-        else:
-            verdict = ("rozstęp architektur uczących się przekracza rozrzut ziarna "
-                       + ("nieznacznie" if learners < 1.5 * noise else "wyraźnie"))
+            counts.append(f"{MODEL_LABEL[model]} {taken}"
+                          + ("" if different == taken else f" ({different} różnych)"))
         add_caption(
             doc, "Tabela",
-            f"Horyzont „{horizon}”. Rozstęp średnich: {pl(every)} dla wszystkich architektur, "
-            f"{pl(learners)} dla uczących się. Rozrzut tej samej architektury pod innym "
-            f"ziarnem: {pl(noise)}. Wniosek: {verdict}.",
+            "Średnia trafność architektur na każdym horyzoncie, w nawiasie miejsce w rankingu. "
+            "Trzy dolne wiersze porównują rozstęp średnich z rozrzutem tej samej architektury "
+            "pod innym ziarnem. Liczba przebiegów w średniej: " + _listing(counts) + ".",
         )
+        add_body(
+            doc,
+            "Rozstęp wobec rozrzutu: " + "; ".join(
+                f"na horyzoncie {HORIZON_LOCATIVE[h]} {_spread_verdict(spread[h])}"
+                for h in tested
+            ) + ".",
+        )
+    _results_paired(doc, runs)
 
     _results_rank_stability(doc, runs)
 
     add_heading(doc, "10.3. Wyniki szczegółowe", 2)
     add_figure(doc, "porownanie", "Trafność średnia każdej architektury na czterech horyzontach. Wąsy to odchylenie standardowe między wszystkimi przebiegami danej architektury - na różnych instrumentach i pod różnymi ziarnami; przerywana linia oznacza poziom losowy. Nachodzenie wąsów na siebie i na linię 0,5 jest treścią wyniku.")
-    for horizon in HORIZON_NAMES:
-        rows = []
-        for symbol in SYMBOLS:
-            for model in MODELS:
-                got = runs.get((symbol, model), [])
-                accs = horizon_values(got, horizon, "accuracy")
-                eces = horizon_values(got, horizon, "ece")
-                if not accs:
-                    continue
-                arr = np.array(accs)
-                rows.append([
-                    symbol.replace("USDT", ""), model, str(len(accs)),
-                    fmt(float(arr.mean())),
-                    fmt(float(arr.std(ddof=1))) if len(arr) > 1 else "—",
-                    f"{arr.min():.3f}–{arr.max():.3f}" if len(arr) > 1 else fmt(float(arr[0])),
-                    fmt(float(np.mean(eces))) if eces else "—",
-                ])
-        if not rows:
-            continue
-        add_body(doc, f"Horyzont „{horizon}” — wszystkie symbole i ziarna:")
-        add_table(
-            doc,
-            ["Symbol", "Model", "Przeb.", "Trafność", "Odch.", "Zakres", "ECE"],
-            rows,
-            [2.2, 2.4, 1.5, 2.2, 1.8, 3.2, 2.4],
-        )
-        add_caption(
-            doc, "Tabela",
-            f"Horyzont „{horizon}”. Kolumna „Odch.” to odchylenie standardowe trafności między "
-            "przebiegami różniącymi się wyłącznie ziarnem - miara szumu inicjalizacji, "
-            "niewidoczna w przedziale pojedynczego przebiegu.",
-        )
+    add_figure(
+        doc, "mapa_trafnosci",
+        "Trafność średnia każdej pary instrument - architektura na czterech horyzontach. "
+        "Kolor wskazuje stronę i odległość od 0,5, liczba - średnią ze wszystkich przebiegów "
+        "danej pary. Na horyzoncie rocznym liczba obserwacji niezależnych nie pozwala "
+        "wyznaczyć przedziału, więc barwy tego panelu odzwierciedlają kilka cykli rynku, a "
+        "nie zdolność modeli. Wynik każdego przebiegu osobno podaje załącznik E.",
+    )
+    add_figure(doc, "rozrzut", "Każdy przebieg jako osobny punkt, horyzont tygodniowy. W obrębie architektury punkty ułożono według instrumentu, a trzy ziarna jednego instrumentu leżą w jednej kolumnie - dla modeli gradientowych pokrywają się, ponieważ ziarno nie zmienia ich wyniku. Różnice między instrumentami i ziarnami są większe niż odległości między architekturami - dlatego ranking oparty na pojedynczym przebiegu nie ma podstaw.")
 
     _results_baserate(doc)
     _results_calibration(doc, runs)
+    _results_scoring_rules(doc, runs)
     _results_stability(doc)
     _results_backtest(doc)
     _results_max_vs_mean(doc)
+    _results_departures(doc, runs)
     page_break(doc)
+
+
+LEARNERS = ("ml", "xgboost", "gru", "tft")
+
+
+def paired_facts(runs: dict) -> dict:
+    """What the paired comparison says, for the sentences that quote it."""
+    found = paired_differences(runs)
+    accuracy = [r for r in found if r["measure"] == "accuracy" and r["q"] is not None]
+    significant = [r for r in accuracy if r["q"] < FALSE_DISCOVERY_RATE]
+    return {
+        "tested": len(accuracy),
+        "learner_tested": sum(1 for r in accuracy
+                              if r["first"] in LEARNERS and r["second"] in LEARNERS),
+        "significant": significant,
+        "learner_significant": [r for r in significant
+                                if r["first"] in LEARNERS and r["second"] in LEARNERS],
+        "untested": sorted({r["horizon"] for r in found if r["q"] is None},
+                           key=HORIZON_NAMES.index),
+    }
+
+
+def _paired_cell(record: dict | None, scale: float, places: int) -> str:
+    if record is None:
+        return "-"
+    point = f"{scale * record['difference']:+.{places}f}"
+    if record["low"] is None:
+        return point
+    star = "*" if record["q"] is not None and record["q"] < FALSE_DISCOVERY_RATE else ""
+    return (f"{point}{star} [{scale * record['low']:+.{places}f}; "
+            f"{scale * record['high']:+.{places}f}]")
+
+
+def _results_paired(doc: Document, runs: dict) -> None:
+    """The direct test of chapter 10.1: each pair of architectures on the same forecasts."""
+    found = paired_differences(runs)
+    if not found:
+        return
+    facts = paired_facts(runs)
+    add_body(
+        doc,
+        "Bezpośredni test porównuje architektury parami na tych samych prognozach. Dla danego "
+        "instrumentu i ziarna obie architektury prognozują te same świece, więc różnica ich "
+        "trafień na świecach ocenionych u obu jest jedną kolumną panelu, którego wiersze są "
+        "datami; średnia panelu jest różnicą trafności. Przedział ufności daje bootstrap "
+        "blokowy z rozdziału 9.2 losujący całe daty, tak że wszystkie instrumenty są losowane "
+        "na tych samych dniach i ich wspólny ruch zostaje w przedziale. Wartości p koryguje się "
+        "procedurą Benjaminiego i Hochberga osobno dla trafności i dla straty logarytmicznej."
+        + (f" Na horyzoncie {HORIZON_LOCATIVE[facts['untested'][0]]} okres oceny mieści mniej "
+           "niż dziesięć bloków, więc przedziału się nie wyznacza (rozdział 9.2) i różnic między "
+           "średnimi z tabeli powyżej nie da się na nim przetestować."
+           if len(facts["untested"]) == 1 else ""),
+    )
+    shown = [h for h in HORIZON_NAMES if h not in facts["untested"]]
+    index = {(r["horizon"], r["first"], r["second"], r["measure"]): r for r in found}
+    for measure, scale, places, caption in (
+        ("accuracy", 100.0, 1,
+         "Różnica trafności par architektur na tych samych prognozach, w punktach "
+         "procentowych (pierwsza minus druga), z 95-procentowym przedziałem ufności. Gwiazdka "
+         "oznacza q < 0,05 po poprawce Benjaminiego i Hochberga."),
+        ("log_loss", 1.0, 3,
+         "Różnica średniej straty logarytmicznej par architektur na tych samych prognozach "
+         "(pierwsza minus druga; ujemna oznacza lepsze prognozy pierwszej), z 95-procentowym "
+         "przedziałem ufności. Gwiazdka oznacza q < 0,05 po poprawce Benjaminiego i Hochberga."),
+    ):
+        rows = [[f"{MODEL_LABEL[a]} - {MODEL_LABEL[b]}",
+                 *(_paired_cell(index.get((h, a, b, measure)), scale, places) for h in shown)]
+                for a, b in itertools.combinations(MODELS, 2)]
+        add_table(doc, ["Para", *(HORIZON_LABEL[h] for h in shown)], rows,
+                  [4.9] + [(16.0 - 4.9) / max(1, len(shown))] * len(shown), font=9)
+        add_caption(doc, "Tabela", caption)
+
+    learner = facts["learner_significant"]
+    others = [r for r in facts["significant"] if r not in learner]
+    verdict = (
+        "żadne nie wykazuje istotnej różnicy trafności po poprawce na wielokrotne porównania"
+        if not learner else
+        f"istotną różnicę trafności po poprawce wykazuje {len(learner)}: " + _listing([
+            f"{MODEL_LABEL[r['first']]} - {MODEL_LABEL[r['second']]} na horyzoncie "
+            f"{HORIZON_LOCATIVE[r['horizon']]}" for r in learner])
+    )
+    baseline = (
+        "Model odniesienia różni się istotnie od: " + _listing(sorted(
+            f"{MODEL_LABEL[r['second']]} na horyzoncie {HORIZON_LOCATIVE[r['horizon']]}"
+            for r in others)) + "."
+        if others else "Model odniesienia nie różni się istotnie od żadnej z nich."
+    )
+    add_body(doc, f"Wśród {facts['learner_tested']} porównań par architektur uczących się "
+                  f"{verdict}. {baseline}")
+
+    losses = [r for r in found if r["measure"] == "log_loss" and r["q"] is not None
+              and r["q"] < FALSE_DISCOVERY_RATE
+              and r["first"] in LEARNERS and r["second"] in LEARNERS]
+    worse: dict[str, int] = {}
+    for r in losses:
+        loser = r["first"] if r["difference"] > 0 else r["second"]
+        worse[loser] = worse.get(loser, 0) + 1
+    if worse:
+        ece = calibration_facts(runs)["by_horizon"]
+        least = max(LEARNERS, key=lambda m: np.mean(
+            [f["ece"][m] for f in ece.values() if m in f["ece"]] or [0.0]))
+        add_body(
+            doc,
+            "W stracie logarytmicznej różnice są wyraźniejsze: istotnie wyższą stratę od innej "
+            "architektury uczącej się ma " + _listing([
+                f"{MODEL_LABEL[m]} w {n} "
+                + _plural(n, "porównaniu", "porównaniach", "porównaniach")
+                for m, n in sorted(worse.items(), key=lambda kv: -kv[1])])
+            + ". Trafności tych par nie różnią się istotnie, więc różnice dotyczą pewności "
+            "prognoz, a nie wskazywanego kierunku"
+            + (f" - {MODEL_LABEL[least]} ma największy błąd kalibracji wśród architektur "
+               "uczących się (rozdział 10.5)." if least in worse else "."),
+        )
+    else:
+        add_body(doc, "Także w stracie logarytmicznej żadna para architektur uczących się nie "
+                      "różni się istotnie.")
+
+
+def below_base_rate() -> bool:
+    """Whether every architecture's mean accuracy lies below the frequency of the more
+    common class, at every horizon - the rule that learns nothing (section 10.4)."""
+    try:
+        from documentation_figures import base_rate_rows
+    except Exception:
+        return False
+    means = [np.mean(values, axis=0) for values in base_rate_rows().values() if values]
+    return bool(means) and all(m[0] < m[3] for m in means)
+
+
+def _spread_verdict(cell: dict) -> str:
+    """What one horizon's spread says about ranking the learning architectures."""
+    noise, every, learners = cell["noise"], cell["range"], cell["range_learners"]
+    if noise is None:
+        return f"rozstęp wynosi {pl(every)}, a rozrzutu inicjalizacji nie zmierzono"
+    if learners <= noise:
+        verdict = ("architektury uczące się mieszczą się w rozrzucie ziarna, więc ich "
+                   "ranking nie ma podstaw")
+        if every > noise:
+            verdict += ", a rozstęp całego zestawienia wynika z modelu odniesienia"
+        return verdict
+    return ("rozstęp architektur uczących się przekracza rozrzut ziarna "
+            + ("nieznacznie" if learners < 1.5 * noise else "wyraźnie"))
 
 
 def _results_baserate(doc: Document) -> None:
@@ -2338,144 +3537,437 @@ def _results_baserate(doc: Document) -> None:
     coin flip only when the classes are balanced, and over this period they are
     not.
     """
-    import polars as pl
-
-    rows_by = defaultdict(list)
-    for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/predictions_quality.parquet")):
-        parts = path.replace("\\", "/").split("/")
-        symbol, model = parts[-3], parts[-2].split("_")[0]
-        if not is_study_run(symbol, parts[-2]):
-            continue
-        try:
-            frame = pl.read_parquet(path).filter(pl.col("status") == "scored")
-        except Exception:
-            continue
-        for horizon in HORIZON_NAMES:
-            sub = frame.filter(pl.col("horizon") == horizon)
-            if sub.is_empty():
-                continue
-            predicted = np.array(sub["pred_direction"].to_list())
-            actual = np.array(sub["actual_direction"].to_list())
-            correct = np.array([bool(x) for x in sub["correct"].to_list()])
-            share_long = float((actual == "long").mean())
-            rows_by[(horizon, model)].append(
-                (float(correct.mean()), float((predicted == "long").mean()),
-                 share_long, max(share_long, 1 - share_long))
-            )
-    if not rows_by:
+    if "czestosc_bazowa" not in _FIGURES:
         return
+    below = below_base_rate()
 
     add_heading(doc, "10.4. Trafność wobec częstości klasy większościowej", 2)
-    add_figure(doc, "rozrzut", "Każdy przebieg jako osobny punkt, horyzont tygodniowy. W obrębie architektury punkty ułożono według instrumentu, a trzy ziarna jednego instrumentu leżą w jednej kolumnie - dla modeli gradientowych pokrywają się, ponieważ ziarno nie zmienia ich wyniku. Różnice między instrumentami i ziarnami są większe niż odległości między architekturami - dlatego ranking oparty na pojedynczym przebiegu nie ma podstaw.")
     add_body(
         doc,
         "Trafność 0,50 oznacza rzut monetą tylko wtedy, gdy obie klasy są jednakowo częste. "
         "W badanym okresie tak nie jest: udział wzrostów rośnie wraz z horyzontem, więc "
         "właściwym punktem odniesienia nie jest 0,500, lecz częstość klasy liczniejszej. "
-        "Reguła \u201ezawsze wskazuj klasę liczniejszą\u201d nie zawiera żadnego uczenia.",
+        "Reguła „zawsze wskazuj klasę liczniejszą” nie zawiera żadnego uczenia.",
     )
-    table_rows = []
+    add_figure(
+        doc, "czestosc_bazowa",
+        "Trafność wobec częstości klasy liczniejszej (górny rząd) oraz udział prognoz wzrostu "
+        "wobec udziału wzrostów na rynku (dolny rząd), średnio ze wszystkich przebiegów. "
+        + ("Na każdym horyzoncie i w każdej architekturze punkt leży poniżej słupka: reguła "
+           "bez uczenia wypada lepiej. " if below else
+           "Punkty powyżej słupka oznaczają architekturę lepszą od reguły bez uczenia. ")
+        + "Częstość bazowa jest jednak znana dopiero z perspektywy czasu, a model kroczący "
+        "poznaje ją wyłącznie z własnego okna treningowego.",
+    )
+
+
+def _training_windows() -> dict[str, tuple[int, int]]:
+    """Per horizon: the median training window and horizon length, in bars, over
+    the study's runs, as each run recorded them in run_summary.json."""
+    found: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for path in glob.glob(f"{REPORT_ROOT}/predictions/*/*/run_summary.json"):
+        symbol, slug = path.replace("\\", "/").split("/")[-3:-1]
+        if not is_study_run(symbol, slug):
+            continue
+        try:
+            windows = json.load(open(path, encoding="utf-8")).get("training_windows") or {}
+        except (OSError, json.JSONDecodeError):
+            continue
+        for horizon, window in windows.items():
+            if window.get("window_bars") and window.get("forward_bars"):
+                found[horizon].append((int(window["window_bars"]), int(window["forward_bars"])))
+    return {
+        horizon: (int(np.median([w for w, _ in pairs])), int(np.median([f for _, f in pairs])))
+        for horizon, pairs in found.items()
+    }
+
+
+def calibration_facts(runs: dict) -> dict:
+    """What the thesis says about calibration, read from the runs.
+
+    Per horizon: the mean ECE of every architecture, its declared confidence and
+    hit rate, and how many independent observations the calibration slice holds.
+    The slice is the most recent share of the rows the window can train on
+    (section 8.8), and its independent observations are those rows over the
+    horizon - the reason the error grows with the horizon.
+    """
+    try:
+        from documentation_figures import calibration_summary
+
+        summary = calibration_summary()
+    except Exception:
+        summary = {}
+    windows = _training_windows()
+    facts: dict = {"by_horizon": {}, "overconfident": bool(summary)}
     for horizon in HORIZON_NAMES:
+        ece = {}
         for model in MODELS:
-            values = rows_by.get((horizon, model))
-            if not values:
-                continue
-            arr = np.array(values)
-            table_rows.append([
-                horizon, model,
-                fmt(float(arr[:, 0].mean())),
-                f"{arr[:, 1].mean():.1%}",
-                f"{arr[:, 2].mean():.1%}",
-                fmt(float(arr[:, 3].mean())),
-                f"{arr[:, 0].mean() - arr[:, 3].mean():+.3f}",
-            ])
-    add_table(
-        doc,
-        ["Horyzont", "Model", "Trafność", "Mówi wzrost", "Był wzrost", "Większość", "Różnica"],
-        table_rows,
-        [2.1, 2.1, 2.0, 2.5, 2.3, 2.2, 2.2],
-        font=8,
-    )
-    add_caption(
-        doc, "Tabela",
-        "Kolumna \u201eRóżnica\u201d to trafność pomniejszona o częstość klasy liczniejszej. "
-        "Wartość ujemna oznacza, że model wypada gorzej niż reguła bez uczenia. Zwraca uwagę "
-        "kolumna \u201eMówi wzrost\u201d: modele wystawiają prognozy bliskie zbalansowanym "
-        "również tam, gdzie rynek był wyraźnie jednostronny \u2014 czego nie należy im "
-        "poczytywać za wadę, ponieważ częstość bazowa jest znana dopiero z perspektywy czasu, "
-        "a model kroczący poznaje ją wyłącznie z własnego okna treningowego.",
-    )
+            values = [v for symbol in SYMBOLS
+                      for v in horizon_values(runs.get((symbol, model), []), horizon, "ece")]
+            if values:
+                ece[model] = float(np.mean(values))
+        cells = {m: summary[(horizon, m)] for m in MODELS if (horizon, m) in summary}
+        if any(c["confidence"] <= c["accuracy"] for c in cells.values()):
+            facts["overconfident"] = False
+        slice_observations = None
+        if horizon in windows:
+            window, forward = windows[horizon]
+            slice_observations = CALIBRATION_FRACTION * (window - forward) / forward
+        facts["by_horizon"][horizon] = {"ece": ece, "cells": cells,
+                                        "slice_observations": slice_observations}
+    return facts
+
+
+def _span(values: list[float], spec: str = ".2f", *, prose: bool = True) -> str:
+    """The range of a few values - "0,04-0,06" in prose, "0.040-0.060" in a table -
+    or the value alone when they all print alike."""
+    low, high = (pl(v, spec) if prose else format(v, spec) for v in (min(values), max(values)))
+    return low if low == high else f"{low}-{high}"
 
 
 def _results_calibration(doc: Document, runs: dict) -> None:
-    """ECE per architecture: the project's one positive engineering result."""
-    table_rows = []
-    for horizon in HORIZON_NAMES:
-        for model in MODELS:
-            values = []
-            for symbol in SYMBOLS:
-                values.extend(horizon_values(runs.get((symbol, model), []), horizon, "ece"))
-            if not values:
-                continue
-            arr = np.array(values)
-            table_rows.append([
-                horizon, model, str(len(arr)),
-                fmt(float(arr.mean())),
-                f"{arr.min():.3f}\u2013{arr.max():.3f}",
-            ])
-    if not table_rows:
+    """ECE and reliability per architecture: how far the declared confidence lies
+    from the hit rate, and why the gap grows with the horizon."""
+    if "kalibracja" not in _FIGURES and "niezawodnosc" not in _FIGURES:
         return
-    add_heading(doc, "10.5. Kalibracja", 2)
+    facts = calibration_facts(runs)
+    by_horizon = {h: f for h, f in facts["by_horizon"].items() if f["ece"] and f["cells"]}
+    add_heading(doc, "10.5. Kalibracja i reguły oceny właściwej", 2)
     add_body(
         doc,
         "Oczekiwany błąd kalibracji mierzy rozbieżność między deklarowaną pewnością a "
-        "rzeczywistą częstością trafień. Jest to wielkość niezależna od zdolności "
-        "rozróżniania: model pozbawiony przewagi może być doskonale skalibrowany, jeżeli "
-        "poprawnie raportuje, że nic nie wie.",
+        "rzeczywistą częstością trafień, niezależnie od zdolności rozróżniania. Model bez "
+        "przewagi jest dobrze skalibrowany wtedy, gdy deklaruje pewność bliską 50%, bo tyle "
+        "wynosi jego częstość trafień.",
     )
+    add_figure(doc, "kalibracja", "Oczekiwany błąd kalibracji według horyzontu i architektury. Wartości rosną z horyzontem, ponieważ wycinek kalibracyjny zawiera tym mniej obserwacji niezależnych, im dłuższy jest horyzont; błąd każdego przebiegu podaje załącznik E.")
+    try:
+        from documentation_figures import RELIABILITY_MIN_BIN
+    except Exception:
+        RELIABILITY_MIN_BIN = 0
+    add_figure(
+        doc, "niezawodnosc",
+        "Krzywe niezawodności pięciu architektur na czterech horyzontach, zbiorczo po "
+        "instrumentach i ziarnach. Przekątna oznacza kalibrację doskonałą, a krzywa poniżej "
+        "niej - prognozę bardziej pewną, niż pozwalają na to trafienia. Punkty wyznaczono z "
+        f"przedziałów pewności zawierających co najmniej {RELIABILITY_MIN_BIN} prognoz.",
+    )
+    if not by_horizon:
+        return
     add_table(
         doc,
-        ["Horyzont", "Model", "Przeb.", "ECE średnie", "Zakres"],
-        table_rows,
-        [2.4, 2.4, 2.0, 3.0, 3.6],
-        font=8.5,
+        ["Horyzont", "Deklarowana pewność", "Częstość trafień", "ECE",
+         "Obserwacje niezależne w wycinku kalibracyjnym"],
+        [[HORIZON_LABEL[h],
+          _span([c["confidence"] for c in f["cells"].values()], ".3f", prose=False),
+          _span([c["accuracy"] for c in f["cells"].values()], ".3f", prose=False),
+          _span(list(f["ece"].values()), ".3f", prose=False),
+          "-" if f["slice_observations"] is None else f"{f['slice_observations']:.2f}"]
+         for h, f in by_horizon.items()],
+        [2.4, 3.4, 3.2, 2.6, 4.4],
     )
     add_caption(
         doc, "Tabela",
-        "Błąd kalibracji na horyzont i architekturę. Niski błąd przy trafności bliskiej "
-        "poziomowi losowemu oznacza system, który poprawnie komunikuje własną niepewność "
-        "\u2014 jest to osobny, pozytywny wynik inżynierski, niezależny od braku przewagi "
-        "prognostycznej.",
+        "Pewność, trafienia i błąd kalibracji według horyzontu. Każda komórka podaje zakres "
+        "od najniższej do najwyższej średniej spośród pięciu architektur; ostatnia kolumna - "
+        "przybliżoną liczbę obserwacji niezależnych w wycinku, na którym wyznaczana jest "
+        "temperatura (długość wycinka podzielona przez horyzont).",
     )
+    ece = _learner_ece(runs)
+    week, year = by_horizon.get("week"), by_horizon.get("year")
+    if week and year and "week" in ece and "year" in ece:
+        learners = [m for m in LEARNERS if m in week["cells"]]
+        over = [h for h, f in by_horizon.items()
+                if all(f["cells"][m]["confidence"] > f["cells"][m]["accuracy"]
+                       for m in learners if m in f["cells"])]
+        level = [h for h in by_horizon if h not in over]
+        temperatures = temperature_facts()
+        add_body(
+            doc,
+            "Architektury uczące się są niemal skalibrowane na horyzoncie tygodniowym (ECE "
+            f"{_span(ece['week'])}), a błąd kalibracji rośnie z horyzontem do "
+            f"{_span(ece['year'])} na rocznym. "
+            + (f"Na horyzoncie {_listing([HORIZON_LOCATIVE[h] for h in over])} deklarują więcej "
+               "pewności, niż wynosi ich częstość trafień" if over else "")
+            + (f"; na {_listing([HORIZON_LOCATIVE[h] for h in level])} średnia pewność "
+               "zrównuje się z częstością trafień i błąd bierze się z tego, że pewność nie "
+               "układa się zgodnie z trafieniami, a nie z jej nadmiaru" if over and level else "")
+            + (". " if over else "")
+            + "Przyczynę wzrostu pokazuje ostatnia kolumna tabeli: temperaturę wyznacza się na "
+            f"wycinku obejmującym najnowsze {CALIBRATION_FRACTION:.0%} wierszy okna treningowego "
+            "(rozdział 8.8), który na horyzoncie tygodniowym zawiera około "
+            f"{pl(week['slice_observations'], '.0f')} obserwacji niezależnych, a na rocznym - "
+            f"{pl(year['slice_observations'], '.2f')}"
+            + (f". Na horyzoncie rocznym {pl(100 * temperatures['year_without_slice'], '.0f')}% "
+               "prognoz pochodzi przy tym z okien, w których wycinka nie dało się wydzielić"
+               if temperatures else "")
+            + ". Temperatura wyznaczona z kilku obserwacji niezależnych przenosi się na okres "
+            "prognozy tylko w przybliżeniu.",
+        )
+        if temperatures:
+            add_body(
+                doc,
+                "Kalibracja silnie spłaszcza prognozy: średnia wartość bezwzględna przewagi "
+                f"spada z {_span(temperatures['edge_raw'])} przed kalibracją do "
+                f"{_span(temperatures['edge_calibrated'])} po niej, a mediana dopasowanej "
+                f"temperatury wynosi od {pl(temperatures['median_low'], '.0f')} do "
+                f"{pl(temperatures['median_high'], '.0f')}, zależnie od architektury i "
+                "horyzontu. Surowy model jest więc pewny swojej prognozy niemal zawsze, a "
+                "wycinek, na którym nie wykazuje umiejętności, sprowadza ją w pobliże 50%.",
+            )
+        if "baseline" in year["ece"]:
+            worst = [h for h, f in by_horizon.items()
+                     if f["ece"] and max(f["ece"], key=f["ece"].get) == "baseline"]
+            add_body(
+                doc,
+                "Model odniesienia nie jest kalibrowany: prognozuje częstość klas w oknie "
+                "treningowym, która na długich horyzontach nie przenosi się na okres prognozy. "
+                + (f"Na horyzoncie {_listing([HORIZON_LOCATIVE[h] for h in worst])} ma "
+                   "największy błąd kalibracji ze wszystkich architektur "
+                   f"({pl(year['ece']['baseline'])} na rocznym)." if worst else ""),
+            )
+
+
+def _learner_ece(runs: dict) -> dict[str, list[float]]:
+    """Per horizon, the mean ECE of each learning architecture."""
+    by_horizon = calibration_facts(runs)["by_horizon"] if runs else {}
+    return {h: [f["ece"][m] for m in LEARNERS if m in f["ece"]]
+            for h, f in by_horizon.items()
+            if any(m in f["ece"] for m in LEARNERS)}
+
+
+def _calibration_claim(runs: dict) -> str:
+    """The calibration bullet of section 1.5, from the runs."""
+    ece = _learner_ece(runs)
+    if "week" not in ece or "year" not in ece:
+        return ("Kalibrację prognoz opisuje rozdział 10.5.")
+    return (
+        "Po skalowaniu temperatury prognozy architektur uczących się są niemal skalibrowane "
+        f"na horyzoncie tygodniowym (ECE {_span(ece['week'])}), a błąd kalibracji rośnie z "
+        f"horyzontem do {_span(ece['year'])} na rocznym, na którym wycinek kalibracyjny "
+        "zawiera mniej niż jedną obserwację niezależną. Surowe prognozy tych architektur są "
+        "niemal pewne, więc bez kalibracji ich prawdopodobieństwa nie odpowiadałyby częstości "
+        "trafień."
+    )
+
+
+@functools.cache
+def temperature_facts() -> dict:
+    """How the calibrator treated the study's forecasts, read from the predictions.
+
+    Every trained payload of a calibrated model records the temperature it was
+    given and where that came from (section 8.8), with the probabilities before
+    calibration. Empty when the runs predate that record.
+    """
+    cells: dict[tuple[str, str], dict] = {}
+    for symbol, slug in sorted(study_runs()):
+        model = slug.split("_")[0]
+        if model not in LEARNERS:
+            continue
+        path = os.path.join(REPORT_ROOT, "predictions", symbol, slug, "predictions.jsonl")
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                for horizon in HORIZON_NAMES:
+                    payload = row.get(horizon) or {}
+                    if not payload.get("trained") or "temperature" not in payload:
+                        continue
+                    cell = cells.setdefault((horizon, model), {
+                        "fitted": [], "other": 0, "raw": [], "calibrated": []})
+                    if payload["temperature_source"] == "fitted":
+                        cell["fitted"].append(payload["temperature"])
+                    else:
+                        cell["other"] += 1
+                    before = payload["uncalibrated"]
+                    cell["raw"].append(abs(before["long"] - before["short"]))
+                    cell["calibrated"].append(abs(payload["P_long"] - payload["P_short"]))
+    if not cells:
+        return {}
+    medians = [float(np.median(c["fitted"])) for c in cells.values() if c["fitted"]]
+    above = [float(np.mean(np.asarray(c["fitted"]) > 10.0)) for c in cells.values() if c["fitted"]]
+    year = [c for (h, _), c in cells.items() if h == "year"]
+    year_total = sum(len(c["fitted"]) + c["other"] for c in year)
+    return {
+        "edge_raw": [float(np.mean(c["raw"])) for c in cells.values()],
+        "edge_calibrated": [float(np.mean(c["calibrated"])) for c in cells.values()],
+        "median_low": min(medians), "median_high": max(medians),
+        "above_ten": above,
+        "year_without_slice": (sum(c["other"] for c in year) / year_total) if year_total else 0.0,
+    }
+
+
+def _fit_rows_note(horizons: list[str]) -> str:
+    """How much the purge shortened the fitted rows at *horizons*, and what can be said of it."""
+    windows = _training_windows()
+    parts = []
+    for horizon in horizons:
+        if horizon not in windows:
+            continue
+        window, forward = windows[horizon]
+        trainable = window - forward
+        before = trainable - int(trainable * CALIBRATION_FRACTION)
+        parts.append(f"z {before} do {before - forward} wierszy")
+    if not parts:
+        return ""
+    return ("; tam przerwa skraca część uczącą najbardziej (" + _listing(parts) + "), a okres "
+            "oceny mieści mniej niż dziesięć bloków, więc tej różnicy nie da się ocenić "
+            "statystycznie")
+
+
+def _defects_calibration(doc: Document, runs: dict) -> None:
+    """Chapter 11.8: what the review of the calibration slice found, and what fixing it changed."""
+    add_heading(doc, "11.8. Granica uczenia i kalibracji", 2)
+    add_body(
+        doc,
+        "Rozrysowanie podziału okna treningowego na osi czasu (rozdział 8.8) ujawniło, że "
+        "wycinek kalibracyjny przylegał do części uczącej bez przerwy. Etykiety ostatnich F "
+        "wierszy uczących były liczone z cen przypadających na okres wycinka, więc kalibrator "
+        "- a w GRU i TFT także reguła wczesnego zatrzymania - oceniały model na wynikach, na "
+        "których się uczył. Na horyzoncie rocznym, gdzie wycinek jest krótszy od horyzontu, "
+        "dotyczyło to każdej jego świecy, a TFT liczył stratę do zatrzymania także na świecach "
+        "sprzed wycinka. Przegląd tej części systemu wykazał cztery dalsze usterki: siatkę "
+        "temperatur kończącą się na 10, która nie pozwalała spłaszczyć prognozy bez "
+        "umiejętności; różne uzupełnianie braków w obu sieciach; przesuwanie podziału przy "
+        "jednej klasie tylko w sieciach; okna bez wycinka pozostawione bez kalibracji.",
+    )
+    previous = load_runs(is_previous_study_run)
+    if not runs or not previous:
+        return
+    rows, accuracy_moves = [], {}
+    for horizon in HORIZON_NAMES:
+        cells = []
+        for field in ("accuracy", "confidence", "ece", "nll"):
+            before = [float(np.mean(horizon_values([r for s in SYMBOLS
+                                                    for r in previous.get((s, m), [])],
+                                                   horizon, field)))
+                      for m in LEARNERS
+                      if horizon_values([r for s in SYMBOLS for r in previous.get((s, m), [])],
+                                        horizon, field)]
+            after = [float(np.mean(horizon_values([r for s in SYMBOLS for r in runs.get((s, m), [])],
+                                                  horizon, field)))
+                     for m in LEARNERS
+                     if horizon_values([r for s in SYMBOLS for r in runs.get((s, m), [])],
+                                       horizon, field)]
+            if not before or not after:
+                break
+            cells.append(f"{np.mean(before):.3f} / {np.mean(after):.3f}")
+            if field == "accuracy":
+                accuracy_moves[horizon] = float(np.mean(after) - np.mean(before))
+        if len(cells) == 4:
+            rows.append([HORIZON_LABEL[horizon], *cells])
+    if not rows:
+        return
+    add_body(
+        doc,
+        "Po poprawkach badanie przeliczono w całości, na tym samym protokole. Tabela zestawia "
+        "średnie czterech architektur uczących się z obu przeliczeń.",
+    )
+    add_table(doc, ["Horyzont", "Trafność", "Pewność", "ECE", "Strata log."], rows,
+              [2.8, 3.3, 3.3, 3.3, 3.3], font=10)
+    add_caption(
+        doc, "Tabela",
+        "Średnie czterech architektur uczących się przed poprawkami granicy uczenia i "
+        "kalibracji i po nich (przed / po). Model odniesienia nie jest kalibrowany i w obu "
+        "przeliczeniach ma wyniki identyczne.",
+    )
+    small = [h for h, move in accuracy_moves.items() if abs(move) < 0.01]
+    large = {h: move for h, move in accuracy_moves.items() if abs(move) >= 0.01}
+    temperatures = temperature_facts()
+    add_body(
+        doc,
+        (f"Trafność zmieniła się na horyzoncie {_listing([HORIZON_LOCATIVE[h] for h in small])} "
+         "o mniej niż punkt procentowy - kierunek prognozy nie zależy od kalibracji, a krótsza "
+         "część ucząca zmienia model nieznacznie" if small else "")
+        + ("" if not large else
+           ("; " if small else "Trafność zmieniła się ") + "na "
+           + _listing([f"{HORIZON_LOCATIVE[h]} o {pl(100 * m, '+.1f')} pkt proc."
+                       for h, m in large.items()])
+           + _fit_rows_note(list(large)))
+        + ". Pewność, błąd kalibracji i strata logarytmiczna spadły na każdym horyzoncie."
+        + (" Główną przyczyną nadmiernej pewności była granica siatki temperatur: w nowym "
+           f"przeliczeniu temperatura dopasowana na wycinku przekracza 10 w "
+           f"{pl(100 * min(temperatures['above_ten']), '.0f')}-"
+           f"{pl(100 * max(temperatures['above_ten']), '.0f')}% okien, zależnie od architektury "
+           "i horyzontu." if temperatures else ""),
+    )
+
+
+COIN_BRIER, COIN_LOG_LOSS = 0.5, math.log(2.0)
+
+
+def scoring_rules(runs: dict) -> dict[tuple[str, str], tuple[float, float, int]]:
+    """Per (horizon, model): mean Brier score and log loss over the distinct runs, and their count."""
+    distinct = distinct_runs(runs)
+    out: dict[tuple[str, str], tuple[float, float, int]] = {}
+    for horizon in HORIZON_NAMES:
+        for model in MODELS:
+            entries = [r for s in SYMBOLS for r in distinct.get((s, model), [])]
+            briers = horizon_values(entries, horizon, "brier")
+            losses = horizon_values(entries, horizon, "nll")
+            if briers and len(briers) == len(losses):
+                out[(horizon, model)] = (float(np.mean(briers)), float(np.mean(losses)),
+                                         len(briers))
+    return out
+
+
+def _results_scoring_rules(doc: Document, runs: dict) -> None:
+    """Both proper scores by architecture and horizon, against a forecast that says nothing."""
+    scores = scoring_rules(runs)
+    horizons = [h for h in HORIZON_NAMES if any((h, m) in scores for m in MODELS)]
+    if not horizons:
+        return
+    add_body(
+        doc,
+        "Wynik Briera i strata logarytmiczna oceniają prognozę probabilistyczną w całości: "
+        "karzą zarówno brak rozróżniania, jak i pewność nieuzasadnioną trafieniami. Tabela "
+        "podaje ich średnie według architektury i horyzontu wraz z prognozą stałą 0,5, która "
+        "nie niesie żadnej informacji: jej wynik Briera, liczony po obu klasach, wynosi 0,5, a "
+        f"strata logarytmiczna ln 2 = {pl(COIN_LOG_LOSS)}. Model odniesienia, prognozujący "
+        "częstość klas w oknie treningowym, jest drugim poziomem odniesienia.",
+    )
+    rows = [[MODEL_LABEL[m], *(
+        "-" if (h, m) not in scores else f"{scores[(h, m)][0]:.3f} / {scores[(h, m)][1]:.3f}"
+        for h in horizons)] for m in MODELS]
+    rows.append(["prognoza 0,5", *(f"{COIN_BRIER:.3f} / {COIN_LOG_LOSS:.3f}" for _ in horizons)])
+    add_table(doc, ["Architektura", *(HORIZON_LABEL[h] for h in horizons)], rows,
+              [4.0] + [3.0] * len(horizons), font=10)
+    add_caption(
+        doc, "Tabela",
+        "Średni wynik Briera i średnia strata logarytmiczna (w tej kolejności) według "
+        "architektury i horyzontu; niższe wartości oznaczają lepsze prognozy. Średnie po "
+        "różnych przebiegach, każdy przebieg z równą wagą.",
+    )
+    better = {h: [m for m in MODELS if (h, m) in scores and scores[(h, m)][1] < COIN_LOG_LOSS]
+              for h in horizons}
+    if not any(better.values()):
+        verdict = ("Żadna architektura nie uzyskuje na żadnym horyzoncie straty logarytmicznej "
+                   "niższej niż prognoza 0,5.")
+    else:
+        verdict = "Stratę logarytmiczną niższą niż prognoza 0,5 uzyskuje " + "; ".join(
+            f"na horyzoncie {HORIZON_LOCATIVE[h]} " + (
+                _listing([MODEL_LABEL[m] for m in better[h]]) if better[h] else "żadna")
+            for h in horizons) + "."
+    add_body(doc, verdict)
 
 
 def _results_backtest(doc: Document) -> None:
     """Trading simulation with its four nulls, read from the artifacts."""
-    found = defaultdict(list)
-    for path in sorted(glob.glob(f"{REPORT_ROOT}/backtests/*/*/backtest.json")):
-        parts = path.replace("\\", "/").split("/")
-        symbol, model = parts[-3], parts[-2].split("_")[0]
-        if not is_study_run(symbol, parts[-2]):
-            continue
-        try:
-            payload = json.load(open(path, encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        nulls = payload.get("nulls") or {}
-        momentum = (nulls.get("naive_momentum") or {}).get("roi_pct") or 0
-        found[(symbol, model)].append((
-            payload.get("roi_pct"),
-            (payload.get("benchmark") or {}).get("excess_roi_pct"),
-            (nulls.get("constant_exposure") or {}).get("excess_roi_pct"),
-            (nulls.get("mistimed_replay") or {}).get("percentile"),
-            (payload.get("roi_pct") or 0) - momentum,
-            payload.get("max_drawdown_pct"),
-        ))
+    try:
+        from documentation_figures import backtest_summary
+    except Exception:
+        return
+    found = backtest_summary()
     if not found:
         return
+    percentiles = [
+        float(np.nanmean([row[3] if row[3] is not None else np.nan for row in values]))
+        for values in found.values()
+    ]
+    median = float(np.nanmedian(percentiles))
 
     add_heading(doc, "10.7. Symulacja handlowa", 2)
-    add_figure(doc, "stabilnosc", "Trafność miesiąc po miesiącu dla BTCUSDT na horyzoncie tygodniowym. Wahania wokół poziomu losowego są znacznie większe niż jakakolwiek trwała przewaga - to jest obraz, który średnia z całego okresu ukrywa.")
     add_body(
         doc,
         "Wyniki podano wyłącznie jako kontekst ekonomiczny; nie stanowią oceny prognozy "
@@ -2483,36 +3975,19 @@ def _results_backtest(doc: Document) -> None:
         "rozstrzygający jest percentyl względem własnych przesunięć cyklicznych: wielkość ta "
         "zachowuje sekwencję ekspozycji i zmienia wyłącznie jej ułożenie w czasie, więc "
         "izoluje wyczucie momentu od poziomu zaangażowania. Wartość 50 oznacza brak wyczucia, "
-        "95 byłaby sygnałem.",
+        "95 byłaby sygnałem. Mediana tego percentyla ze wszystkich par instrument - "
+        f"architektura wynosi {pl(median, '.1f')} - "
+        + ("poniżej przypadkowych 50, co oznacza, że rzeczywiste ułożenie sygnałów w czasie "
+           "wypada gorzej niż ułożenie arbitralne." if median < 50 else
+           "powyżej przypadkowych 50, lecz daleko od progu sygnału."),
     )
-    table_rows, percentiles = [], []
-    for (symbol, model), values in sorted(found.items()):
-        arr = np.array(
-            [[v if v is not None else np.nan for v in row] for row in values], dtype=float
-        )
-        mean = np.nanmean(arr, axis=0)
-        percentiles.append(mean[3])
-        table_rows.append([
-            symbol.replace("USDT", ""), model, str(len(values)),
-            f"{mean[0]:+.0f}", f"{mean[1]:+.0f}", f"{mean[2]:+.0f}",
-            f"{mean[3]:.1f}", f"{mean[4]:+.0f}", f"{mean[5]:.0f}",
-        ])
-    add_table(
-        doc,
-        ["Symbol", "Model", "Przeb.", "ROI %", "vs hold", "vs stała", "Percentyl",
-         "vs momentum", "Obsun. %"],
-        table_rows,
-        [1.7, 1.9, 1.4, 1.8, 1.9, 1.9, 2.0, 2.2, 1.8],
-        font=8,
-    )
-    median = float(np.nanmedian(percentiles))
-    add_caption(
-        doc, "Tabela",
-        f"Symulacja na horyzoncie tygodniowym, uśredniona po ziarnach. Mediana percentyla "
-        f"wobec własnych przesunięć wynosi {pl(median, '.1f')} \u2014 poniżej przypadkowych 50, co "
-        "oznacza, że rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie "
-        "arbitralne. Kolumny \u201evs\u201d podają różnicę stopy zwrotu w punktach "
-        "procentowych wobec danego punktu odniesienia; wartości ujemne oznaczają przegraną.",
+    add_figure(doc, "backtest", "Percentyl każdej symulacji względem jej własnych przesunięć cyklicznych. Mediana leży poniżej 50, czyli rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie arbitralne. Próg sygnału na poziomie 95 nie został osiągnięty przez żaden przebieg.")
+    add_figure(
+        doc, "symulacja_nadwyzki",
+        "Różnica stopy zwrotu strategii wobec trzech punktów odniesienia, w punktach "
+        "procentowych. Każdy punkt to jeden instrument (średnia z ziaren), kreska - mediana "
+        "architektury; wartości poniżej zera oznaczają przegraną z danym punktem odniesienia. "
+        "Pełne wyniki symulacji podaje załącznik E.",
     )
 
 
@@ -2532,102 +4007,386 @@ def _results_max_vs_mean(doc: Document) -> None:
             if cell.get("accuracy") is None:
                 continue
             interval = cell.get("accuracy_ci") or {}
+            # The stored interval has no flag of its own: a refused one has no bounds.
+            bounds = (interval.get("low"), interval.get("high"))
             entry = (cell["accuracy"], symbol, slug.split("_")[0],
-                     interval.get("effective_samples"), interval.get("estimable"))
+                     interval.get("effective_samples"),
+                     None if None in bounds else bounds)
             if horizon not in best or entry[0] > best[horizon][0]:
                 best[horizon] = entry
     if not best:
         return
 
-    add_heading(doc, "10.8. Dlaczego najlepsza komórka nie jest wynikiem", 2)
-    add_figure(doc, "backtest", "Percentyl każdej symulacji względem jej własnych przesunięć cyklicznych. Mediana leży poniżej 50, czyli rzeczywiste ułożenie sygnałów w czasie wypada gorzej niż ułożenie arbitralne. Próg sygnału na poziomie 95 nie został osiągnięty przez żaden przebieg.")
+    add_heading(doc, "10.8. Najlepsza komórka a liczba pomiarów", 2)
     add_body(
         doc,
-        "Zestawienie najlepszych komórek jest miarą kuszącą i myloną (Bailey i López de "
-        "Prado, 2014). Maksimum z wielu "
+        "Zestawienie najlepszych komórek jest miarą kuszącą i mylącą[@bailey2014]. "
+        "Maksimum z wielu "
         "zaszumionych pomiarów rośnie wraz z ich liczbą nawet wtedy, gdy żaden z nich nie "
-        "zawiera sygnału \u2014 przy kilkudziesięciu komórkach i poziomie istotności 5% "
+        "zawiera sygnału - przy kilkudziesięciu komórkach i poziomie istotności 5% "
         "należy oczekiwać kilku przekroczeń progu wyłącznie z przypadku.",
     )
     add_table(
         doc,
         ["Horyzont", "Najlepsza komórka", "Trafność", "Obs. niezależnych", "Przedział"],
-        [[horizon, f"{sym.replace('USDT', '')} / {model}", fmt(acc),
-          "\u2014" if eff is None else f"{eff:.1f}",
-          "wyznaczony" if estimable else "ODMÓWIONY"]
-         for horizon, (acc, sym, model, eff, estimable) in best.items()],
+        [[HORIZON_LABEL[horizon], f"{sym.replace('USDT', '')} / {MODEL_LABEL[model]}", fmt(acc),
+          "-" if eff is None else f"{eff:.1f}",
+          f"{bounds[0]:.3f}-{bounds[1]:.3f}" if bounds else "odmówiony"]
+         for horizon, (acc, sym, model, eff, bounds) in best.items()],
         [2.4, 4.0, 2.4, 3.4, 3.4],
-        font=8.5,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
         "Najwyższa trafność na każdym horyzoncie wraz z liczbą obserwacji niezależnych, na "
-        "której ją zmierzono. Tam, gdzie liczba ta jest zbyt mała, system odmawia wyznaczenia "
-        "przedziału ufności i nie orzeka o przewadze \u2014 co jest właściwym zachowaniem: "
-        "wartość punktowa pozostaje raportowana, wycofane zostaje wyłącznie twierdzenie o jej "
-        "precyzji. Wnioski rozdziału opierają się na średnich, nie na maksimach.",
+        "której ją zmierzono, i 95-procentowym przedziałem ufności. Tam, gdzie liczba "
+        "obserwacji jest zbyt mała, system odmawia wyznaczenia przedziału: wartość punktowa "
+        "pozostaje raportowana, a wycofane zostaje tylko twierdzenie o jej precyzji. Przedział "
+        "wyłączający 0,5 "
+        "nie rozstrzyga jeszcze niczego, ponieważ maksimum wybrano spośród wielu pomiarów; "
+        "co z takich wyników zostaje po uwzględnieniu ich liczby, pokazuje podrozdział 10.9.",
     )
 
 
-def _results_stability(doc: Document) -> None:
-    """Per-month quality, read from the stability artifacts."""
-    reports = sorted(glob.glob(f"{REPORT_ROOT}/eval/*/*/stability_summary.json"))
-    if not reports:
-        return
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    """The Polish noun form that goes with *n*."""
+    if n == 1:
+        return one
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return few
+    return many
 
-    add_heading(doc, "10.6. Stabilność w czasie", 2)
-    add_figure(doc, "kalibracja", "Oczekiwany błąd kalibracji według horyzontu i architektury. Wartości rosną z horyzontem, ponieważ wycinek kalibracyjny kurczy się wraz z liczbą obserwacji niezależnych.")
+
+def _thousands(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
+
+
+def _percent(share: float) -> str:
+    return f"{share * 100:.0f}%"
+
+
+def _agreement_with_baseline(runs: dict, symbol: str, horizon: str) -> list[float]:
+    """For each learning run on *symbol*: the share of bars on which it predicted
+    the same side as the baseline."""
+    distinct = distinct_runs(runs)
+    base_entries = distinct.get((symbol, "baseline"), [])
+    if not base_entries:
+        return []
+    base = _scored(symbol, base_entries[0]["slug"], horizon, ["date", "pred_direction"])
+    side = dict(zip((str(d)[:10] for d in base["date"].to_list()), base["pred_direction"].to_list()))
+    shares = []
+    for model in MODELS:
+        if model == "baseline":
+            continue
+        for run in distinct.get((symbol, model), []):
+            frame = _scored(symbol, run["slug"], horizon, ["date", "pred_direction"])
+            pairs = [(side[str(d)[:10]], p) for d, p in
+                     zip(frame["date"].to_list(), frame["pred_direction"].to_list())
+                     if str(d)[:10] in side]
+            if pairs:
+                shares.append(float(np.mean([a == b for a, b in pairs])))
+    return shares
+
+
+def _year_record(year: dict) -> str:
+    """One year of a forecaster's record: the side it mostly called, against what happened."""
+    rising = year["predicted_long"] >= 0.5
+    called = year["predicted_long"] if rising else 1 - year["predicted_long"]
+    return (f"przewidywał {'wzrost' if rising else 'spadek'} w {_percent(called)} dni, a kwartał "
+            f"kończył się wzrostem w {_percent(year['actual_long'])} z nich - trafność "
+            f"{pl(year['accuracy'])}")
+
+
+def _who(m: dict) -> str:
+    seed = f" pod ziarnem {m['seed']}" if m["seed"] is not None else ""
+    return f"{MODEL_LABEL[m['model']]} na {m['symbol']}{seed}"
+
+
+def _results_departures(doc: Document, runs: dict) -> None:
+    """Which single measurements depart from a coin flip, and which survive the
+    number of measurements taken."""
+    found = departures(runs)
+    every = found["measurements"]
+    if not every:
+        return
+    total = len(every)
+    tested = [h for h in HORIZON_NAMES if any(m["horizon"] == h for m in every)]
+    refused = [h for h in HORIZON_NAMES if h not in tested]
+    nominal = sorted((m for m in every if m["p"] < FALSE_DISCOVERY_RATE), key=lambda m: m["p"])
+    below = [m for m in nominal if m["accuracy"] < CHANCE]
+    above = [m for m in nominal if m["accuracy"] > CHANCE]
+    survivors = sorted((m for m in every if m["q"] < FALSE_DISCOVERY_RATE), key=lambda m: m["p"])
+    agree = sum((m["p"] < FALSE_DISCOVERY_RATE) == (m["low"] > CHANCE or m["high"] < CHANCE)
+                for m in every)
+
+    add_heading(doc, "10.9. Odstępstwa od losowości", 2)
     add_body(
         doc,
-        "Średnia z całego okresu maskuje sytuację, w której model działa w jednym reżimie "
-        "rynkowym i zawodzi w innym. Poniższe zestawienie rozbija jakość na miesiące "
-        "kalendarzowe i podaje, w jakim odsetku miesięcy trafność przekroczyła poziom losowy - "
-        "wielkość odporną na pojedyncze wartości skrajne.",
+        "Podrozdziały 10.1-10.3 porównują architektury między sobą, a 10.8 pokazuje, jak "
+        "liczba pomiarów zawyża najlepszy z nich. Pytanie uzupełniające brzmi: "
+        "które pojedyncze pomiary odbiegają od rzutu monetą i czy którykolwiek z nich "
+        "wytrzymuje uwzględnienie liczby wykonanych pomiarów. Wartość p dla hipotezy, że "
+        "trafność wynosi 0,5, wyznaczono metodą z rozdziału 9.2 dla każdego z "
+        f"{total} pomiarów: {len({m['slug'] for m in every})} różnych przebiegów na horyzontach "
+        f"{_listing([HORIZON_LOCATIVE[h] for h in tested])}"
+        + (f"; na horyzoncie {_listing([HORIZON_LOCATIVE[h] for h in refused])} przedział, a z "
+           "nim wartość p, jest odmawiany z braku obserwacji niezależnych" if refused else "")
+        + f". Próbkowanie wydłużono do {_thousands(P_VALUE_RESAMPLES)} losowań przy tym samym "
+        f"ziarnie, więc pierwsze {_thousands(DEFAULT_RESAMPLES)} z nich to losowania "
+        "opublikowanych przedziałów. Dłuższy ciąg jest potrzebny, ponieważ z B losowań nie da "
+        "się otrzymać p mniejszego niż 2 / (B + 1), a poprawka wymaga od najmniejszej z "
+        f"{total} wartości, by nie przekraczała {pl(FALSE_DISCOVERY_RATE / total, '.4f')}. "
+        + ("Przedziały przeliczone z zapisanych wierszy ocenionych zgadzają się co do bitu z "
+           "zapisanymi w artefaktach." if not found["mismatched"] else
+           f"UWAGA: {found['mismatched']} przeliczonych przedziałów różni się od zapisanych w "
+           "artefaktach - tabele i wartości p pochodzą wtedy z różnych danych."),
     )
 
-    rows = []
-    for path in reports:
-        parts = path.replace("\\", "/").split("/")
-        symbol, slug = parts[-3], parts[-2]
-        model = slug.split("_")[0]
-        if not is_study_run(symbol, slug):
-            continue
-        try:
-            payload = json.load(open(path, encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        for horizon in HORIZON_NAMES:
-            values = [
-                cell["accuracy"]
-                for month in payload.get("months", [])
-                if (cell := (month.get("horizons") or {}).get(horizon))
-                and not cell.get("sparse")
-                and cell.get("accuracy") is not None
-                and (cell.get("samples") or 0) >= 20
-            ]
-            if len(values) < 6:
-                continue
-            arr = np.array(values)
-            above = int((arr > 0.5).sum())
-            rows.append([
-                symbol.replace("USDT", ""), model, horizon, str(len(arr)),
-                fmt(float(arr.mean())), fmt(float(np.median(arr))),
-                f"{above}/{len(arr)}", f"{above / len(arr):.0%}",
-            ])
-    if not rows:
-        return
+    if not survivors:
+        verdict = "nie pozostaje żaden."
+    else:
+        count = len(survivors)
+        verdict = (
+            ("pozostaje jeden pomiar: " if count == 1 else
+             f"pozostają {count} {_plural(count, 'pomiar', 'pomiary', 'pomiarów')}: ")
+            + "; ".join(
+                f"{_who(m)}, horyzont {HORIZON_NOMINATIVE[m['horizon']]}, "
+                f"trafność {pl(m['accuracy'])} - "
+                + ("poniżej losowości" if m["accuracy"] < CHANCE else "powyżej losowości")
+                for m in survivors)
+            + "."
+        )
+    add_body(
+        doc,
+        f"Próg 0,05 {_plural(len(nominal), 'przekroczył', 'przekroczyły', 'przekroczyło')} "
+        f"{len(nominal)} z {total} pomiarów, a przy braku jakiejkolwiek "
+        f"przewagi należałoby się spodziewać około {round(FALSE_DISCOVERY_RATE * total)}. "
+        f"Poniżej 0,5 {_plural(len(below), 'leży', 'leżą', 'leży')} {len(below)} z nich, "
+        f"powyżej {len(above)}. Są to "
+        + ("dokładnie te pomiary" if agree == total else
+           f"w {agree} z {total} przypadków te same pomiary")
+        + ", których 95-procentowy przedział nie obejmuje 0,5. Po poprawce "
+        "Benjaminiego-Hochberga przy odsetku fałszywych odkryć 5% " + verdict,
+    )
     add_table(
         doc,
-        ["Symbol", "Model", "Horyzont", "Mies.", "Średnia", "Mediana", "> 0,5", "Udział"],
-        sorted(rows, key=lambda r: (r[2], r[0], r[1])),
-        [1.9, 2.1, 2.1, 1.5, 1.9, 1.9, 1.8, 1.8],
-        font=8,
+        ["Symbol", "Model", "Ziarno", "Horyzont", "Trafność", "Przedział 95%", "p", "q"],
+        [[m["symbol"].replace("USDT", ""), MODEL_LABEL[m["model"]],
+          "-" if m["seed"] is None else str(m["seed"]),
+          HORIZON_LABEL[m["horizon"]], fmt(m["accuracy"]), f"{m['low']:.3f}-{m['high']:.3f}",
+          fmt(m["p"], 4), fmt(m["q"])]
+         for m in nominal],
+        [1.8, 2.0, 1.5, 2.0, 1.8, 2.8, 1.6, 1.4],
+        font=9,
     )
     add_caption(
         doc, "Tabela",
-        "Jakość prognozy miesiąc po miesiącu. Kolumna „Udział” podaje odsetek miesięcy, w "
-        "których trafność przekroczyła poziom losowy; wartość bliska połowie oznacza brak "
-        "trwałej przewagi niezależnie od średniej z całego okresu.",
+        "Pomiary, których trafność odbiega od 0,5 przy p < 0,05. Kolejność według rosnącego "
+        f"p. Kolumna q to wartość skorygowana procedurą Benjaminiego-Hochberga względem wszystkich "
+        f"{total} pomiarów; istotny po korekcie jest pomiar o q < 0,05. Wartości p z "
+        f"{_thousands(P_VALUE_RESAMPLES)} losowań bootstrapu blokowego, przedział z pierwszych "
+        f"{_thousands(DEFAULT_RESAMPLES)}. Kreska w kolumnie ziarna oznacza model, którego "
+        "wyniku ziarno nie zmienia.",
+    )
+
+    lag = baseline_lag(runs)
+    quarter = [m for m in nominal if m["horizon"] == "quarter"]
+    quarter_base = [m for m in quarter if m["model"] == "baseline"]
+    if lag and quarter_base and lag["window_bars"] and lag["forward_bars"]:
+        quarter_below = sum(m["accuracy"] < CHANCE for m in quarter)
+        add_body(
+            doc,
+            f"Spośród nich {len(quarter)} "
+            f"{_plural(len(quarter), 'pochodzi', 'pochodzą', 'pochodzi')} z horyzontu kwartalnego - "
+            + ("wszystkie poniżej 0,5" if quarter_below == len(quarter)
+               else f"{quarter_below} poniżej 0,5")
+            + f" - a {len(quarter_base)} z tych {len(quarter)} z modelu odniesienia ("
+            + _listing([m["symbol"] for m in quarter_base]) + "). Mechanizm widać w rozbiciu "
+            "wyników modelu odniesienia na lata. Na horyzoncie kwartalnym model zlicza kierunki "
+            f"{lag['window_bars'] - lag['forward_bars']} kwartalnych zwrotów zakończonych przed "
+            "dniem prognozy: najświeższy z nich rozpoczął się kwartał wcześniej, a całe okno "
+            f"sięga {lag['window_bars']} dni wstecz. Prognozuje więc kierunek, który dominował "
+            "przez mniej więcej dwa lata zakończone kwartał temu, i trzyma się raz wybranej "
+            f"strony średnio przez {lag['hold']:.0f} kolejnych dni (średnia z {lag['symbols']} "
+            "instrumentów). Taka reguła ma rację, dopóki "
+            "trwa reżim rynku, i myli się po każdym jego zwrocie - aż okno wypełni się nowym "
+            "reżimem.",
+        )
+        full_years = [y for y in lag["by_year"] if y["bars"] >= 360]
+        worst = sorted(sorted(full_years, key=lambda y: y["accuracy"])[:2], key=lambda y: y["year"])
+        add_table(
+            doc,
+            ["Rok", "Prognoza wzrostu", "Wzrost faktyczny", "Trafność", "Świec"],
+            [[y["year"], _percent(y["predicted_long"]), _percent(y["actual_long"]),
+              fmt(y["accuracy"]), str(y["bars"])] for y in lag["by_year"]],
+            [1.8, 3.4, 3.4, 2.4, 1.8],
+            font=9,
+        )
+        partial = [y["year"] for y in lag["by_year"] if y["bars"] < 360]
+        add_caption(
+            doc, "Tabela",
+            "Model odniesienia na BTCUSDT na horyzoncie kwartalnym, rok po roku. Kolumny: "
+            "odsetek dni z prognozą wzrostu, odsetek dni, po których kwartał rzeczywiście "
+            "zakończył się wzrostem, i trafność."
+            + (f" Rok {partial[0]} jest niepełny." if len(partial) == 1 else
+               f" Lata {_listing(partial)} są niepełne." if partial else ""),
+        )
+        if len(worst) == 2:
+            first, second = worst
+            add_body(
+                doc,
+                f"Na BTCUSDT najgorsze były lata {first['year']} i {second['year']}. W roku "
+                f"{first['year']} model {_year_record(first)}. W roku {second['year']} "
+                f"{_year_record(second)}. Trafność poniżej losowości nie jest tu zdolnością, "
+                "którą wystarczyłoby odwrócić: powstaje na kilku zwrotach cyklu rynku obecnych w "
+                "badanym okresie, a okres następny może ich zawierać inną liczbę.",
+            )
+
+        n, k = lag["symbols"], len(quarter_base)
+        add_body(
+            doc,
+            f"Wynik poniżej losowości na {k} "
+            f"{_plural(k, 'instrumencie', 'instrumentach', 'instrumentach')} nie oznacza {k} "
+            f"niezależnych potwierdzeń. Kwartalne zwroty {n} instrumentów "
+            f"korelują średnio na poziomie ρ = {pl(lag['rho_returns'], '.2f')} w "
+            f"{lag['days']} wspólnych dniach. Średnia z n zmiennych o wspólnej korelacji ρ ma "
+            "wariancję taką jak średnia z n / (1 + (n − 1)ρ) zmiennych niezależnych, więc "
+            f"{n} {_plural(n, 'instrument niesie', 'instrumenty niosą', 'instrumentów niesie')} "
+            "tu tyle informacji, co około "
+            f"{pl(effective_count(n, lag['rho_returns']), '.1f')} instrumentu niezależnego. "
+            "Same trafienia "
+            "i pomyłki modelu odniesienia korelują słabiej "
+            f"(ρ = {pl(lag['rho_hits'], '.2f')}), ponieważ okno każdego instrumentu zaczyna się "
+            "w innej dacie i obejmuje inną historię; równoważnik rośnie wtedy do "
+            f"{pl(effective_count(n, lag['rho_hits']), '.1f')}. Dla {k} instrumentów poniżej "
+            f"losowości oba odczyty dają od {pl(effective_count(k, lag['rho_returns']), '.1f')} "
+            f"do {pl(effective_count(k, lag['rho_hits']), '.1f')} niezależnego pomiaru.",
+        )
+
+    btc = [m for m in every if m["symbol"] == "BTCUSDT" and m["horizon"] == "quarter"]
+    shares = _agreement_with_baseline(runs, "BTCUSDT", "quarter")
+    if btc and shares and all(m["accuracy"] < CHANCE for m in btc):
+        accuracies = [m["accuracy"] for m in btc]
+        add_body(
+            doc,
+            "Na BTCUSDT horyzont kwartalny wypada poniżej 0,5 dla każdej architektury i "
+            f"każdego ziarna (od {pl(min(accuracies))} do {pl(max(accuracies))}). Modele uczące "
+            "się wskazywały tę samą stronę co model odniesienia w "
+            f"{_percent(min(shares))[:-1]}-{_percent(max(shares))} dni: przy cechach niosących "
+            "mało informacji odtwarzają częstość bazową swojego okna treningowego, a wraz z nią "
+            "jej opóźnienie.",
+        )
+    for m in survivors:
+        siblings = [s["accuracy"] for s in every
+                    if (s["symbol"], s["model"], s["horizon"]) == (m["symbol"], m["model"], m["horizon"])
+                    and s is not m]
+        text = (
+            ("Jedyny pomiar, który przetrwał poprawkę, " if len(survivors) == 1
+             else "Pomiar, który przetrwał poprawkę, ")
+            + f"to {_who(m)}, horyzont {HORIZON_NOMINATIVE[m['horizon']]}, "
+            f"trafność {pl(m['accuracy'])}"
+            + (f"; pozostałe ziarna dały {_listing([pl(a) for a in siblings])}" if siblings else "")
+            + ". Nie jest to skutek długości próbkowania - przy "
+            f"{_thousands(PRECISION_RESAMPLES)} losowaniach p = {pl(m['p_precise'], '.5f')}, a "
+            f"q = {pl(m['q_precise'])} - ani długości bloku: przy bloku podwojonym do "
+            f"{2 * m['block']} świec p = {pl(m['p_double_block'], '.4f')}."
+        )
+        if m["accuracy"] < CHANCE:
+            text += (" Jest to jednak pomiar opóźnienia trendu w jednym cyklu rynku, a nie "
+                     "zdolność, którą dałoby się wykorzystać - i to pomiar po stronie przegranej.")
+        add_body(doc, text)
+
+    if above:
+        def others_on(m: dict) -> list[dict]:
+            return [s for s in every if (s["symbol"], s["horizon"]) == (m["symbol"], m["horizon"])
+                    and s["model"] != m["model"]]
+
+        def mean_by_model(rows: list[dict]) -> dict[str, float]:
+            grouped: dict[str, list[float]] = defaultdict(list)
+            for row in rows:
+                grouped[row["model"]].append(row["accuracy"])
+            return {model: float(np.mean(v)) for model, v in grouped.items()}
+
+        lines = []
+        for m in above:
+            siblings = [s for s in every if (s["symbol"], s["model"], s["horizon"])
+                        == (m["symbol"], m["model"], m["horizon"]) and s is not m]
+            means = mean_by_model(others_on(m))
+            lines.append(
+                f"{_who(m)}, horyzont {HORIZON_NOMINATIVE[m['horizon']]}: {pl(m['accuracy'])}"
+                + (f"; pozostałe ziarna {_listing([pl(s['accuracy']) for s in siblings])}"
+                   if siblings else "")
+                + "; pozostałe architektury na tych samych danych: "
+                + ", ".join(f"{MODEL_LABEL[k]} {pl(v)}" for k, v in sorted(means.items(),
+                                                                         key=lambda kv: -kv[1]))
+                + "."
+            )
+        unconfirmed = not any(
+            s["p"] < FALSE_DISCOVERY_RATE and s["accuracy"] > CHANCE
+            for m in above for s in others_on(m)
+        )
+        elsewhere = not any(
+            s["p"] < FALSE_DISCOVERY_RATE and s["accuracy"] > CHANCE
+            for m in above for s in every
+            if (s["model"], s["horizon"]) == (m["model"], m["horizon"]) and s["symbol"] != m["symbol"]
+        )
+        add_body(
+            doc,
+            f"Powyżej 0,5 {_plural(len(above), 'leży', 'leżą', 'leży')} {len(above)} z "
+            f"{len(nominal)} pomiarów i "
+            + ("żaden nie przetrwał poprawki"
+               if not any(m["q"] < FALSE_DISCOVERY_RATE for m in above)
+               else "nie wszystkie przetrwały poprawkę")
+            + f" (najmniejsze q = {pl(min(m['q'] for m in above))}):",
+        )
+        add_bullets(doc, lines)
+        add_body(
+            doc,
+            "Tam, gdzie ziarna jednej architektury zgadzają się ze sobą, zgodność ta pokazuje "
+            "jedynie, że wynik nie jest artefaktem inicjalizacji. Ziarna widzą te same dane, "
+            "więc nie stanowią replikacji; replikacją byłby ten sam wynik innej architektury "
+            "uczonej na tych samych danych albo tej samej architektury na innym instrumencie."
+            + (" Żadnego z tych potwierdzeń w zestawieniu nie ma: na tych samych danych i "
+               "horyzoncie żadna inna architektura, a na innych instrumentach żaden przebieg tej "
+               "samej architektury nie przekracza progu 0,05 w górę nawet przed poprawką."
+               if unconfirmed and elsewhere else ""),
+        )
+
+    above_survivors = [m for m in survivors if m["accuracy"] > CHANCE]
+    most_common = max(tested, key=lambda h: sum(m["horizon"] == h for m in nominal))
+    if len(below) > len(above) and not above_survivors:
+        add_body(
+            doc,
+            f"Odstępstwa od losowości leżą zatem częściej poniżej niż powyżej 0,5 ({len(below)} "
+            f"wobec {len(above)}), najwięcej ich przypada na horyzont "
+            f"{HORIZON_NOMINATIVE[most_common]}, a te poniżej wyjaśnia opóźnienie reguły "
+            "częstościowej, nie struktura, której nauczyłby się model. Po uwzględnieniu liczby "
+            "pomiarów żaden z nich nie wskazuje trafności istotnie wyższej od losowej, co jest "
+            "zgodne z tezą pracy (rozdział 1.3).",
+        )
+
+
+def _results_stability(doc: Document) -> None:
+    """Quality month by month, drawn from the stability artifacts."""
+    if "udzial_miesiecy" not in _FIGURES and "stabilnosc" not in _FIGURES:
+        return
+    add_heading(doc, "10.6. Stabilność w czasie", 2)
+    add_body(
+        doc,
+        "Średnia z całego okresu maskuje sytuację, w której model działa w jednym reżimie "
+        "rynkowym i zawodzi w innym. Dlatego jakość rozbito na miesiące kalendarzowe: pierwszy "
+        "rysunek pokazuje przebieg trafności dla jednego instrumentu, drugi dla każdego "
+        "przebiegu - odsetek miesięcy, w których trafność przekroczyła poziom losowy. Ta "
+        "druga wielkość jest odporna na pojedyncze wartości skrajne; jej wartość dla każdego "
+        "przebiegu podaje kolumna „Mies. > 0,5” w załączniku E.",
+    )
+    add_figure(doc, "stabilnosc", "Trafność miesiąc po miesiącu dla BTCUSDT na horyzoncie tygodniowym. Wahania wokół poziomu losowego są znacznie większe niż jakakolwiek trwała przewaga - to jest obraz, który średnia z całego okresu ukrywa.")
+    add_figure(
+        doc, "udzial_miesiecy",
+        "Odsetek miesięcy z trafnością powyżej 0,5, każdy przebieg jako punkt. Liczą się "
+        "miesiące z co najmniej 20 ocenionymi świecami, a przebieg musi mieć sześć takich "
+        "miesięcy. Pudełka skupione wokół 50% oznaczają brak trwałej przewagi, niezależnie "
+        "od średniej z całego okresu.",
     )
 
 
@@ -2658,18 +4417,38 @@ DEFECTS = [
      "TFT: okna z taką świecą zapisywane jako nietrenowane, w dziewięciu przebiegach na "
      "sześciu symbolach; GRU: przerwanie przebiegu",
      "rozszerzenie badania z trzech na dziewięć instrumentów"],
+    ["Wycinek kalibracyjny przylegający do części uczącej bez przerwy",
+     "kalibrator i reguła zatrzymania oceniały model na wynikach, na których się uczył; na "
+     "horyzoncie rocznym dotyczyło to każdej świecy wycinka",
+     "rozrysowanie granicy uczenia i kalibracji na osi czasu"],
+    ["Zbiór walidacyjny TFT obejmujący świece sprzed wycinka",
+     "wczesne zatrzymanie mierzone częściowo na celach, na których model się uczył",
+     "test porównujący cele walidacji z wycinkiem kalibracyjnym"],
+    ["Siatka temperatur kończąca się na 10",
+     "kalibrator nie mógł spłaszczyć prognozy bez umiejętności; prognozy zbyt pewne mimo "
+     "kalibracji",
+     "zapis temperatury przy każdej prognozie"],
+    ["Różne uzupełnianie braków w GRU i TFT, statystyki skalowania liczone z brakami jako zerami",
+     "obie sieci uczone na różnych wejściach dla tych samych świec",
+     "przegląd metodyki porównania architektur"],
+    ["Ratunkowe przesunięcie podziału tylko w sieciach",
+     "na tym samym oknie jedna architektura skalibrowana, druga nie",
+     "test na szeregu, którego najstarsze etykiety mają jedną klasę"],
+    ["Okno bez wycinka pozostawione bez kalibracji",
+     "prognozy z najmniejszej ilości danych najpewniejsze w przebiegu",
+     "zapis źródła temperatury przy każdej prognozie"],
 ]
 
 
-def _chapter_11_verification(doc: Document) -> None:
+def _chapter_11_verification(doc: Document, runs: dict) -> None:
     add_heading(doc, "11. Weryfikacja poprawności implementacji", 1)
     add_body(
         doc,
-        "Rozdział dokumentuje defekty wykryte w trakcie budowy systemu i stanowi materiał "
-        "dowodowy dla ostatniego zdania tezy. Wspólną cechą wszystkich pozycji jest to, że "
-        "defekt dawał wynik wyglądający na poprawny i nie ujawniał się w samej trafności "
-        "prognozy - porównanie architektur przeprowadzone bez warstwy weryfikacji porównywałoby "
-        "zatem artefakty.",
+        "Rozdział dokumentuje defekty wykryte w trakcie budowy systemu i pokazuje, dlaczego "
+        "porównanie architektur wymaga warstwy weryfikacji. Wspólną cechą wszystkich pozycji "
+        "jest to, że defekt dawał wynik wyglądający na poprawny i nie ujawniał się w samej "
+        "trafności prognozy - porównanie przeprowadzone bez tej warstwy porównywałoby zatem "
+        "artefakty.",
     )
     add_table(doc, ["Defekt", "Objaw bez weryfikacji", "Wykryty przez"], DEFECTS,
               [4.6, 6.2, 5.2])
@@ -2685,9 +4464,12 @@ def _chapter_11_verification(doc: Document) -> None:
     )
     add_body(
         doc,
-        "Defekt był niewidoczny dla wszystkich raportowanych miar: zamiana dwóch klas nie zmienia "
-        "entropii, pewności ani wyniku Briera, a trafność przekształca w swoje dopełnienie, co "
-        "przy wartościach bliskich 0,5 wygląda jak szum. Wykryto go dopiero na szeregu "
+        "Defekt był niewidoczny w raportowanych miarach. Zamiana prawdopodobieństw dwóch klas "
+        "przy niezmienionych etykietach nie zmienia entropii ani pewności, a trafność "
+        "przekształca w jej dopełnienie. Wynik Briera zmienia się na każdej świecy o "
+        "dwukrotność przewagi: rośnie, gdy prognoza była trafna, i maleje, gdy była błędna. "
+        "Przy trafności bliskiej 0,5 i niewielkiej przewadze te zmiany niemal się znoszą, więc "
+        "i trafność, i wynik Briera wyglądały jak szum. Defekt wykryto dopiero na szeregu "
         "syntetycznym, w którym kierunek jest deterministyczną funkcją poprzedniej świecy: "
         "zamiast oczekiwanej zgodności 0,987 model osiągnął 0,013.",
     )
@@ -2808,12 +4590,16 @@ def _chapter_11_verification(doc: Document) -> None:
         "defektem policzono ponownie.",
     )
 
-    add_heading(doc, "11.8. Zakres pakietu testów", 2)
+    _defects_calibration(doc, runs)
+
+    add_heading(doc, "11.9. Zakres pakietu testów", 2)
     modules = test_inventory()
     cases = sum(len(m.cases) for m in modules)
     add_body(
         doc,
-        f"Pakiet liczy {cases} przypadków testowych w {len(modules)} modułach. Nie są to testy "
+        f"Pakiet liczy {cases} "
+        f"{_plural(cases, 'przypadek testowy', 'przypadki testowe', 'przypadków testowych')} "
+        f"w {len(modules)} {_plural(len(modules), 'module', 'modułach', 'modułach')}. Nie są to testy "
         "pokrycia: każdy moduł odpowiada konkretnej klasie błędów, a znaczna część przypadków "
         "opisuje w dokumentacji defekt, którego wystąpieniu zapobiega. Pełny inwentarz zawiera "
         "załącznik A.",
@@ -2821,7 +4607,8 @@ def _chapter_11_verification(doc: Document) -> None:
     add_table(
         doc,
         ["Moduł", "Przypadków", "Czego pilnuje"],
-        [[m.path, str(len(m.cases)), m.purpose[:160]] for m in modules[:20]],
+        [[m.path, str(len(m.cases)),
+          translations.polish(translations.MODULES, m.path, m.purpose)] for m in modules[:20]],
         [4.4, 2.0, 9.6],
     )
     add_caption(
@@ -2850,7 +4637,8 @@ def _chapter_12_interfaces(doc: Document) -> None:
     add_table(
         doc,
         ["Polecenie", "Opis", "Flag"],
-        [[c.path, c.summary[:110], str(len(c.options))] for c in commands],
+        [[c.path, translations.polish(translations.COMMANDS, c.path, c.summary),
+          str(len(c.options))] for c in commands],
         [4.6, 9.4, 2.0],
     )
     add_caption(doc, "Tabela", "Polecenia wiersza poleceń.")
@@ -2863,37 +4651,61 @@ def _chapter_12_interfaces(doc: Document) -> None:
         "a przeglądarka odpytuje o jej stan. Kolejka żyje po stronie serwera, więc przeładowanie "
         "strony nie gubi zadań oczekujących.",
     )
-    add_table(
+    groups: dict[str, int] = {}
+    for route in routes:
+        segment = route.path.split("/")[2] if route.path.count("/") > 1 else route.path
+        name = ROUTE_GROUP.get(segment, segment)
+        groups[name] = groups.get(name, 0) + 1
+    add_body(
         doc,
-        ["Metoda", "Ścieżka", "Opis"],
-        [[r.methods, r.path, r.summary[:90]] for r in routes],
-        [2.0, 6.4, 7.6],
+        "Trasy dzielą się według zasobu, którego dotyczą: "
+        + ", ".join(f"{name} ({count})" for name, count in groups.items())
+        + ". Każdą z nich, z metodą i opisem, wymienia załącznik C.",
     )
-    add_caption(doc, "Tabela", "Trasy interfejsu HTTP.")
 
     add_heading(doc, "12.3. Panel przeglądarkowy", 2)
     add_body(
         doc,
         "Panel jest aplikacją jednostronicową zbudowaną na natywnych modułach ES, bez kroku "
         "budowania. Zachowanie elementów deklarowane jest atrybutem w znaczniku i obsługiwane "
-        "przez jeden nasłuch delegowany, co eliminuje wstawianie kodu bezpośrednio w atrybutach "
-        "- wcześniejsza wersja interpolowała nazwy symboli prosto do treści atrybutów zdarzeń.",
+        "przez jeden nasłuch delegowany, dzięki czemu żaden kod nie trafia do atrybutów "
+        "zdarzeń i nazwa symbolu nie może zostać wykonana jako kod.",
     )
     add_bullets(
         doc,
         [
             "Menedżer danych - inwentarz jeziora danych, pobieranie, agregacja, kontrola jakości.",
             "Modele - konfiguracja i uruchamianie treningu, kolejka zadań, inwentarz przebiegów.",
-            "Ocena - miary jakości, przedziały ufności, wykres stabilności w czasie.",
-            "Symulacja — parametry wykonawcze, wynik wraz z czterema hipotezami zerowymi.",
+            "Ocena - ranking przebiegów, miary jakości, kalibracja i ostrość prognoz, "
+            "wykres stabilności w czasie.",
+            "Symulacja - parametry wykonawcze, wynik wraz z czterema hipotezami zerowymi.",
         ],
     )
     add_body(
         doc,
-        "Formularz treningu pobiera wartości domyślne z interfejsu HTTP, a nie ze znaczników "
-        "strony. Wcześniejsza wersja zawierała je wpisane wprost w znaczniku, przez co ten sam "
-        "model uruchamiany z panelu wykonywał inną liczbę epok niż uruchamiany z wiersza "
-        "poleceń - wartość domyślna obowiązuje bowiem wyłącznie przy nieobecności flagi.",
+        "Formularz treningu pobiera wartości domyślne z interfejsu HTTP, który czyta je z "
+        "tego samego modułu co wiersz poleceń (predict/defaults.py), więc model uruchomiony z "
+        "panelu dostaje te same parametry, na przykład tę samą liczbę epok, co uruchomiony z "
+        "wiersza poleceń.",
+    )
+    add_body(
+        doc,
+        "Długie zadania nie są wykonywane w procesie serwera. Panel zgłasza je do kolejki, "
+        "którą obsługuje jeden wątek roboczy uruchamiający polecenia wiersza poleceń jako "
+        "podprocesy, a postęp i dziennik odczytuje cyklicznie (pierwszy rysunek poniżej). "
+        "Kolejka żyje po stronie serwera, więc przeładowanie przeglądarki nie gubi zadań "
+        "oczekujących; stany zadania pokazuje drugi rysunek.",
+    )
+    add_diagram(
+        doc, "zadanie_sekwencja",
+        "Diagram sekwencji zadania zgłoszonego z panelu. Odpowiedź na zgłoszenie wraca od "
+        "razu, a wynik panel poznaje z odpytywania stanu kolejki.",
+    )
+    add_diagram(
+        doc, "zadanie_stany",
+        "Diagram stanów zadania w kolejce. Zadanie oczekujące można przesunąć albo usunąć; "
+        "wykonywane kończy się sukcesem dopiero wtedy, gdy wszystkie jego polecenia zwrócą "
+        "kod 0.",
     )
 
     add_heading(doc, "12.4. Konfiguracja", 2)
@@ -2907,7 +4719,29 @@ def _chapter_12_interfaces(doc: Document) -> None:
     page_break(doc)
 
 
-# ── 12–13 ────────────────────────────────────────────────────────────────────
+# ── 12-13 ────────────────────────────────────────────────────────────────────
+
+def _calibration_limit() -> list[str]:
+    """The limitation section 10.5 measures: too few independent observations in
+    the calibration slice of the long horizons. Empty when the windows are unknown."""
+    windows = _training_windows()
+    if "quarter" not in windows or "year" not in windows:
+        return []
+    observations = {
+        horizon: CALIBRATION_FRACTION * (window - forward) / forward
+        for horizon, (window, forward) in windows.items()
+    }
+    ece = _learner_ece(load_runs())
+    if not all(h in ece for h in ("week", "quarter", "year")):
+        return []
+    return [
+        "Kalibracja skalowaniem temperatury wymaga wycinka z wieloma obserwacjami "
+        "niezależnymi. Na horyzontach kwartalnym i rocznym wycinek zawiera ich około "
+        f"{pl(observations['quarter'], '.1f')} i {pl(observations['year'], '.2f')}, więc błąd "
+        f"kalibracji architektur uczących się pozostaje tam większy ({_span(ece['quarter'])} i "
+        f"{_span(ece['year'])}) niż na horyzoncie tygodniowym ({_span(ece['week'])})."
+    ]
+
 
 def _chapter_13_limits(doc: Document) -> None:
     add_heading(doc, "13. Ograniczenia i kierunki dalszych prac", 1)
@@ -2918,20 +4752,21 @@ def _chapter_13_limits(doc: Document) -> None:
         [
             "Zbiór informacyjny obejmuje wyłącznie cechy wyprowadzone z ceny i wolumenu tego "
             "samego instrumentu. Nie uwzględniono danych on-chain, stawek finansowania, "
-            "głębokości arkusza zleceń, danych międzyrynkowych ani sentymentu. Jest to granica "
-            "przyjęta świadomie - praca testuje słabą formę hipotezy efektywności - ale wniosków "
-            "nie wolno rozciągać poza nią.",
+            "głębokości arkusza zleceń, danych międzyrynkowych ani sentymentu. Granica ta "
+            "wynika z pytania badawczego, które dotyczy słabej formy hipotezy efektywności, "
+            "więc wniosków nie wolno rozciągać poza nią.",
             "Prognozowany jest znak zwrotu, czyli sformułowanie najtrudniejsze. Model może nie "
             "mieć przewagi kierunkowej i jednocześnie poprawnie prognozować zmienność, czego "
             "praca nie bada.",
             "Nie badano prognozy przekrojowej. Pomiar korelacji zwrotów wskazuje, że wspólny "
             "czynnik rynkowy odpowiada za większość wariancji, a jego odjęcie jest jedyną drogą "
             "powyżej granicy wynikającej ze wzoru na liczbę symboli efektywnych.",
-            "Zastosowano modele o niewielkiej pojemności. Przy zmierzonej liczbie obserwacji "
-            "niezależnych pojemność nie jest jednak wiążącym ograniczeniem, więc rozszerzenie "
-            "modeli bez rozszerzenia danych nie zmieniłoby wyniku.",
+            "Zastosowano modele o niewielkiej pojemności i ustalonych hiperparametrach, "
+            "wspólnych dla wszystkich instrumentów. Badanie nie obejmuje modeli większych ani "
+            "strojenia hiperparametrów, więc o tym, czy osiągnęłyby przewagę, nie rozstrzyga.",
             "Badanie obejmuje jeden rynek i jeden reżim regulacyjny. Wyniki nie przenoszą się "
             "automatycznie na rynki o nieciągłym obrocie.",
+            *_calibration_limit(),
         ],
     )
 
@@ -2947,9 +4782,14 @@ def _chapter_13_limits(doc: Document) -> None:
              "hipotezy.", "wysoka"],
             ["Zmiana wielkości prognozowanej",
              "Zmienność jest prognozowalna tam, gdzie kierunek nie jest.", "średnia"],
+            ["Kalibracja długich horyzontów",
+             "Wyznaczanie temperatury na prognozach z wcześniejszych miesięcy, które leżą już "
+             "poza próbą, albo wspólnie dla kilku instrumentów, aby wycinek obejmował więcej "
+             "obserwacji niezależnych niż obecne około 2 na horyzoncie kwartalnym i 0,75 na "
+             "rocznym.", "średnia"],
             ["Rozszerzenie na inne rynki",
-             "Pierwotny zamiar pracy; wymaga obsługi nieciągłości i zdarzeń korporacyjnych.",
-             "średnia"],
+             "Wymaga obsługi nieciągłości notowań i zdarzeń korporacyjnych w warstwie "
+             "pozyskiwania danych.", "średnia"],
             ["Zrównoleglenie pętli kroczącej",
              "Możliwe po uniezależnieniu ziaren okien od kolejności wykonania; skraca czas, nie "
              "zmienia wyników.", "wygoda"],
@@ -2963,9 +4803,12 @@ def _chapter_13_limits(doc: Document) -> None:
 
 HORIZON_LOCATIVE = {"week": "tygodniowym", "month": "miesięcznym", "quarter": "kwartalnym",
                     "year": "rocznym"}
-MODEL_LABEL = {"baseline": "model odniesienia", "ml": "scikit-learn", "xgboost": "XGBoost",
-               "gru": "GRU", "tft": "TFT"}
-COUNT_WORDS = {5: "pięć", 6: "sześć", 7: "siedem", 8: "osiem", 9: "dziewięć", 10: "dziesięć"}
+HORIZON_NOMINATIVE = {"week": "tygodniowy", "month": "miesięczny", "quarter": "kwartalny",
+                      "year": "roczny"}
+COUNT_LOCATIVE = {2: "dwóch", 3: "trzech", 4: "czterech"}
+COUNT_WORDS = {5: "pięć", 6: "sześć", 7: "siedem", 8: "osiem", 9: "dziewięć", 10: "dziesięć",
+               11: "jedenaście", 12: "dwanaście", 13: "trzynaście", 14: "czternaście",
+               15: "piętnaście"}
 
 
 def _listing(words: list[str]) -> str:
@@ -2998,6 +4841,30 @@ def _rank_turnover(runs: dict) -> str:
             f"{_listing(last)}, jest pierwsza na {_listing(first)}")
 
 
+def _corrected_sentence(runs: dict) -> str:
+    """What is left of the departures from chance once their number is accounted for."""
+    every = departures(runs)["measurements"]
+    if not every:
+        return ""
+    survivors = [m for m in every if m["q"] < FALSE_DISCOVERY_RATE]
+    higher = [m for m in survivors if m["accuracy"] > CHANCE]
+    horizons = len({m["horizon"] for m in every})
+    scope = (f"{len(every)} pomiarów ({len({m['slug'] for m in every})} różnych przebiegów na "
+             f"{COUNT_LOCATIVE.get(horizons, str(horizons))} horyzontach)")
+    opening = "Po poprawce na wielokrotne porównania (rozdział 10.9) "
+    if not survivors:
+        return opening + f"żaden z {scope} nie odbiega istotnie od losowości. "
+    if higher:
+        return (opening + f"{len(higher)} z {scope} "
+                + _plural(len(higher), "wykazuje", "wykazują", "wykazuje")
+                + " trafność istotnie wyższą od losowej. ")
+    return (opening + f"żaden z {scope} nie wykazuje trafności istotnie wyższej od losowej; "
+            + ("jedyny pomiar, który przetrwał poprawkę, leży" if len(survivors) == 1 else
+               f"{len(survivors)} pomiary, które przetrwały poprawkę, "
+               + _plural(len(survivors), "leży", "leżą", "leży"))
+            + " poniżej losowości. ")
+
+
 def _chapter_14_summary(doc: Document, runs: dict) -> None:
     add_heading(doc, "14. Podsumowanie", 1)
     if not runs:
@@ -3006,12 +4873,13 @@ def _chapter_14_summary(doc: Document, runs: dict) -> None:
         return
     f = study_facts(runs)
     deterministic = set(f["seed_invariant"]) == {"ml", "xgboost"}
-    if len(f["beyond_noise"]) <= 1:
-        differences = ("Różnice między architekturami uczącymi się są tego samego rzędu co szum "
-                       "inicjalizacji, a ich porządek zmienia się wraz z horyzontem")
+    learner = paired_facts(runs)["learner_significant"]
+    if not learner:
+        differences = ("Porównane parami na tych samych prognozach architektury uczące się nie "
+                       "różnią się istotnie, a ich porządek zmienia się wraz z horyzontem")
     else:
-        differences = (f"Różnice między architekturami uczącymi się przekraczają szum "
-                       f"inicjalizacji na {len(f['beyond_noise'])} horyzontach, lecz ich porządek "
+        differences = (f"Porównane parami na tych samych prognozach architektury uczące się "
+                       f"różnią się istotnie w {len(learner)} porównaniach, lecz ich porządek "
                        "zmienia się wraz z horyzontem")
     add_body(
         doc,
@@ -3021,10 +4889,12 @@ def _chapter_14_summary(doc: Document, runs: dict) -> None:
         "inicjalizacji"
         + (f" - {f['distinct']} różnych pomiarów, ponieważ oba modele gradientowe uczą się "
            "deterministycznie" if deterministic else "")
-        + ". Żadna architektura nie osiąga trafności istotnie wyższej od losowej, a wszystkie "
-        "wypadają poniżej reguły opartej na częstości klasy liczniejszej. "
+        + ". Żadna architektura nie osiąga trafności istotnie wyższej od losowej"
+        + (", a wszystkie wypadają poniżej reguły opartej na częstości klasy liczniejszej. "
+           if below_base_rate() else ". ")
+        + _corrected_sentence(runs)
         + differences + _rank_turnover(runs)
-        + ". Ranking architektur nie jest zatem właściwością architektury.",
+        + ". Na tych danych ranking architektur nie jest więc stały między horyzontami.",
     )
     defects = COUNT_WORDS.get(len(DEFECTS), str(len(DEFECTS)))
     add_body(
@@ -3036,12 +4906,17 @@ def _chapter_14_summary(doc: Document, runs: dict) -> None:
         "który wyprodukował wynik pozornie pozytywny i przeszedł replikację poza próbą, zanim "
         "został obalony.",
     )
-    add_body(
-        doc,
-        "Osobnym, pozytywnym wynikiem inżynierskim jest kalibracja: system poprawnie raportuje "
-        "własną niepewność tam, gdzie nie ma zdolności rozróżniania. Prognoza, która wie, że nie "
-        "wie, jest użyteczna; prognoza pewna siebie i błędna nie jest.",
-    )
+    ece = _learner_ece(runs)
+    if "week" in ece and "year" in ece:
+        add_body(
+            doc,
+            "Osobnym wynikiem jest kalibracja. Surowe prognozy architektur uczących się są "
+            "niemal pewne, a po skalowaniu temperatury deklarują one na horyzoncie "
+            f"tygodniowym pewność bliską częstości trafień (ECE {_span(ece['week'])}). Błąd "
+            f"kalibracji rośnie z horyzontem do {_span(ece['year'])} na rocznym, ponieważ "
+            "wycinek kalibracyjny długich horyzontów zawiera za mało obserwacji niezależnych, by "
+            "dokładnie wyznaczyć temperaturę; drogę poprawy wskazuje rozdział 13.2.",
+        )
     page_break(doc)
 
 
@@ -3056,42 +4931,44 @@ def _check_thesis_against_data(runs: dict) -> None:
     problems = []
     if above > 1.5 * expected + 1:
         problems.append(f"{above} measurements above chance where about {expected} are expected")
-    if len(f["beyond_noise"]) > 1:
-        problems.append(f"the learners exceed the seed spread on {f['beyond_noise']}")
+    learner = paired_facts(runs)["learner_significant"]
+    if learner:
+        problems.append(f"{len(learner)} pairs of learners differ in the paired test")
+    found = departures(runs)
+    higher = [m for m in found["measurements"]
+              if m["q"] < FALSE_DISCOVERY_RATE and m["accuracy"] > CHANCE]
+    if higher:
+        problems.append(f"{len(higher)} measurements above chance survive Benjamini-Hochberg")
+    if found["mismatched"]:
+        problems.append(f"{found['mismatched']} recomputed intervals differ from the stored ones")
+    ece = _learner_ece(runs)
+    if "week" in ece and "year" in ece and max(ece["week"]) >= min(ece["year"]):
+        problems.append("the learners' calibration error no longer grows from week to year")
     for problem in problems:
         print(f"WARNING: thesis 1.3 / 1.5 no longer matches the data: {problem}")
 
 
-def _chapter_14_bibliography(doc: Document) -> None:
-    add_heading(doc, "15. Bibliografia", 1)
-    add_bullets(
-        doc,
-        [
-            "Fama E. F., Efficient Capital Markets: A Review of Theory and Empirical Work, "
-            "Journal of Finance, 25(2), 1970.",
-            "Brier G. W., Verification of Forecasts Expressed in Terms of Probability, "
-            "Monthly Weather Review, 78(1), 1950.",
-            "Gneiting T., Raftery A. E., Strictly Proper Scoring Rules, Prediction, and "
-            "Estimation, Journal of the American Statistical Association, 102(477), 2007.",
-            "Guo C., Pleiss G., Sun Y., Weinberger K. Q., On Calibration of Modern Neural "
-            "Networks, ICML, 2017.",
-            "Künsch H. R., The Jackknife and the Bootstrap for General Stationary Observations, "
-            "Annals of Statistics, 17(3), 1989.",
-            "Politis D. N., Romano J. P., The Stationary Bootstrap, Journal of the American "
-            "Statistical Association, 89(428), 1994.",
-            "Cho K. i in., Learning Phrase Representations using RNN Encoder-Decoder for "
-            "Statistical Machine Translation, EMNLP, 2014.",
-            "Lim B., Arık S. Ö., Loeff N., Pfister T., Temporal Fusion Transformers for "
-            "Interpretable Multi-horizon Time Series Forecasting, International Journal of "
-            "Forecasting, 37(4), 2021.",
-            "Chen T., Guestrin C., XGBoost: A Scalable Tree Boosting System, KDD, 2016.",
-            "Bailey D. H., López de Prado M., The Deflated Sharpe Ratio, Journal of Portfolio "
-            "Management, 40(5), 2014.",
-            "López de Prado M., Advances in Financial Machine Learning, Wiley, 2018.",
-            "Cont R., Empirical Properties of Asset Returns: Stylized Facts and Statistical "
-            "Issues, Quantitative Finance, 1(2), 2001.",
-        ],
-    )
+def _bibliography(doc: Document) -> None:
+    """Every work in REFERENCES, alphabetically, in the form PJATK's example uses:
+    "Nazwisko, Imię, Tytuł, ..." with the title in italics.
+
+    Built after the chapters, so it can say which works the text never cited:
+    a bibliography should hold exactly what the footnotes point at.
+    """
+    add_heading(doc, "Bibliografia", 1)
+    for key, reference in sorted(REFERENCES.items(), key=lambda item: item[1].sort_key()):
+        paragraph = doc.add_paragraph()
+        paragraph.paragraph_format.left_indent = Cm(1.0)
+        paragraph.paragraph_format.first_line_indent = Cm(-1.0)
+        paragraph.paragraph_format.space_after = Pt(6)
+        paragraph.paragraph_format.line_spacing = 1.0
+        for text, italic in reference.segments(full=True):
+            run = paragraph.add_run(plain_dashes(text))
+            run.italic = italic
+            run.font.size = Pt(BODY_SIZE)
+    uncited = sorted(set(REFERENCES) - _citations["cited"])
+    if uncited:
+        print(f"WARNING: the bibliography lists works the text never cites: {uncited}")
     page_break(doc)
 
 
@@ -3103,22 +4980,22 @@ def _appendix_tests(doc: Document) -> None:
     cases = sum(len(m.cases) for m in modules)
     add_body(
         doc,
-        f"Zestawienie {cases} przypadków testowych w {len(modules)} modułach, odczytane wprost "
-        "z kodu. Jest to specyfikacja systemu w jedynej postaci, która nie może się "
-        "zdezaktualizować: każdej pozycji odpowiada asercja, która wykonuje się przy każdym "
-        "uruchomieniu pakietu. Opis pochodzi z dokumentacji przypadku, a gdy jej nie ma - z jego "
-        "nazwy, którą pakiet formułuje zdaniem.",
+        f"Zestawienie {cases} przypadków testowych w {len(modules)} modułach. Jest to "
+        "specyfikacja systemu w jedynej postaci, która nie może się zdezaktualizować: każdej "
+        "pozycji odpowiada asercja, która wykonuje się przy każdym uruchomieniu pakietu. Przy "
+        "każdym przypadku podano jego nazwę w kodzie i opis tego, czego pilnuje.",
     )
     for module in modules:
         add_heading(doc, module.path, 3)
-        add_body(doc, module.purpose, italic=True, size=9)
-        add_table(
-            doc,
-            ["Przypadek", "Co gwarantuje"],
-            [[c.name.removeprefix("test_"), c.intent] for c in module.cases],
-            [5.6, 10.4],
-            font=8,
-        )
+        add_body(doc, translations.polish(translations.MODULES, module.path, module.purpose),
+                 italic=True, size=10, compact=True)
+        for case in module.cases:
+            name = case.name.removeprefix("test_")
+            add_definition(
+                doc, name,
+                translations.polish(translations.CASES, f"{module.path}::{name}", case.intent),
+                size=10, compact=True,
+            )
     page_break(doc)
 
 
@@ -3128,53 +5005,85 @@ def _appendix_cli(doc: Document) -> None:
     add_body(
         doc,
         f"Pełna referencja {len(commands)} poleceń wraz z "
-        f"{sum(len(c.options) for c in commands)} flagami, odczytana z definicji poleceń. "
-        "Kolumna „domyślnie” podaje wartość obowiązującą przy nieobecności flagi.",
+        f"{sum(len(c.options) for c in commands)} flagami. Kolumna „Domyślnie” podaje wartość "
+        "obowiązującą przy nieobecności flagi.",
     )
     for command in commands:
         add_heading(doc, command.path, 3)
-        add_body(doc, command.summary, italic=True, size=9)
+        add_body(doc, translations.polish(translations.COMMANDS, command.path, command.summary),
+                 italic=True, size=10, compact=True)
         if not command.options:
-            add_body(doc, "Polecenie nie przyjmuje opcji.", size=9)
+            add_body(doc, "Polecenie nie przyjmuje opcji.", size=10, compact=True)
             continue
         add_table(
             doc,
             ["Flaga", "Typ", "Wym.", "Domyślnie", "Opis"],
-            [[o.flags, o.kind, "tak" if o.required else "—", o.default, o.help]
+            [[o.flags, OPTION_KIND.get(o.kind, o.kind), "tak" if o.required else "-",
+              o.default, translations.polish_help(o.help)]
              for o in command.options],
             [4.0, 1.8, 1.2, 2.4, 6.6],
-            font=8,
+            font=9,
         )
+        add_caption(doc, "Tabela", f"Flagi polecenia {command.path}.")
     page_break(doc)
+
+
+# The type names Click gives a flag's value, as the reference prints them.
+OPTION_KIND = {"text": "tekst", "integer": "liczba całkowita", "float": "liczba",
+               "path": "ścieżka", "choice": "wybór", "boolean": "wartość logiczna"}
 
 
 def _appendix_api(doc: Document) -> None:
     add_heading(doc, "Załącznik C. Referencja interfejsu HTTP", 1)
     routes = api_reference()
-    add_body(doc, f"Zestawienie {len(routes)} tras odczytane z definicji serwera.")
+    add_body(doc, f"Zestawienie wszystkich {len(routes)} tras interfejsu HTTP.")
     add_table(
         doc,
         ["Metoda", "Ścieżka", "Opis"],
-        [[r.methods, r.path, r.summary] for r in routes],
+        [[r.methods, r.path, _route_text(r)] for r in routes],
         [2.0, 6.0, 8.0],
     )
+    add_caption(doc, "Tabela", "Pełne zestawienie tras interfejsu HTTP.")
     page_break(doc)
+
+
+# The resources the HTTP routes are grouped by, named by the segment after /api.
+ROUTE_GROUP = {"ai": "przebiegi i ich oceny", "runs": "przebiegi i ich oceny",
+               "backtest": "symulacja", "data": "dane", "eval": "ocena",
+               "meta": "wartości domyślne formularzy", "pipeline": "potok przetwarzania",
+               "stability": "stabilność", "status": "stan serwera", "task": "kolejka zadań",
+               "train": "trening"}
+
+
+def _route_text(route) -> str:
+    return translations.polish(translations.ROUTES, f"{route.methods} {route.path}",
+                               route.summary)
 
 
 def _appendix_settings(doc: Document) -> None:
     add_heading(doc, "Załącznik D. Konfiguracja", 1)
+    from prosper.config import Settings
+
     fields = settings_reference()
+    prefix = Settings.model_config.get("env_prefix", "")
     add_body(
         doc,
-        f"Zestawienie {len(fields)} pól konfiguracji odczytane z definicji modelu ustawień. "
-        "Każde pole można nadpisać zmienną środowiskową o tej samej nazwie.",
+        f"Zestawienie {len(fields)} pól konfiguracji. "
+        "Każde pole można nadpisać zmienną środowiskową o nazwie pola poprzedzonej "
+        f"przedrostkiem {prefix}, na przykład {prefix}DATA_ROOT; wielkość liter nie ma "
+        "znaczenia.",
     )
     add_table(
         doc,
         ["Pole", "Typ", "Domyślnie", "Opis"],
-        [[f.name, f.kind, f.default, f.description] for f in fields],
+        [[f.name, f.kind,
+          # The four data directories are derived from data_root once it is known.
+          "z data_root" if f.kind == "Path" and f.default == "." else f.default,
+          translations.polish(translations.SETTINGS, f.name, f.description)]
+         for f in fields],
         [4.6, 2.6, 3.0, 5.8],
     )
+    add_caption(doc, "Tabela", "Pola konfiguracji.")
 
 
 # ── 11a: worked example ──────────────────────────────────────────────────────
@@ -3195,7 +5104,7 @@ def _chapter_12a_worked_example(doc: Document) -> None:
         [
             ["1. Pobranie",
              "Archiwum miesięczne trafia do jeziora danych jako świece jednominutowe.",
-             "—"],
+             "-"],
             ["2. Agregacja",
              "Świece minutowe składają się w jedną dzienną: otwarcie pierwszej, zamknięcie "
              "ostatniej, skrajne maksimum i minimum, suma wolumenów.",
@@ -3254,9 +5163,15 @@ def _appendix_glossary(doc: Document) -> None:
              "Metoda szacowania niepewności losująca ciągi kolejnych obserwacji zamiast "
              "pojedynczych, dzięki czemu zachowuje zależność między nakładającymi się "
              "etykietami."],
+            ["dropout",
+             "Losowe wyłączanie części neuronów sieci w trakcie uczenia, ograniczające "
+             "przeuczenie; które neurony zostaną wyłączone, zależy od ziarna."],
             ["ECE",
              "Oczekiwany błąd kalibracji: średnia rozbieżność między deklarowaną pewnością a "
              "rzeczywistą częstością trafień."],
+            ["entropia krzyżowa",
+             "Strata logarytmiczna liczona w trakcie uczenia: średnia ujemnego logarytmu "
+             "prawdopodobieństwa, które model przypisał klasie, która wystąpiła."],
             ["głębokość",
              "Wielkość ruchu ceny wyrażona jako rozkład prawdopodobieństwa na kubełkach o "
              "granicach z ciągu Fibonacciego."],
@@ -3269,6 +5184,9 @@ def _appendix_glossary(doc: Document) -> None:
             ["liczba obserwacji efektywnych",
              "Liczba świec podzielona przez rozpiętość horyzontu - przybliżenie liczby "
              "wzajemnie niezależnych obserwacji."],
+            ["logit",
+             "Surowy wynik modelu sprzed zamiany na prawdopodobieństwo; dla dwóch klas logarytm "
+             "ilorazu szans, ln(p / (1 − p))."],
             ["okno kroczące",
              "Schemat uczenia, w którym model douczany jest cyklicznie na danych poprzedzających "
              "prognozowany okres."],
@@ -3276,18 +5194,22 @@ def _appendix_glossary(doc: Document) -> None:
              "Wykorzystanie w uczeniu informacji niedostępnej w chwili prognozy; objawia się "
              "poprawą trafności, nie błędem wykonania."],
             ["przewaga",
-             "Różnica prawdopodobieństw obu kierunków; z konstrukcji ograniczona przez 0,5."],
+             "Różnica prawdopodobieństw wzrostu i spadku, od -1 do 1: znak wskazuje kierunek "
+             "prognozy, wartość bezwzględna jej siłę."],
             ["reguła właściwa",
              "Miara oceny prognozy probabilistycznej osiągająca optimum wtedy i tylko wtedy, gdy "
              "prognoza podaje prawdziwe prawdopodobieństwo."],
             ["skalowanie temperaturą",
              "Jednoparametrowa kalibracja zmieniająca ostrość rozkładu bez zmiany porządku klas."],
+            ["softmax",
+             "Funkcja zamieniająca wektor logitów na prawdopodobieństwa dodatnie i sumujące się "
+             "do 1."],
             ["symbol efektywny",
              "Miara wartości informacyjnej łączenia instrumentów: n / (1 + (n−1)ρ), gdzie ρ to "
              "średnia korelacja zwrotów."],
-            ["ślepy nawrót",
-             "Symulacja handlowa; w tym systemie traktowana jako kontekst ekonomiczny, nie jako "
-             "ocena prognozy."],
+            ["symulacja handlowa",
+             "Odtworzenie handlu na danych historycznych według prognoz przebiegu; w tym "
+             "systemie kontekst ekonomiczny, a nie ocena prognozy."],
             ["test przesunięcia cyklicznego",
              "Hipoteza zerowa zachowująca sekwencję ekspozycji i zmieniająca wyłącznie jej "
              "ułożenie w czasie; izoluje wyczucie momentu."],
@@ -3296,9 +5218,9 @@ def _appendix_glossary(doc: Document) -> None:
              "generator liczb losowych tego okna."],
         ],
         [4.2, 11.8],
-        font=9,
+        font=10,
     )
-    add_caption(doc, "Tabela", "Słownik pojęć używanych w dokumencie.")
+    add_caption(doc, "Tabela", "Słownik pojęć używanych w pracy.")
 
 
 def _appendix_runs(doc: Document, runs: dict) -> None:
@@ -3308,6 +5230,12 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
     lets a reader check any single number against the artifact that produced it,
     which is what makes the aggregate auditable rather than merely stated.
     """
+    try:
+        from documentation_figures import backtest_summary, month_shares
+
+        shares, simulations = month_shares(), backtest_summary()
+    except Exception:
+        shares, simulations = {}, {}
     rows = []
     for (symbol, model), entries in sorted(runs.items()):
         for entry in sorted(entries, key=lambda e: str(e.get("seed"))):
@@ -3319,88 +5247,115 @@ def _appendix_runs(doc: Document, runs: dict) -> None:
                 low, high = interval.get("low"), interval.get("high")
                 rows.append([
                     symbol.replace("USDT", ""),
-                    model,
-                    str(entry.get("seed") if entry.get("seed") is not None else "—"),
-                    horizon,
-                    str(cell.get("samples") or "—"),
+                    MODEL_LABEL[model],
+                    str(entry.get("seed") if entry.get("seed") is not None else "-"),
+                    HORIZON_LABEL[horizon],
+                    str(cell.get("samples") or "-"),
                     fmt(cell.get("accuracy")),
                     f"[{low:.3f}; {high:.3f}]" if low is not None and high is not None
                     else "odmówiony",
                     fmt(cell.get("ece")),
+                    "{}/{}".format(*shares[(symbol, entry["slug"], horizon)])
+                    if (symbol, entry["slug"], horizon) in shares else "-",
                 ])
     if not rows:
         return
     add_heading(doc, "Załącznik E. Wyniki wszystkich przebiegów", 1)
     add_body(
         doc,
-        f"Zestawienie {len(rows)} par (przebieg, horyzont) odczytane wprost z plików oceny. "
-        "Tabele rozdziału 10 podają wielkości zagregowane; ta pozwala prześledzić każdą z nich "
-        "do pojedynczego artefaktu. Kolumna „Przedział” zawiera wpis „odmówiony” tam, gdzie "
+        f"Zestawienie {len(rows)} par (przebieg, horyzont). Tabele rozdziału 10 podają "
+        "wielkości zagregowane; ta pozwala prześledzić każdą z nich do pojedynczego przebiegu. "
+        "Kolumna „Przedział” zawiera wpis „odmówiony” tam, gdzie "
         "liczba obserwacji niezależnych była zbyt mała, aby przedział nie był artefaktem "
-        "losowania.",
+        "losowania. Kolumna „Mies. > 0,5” podaje, w ilu miesiącach z ocenionych trafność "
+        "przekroczyła poziom losowy (rozdział 10.6).",
     )
     add_table(
         doc,
-        ["Symbol", "Model", "Ziarno", "Horyzont", "Wierszy", "Trafność", "Przedział", "ECE"],
+        ["Symbol", "Model", "Ziarno", "Horyzont", "Wierszy", "Trafność", "Przedział", "ECE",
+         "Mies. > 0,5"],
         rows,
-        [1.7, 1.9, 1.5, 1.9, 1.7, 1.8, 3.0, 1.5],
-        font=7.5,
+        [1.6, 1.8, 1.4, 1.8, 1.6, 1.7, 2.8, 1.4, 1.9],
+        font=8.5,
     )
     add_caption(
         doc, "Tabela",
         "Pełne wyniki wszystkich przebiegów. Kolumna „Ziarno” pozwala odróżnić powtórzenia tej "
         "samej konfiguracji, których rozrzut mierzy szum inicjalizacji.",
     )
+    if not simulations:
+        return
+    table_rows = []
+    for (symbol, model), values in sorted(simulations.items()):
+        arr = np.array(
+            [[v if v is not None else np.nan for v in row] for row in values], dtype=float
+        )
+        mean = np.nanmean(arr, axis=0)
+        table_rows.append([
+            symbol.replace("USDT", ""), MODEL_LABEL[model], str(len(values)),
+            f"{mean[0]:+.0f}", f"{mean[1]:+.0f}", f"{mean[2]:+.0f}",
+            f"{mean[3]:.1f}", f"{mean[4]:+.0f}", f"{mean[5]:.0f}",
+        ])
+    add_body(
+        doc,
+        "Symulację handlową każdej pary instrument - architektura (rozdział 10.7) zestawia "
+        "tabela poniżej, w tej samej postaci: stopa zwrotu i jej różnica wobec czterech "
+        "punktów odniesienia.",
+    )
+    add_table(
+        doc,
+        ["Symbol", "Model", "Przeb.", "ROI %", "vs hold", "vs stała", "Percentyl",
+         "vs momentum", "Obsun. %"],
+        table_rows,
+        [1.7, 1.9, 1.4, 1.8, 1.9, 1.9, 2.0, 2.2, 1.8],
+        font=9,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Symulacja na horyzoncie tygodniowym, uśredniona po ziarnach. Kolumny „vs” podają "
+        "różnicę stopy zwrotu w punktach procentowych wobec danego punktu odniesienia; "
+        "wartości ujemne oznaczają przegraną.",
+    )
 
 def _data_quality_results(doc: Document) -> None:
-    """Outcome of the four checks across the lake, if it has been measured."""
-    path = "data/_recompute/qa_summary.json"
-    if not os.path.exists(path):
-        return
-    try:
-        summary = json.load(open(path, encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
+    """Outcome of the four checks on the study's data, from the monthly QA reports."""
+    summary = qa_summary("1d")
     if not summary:
         return
 
     add_body(
         doc,
-        "Kontrole uruchomiono na wszystkich partycjach jeziora danych. Wynik podano poniżej, "
-        "ponieważ opis kontroli bez jej rezultatu dokumentuje zdolność, której nikt nie "
-        "widział w działaniu.",
+        "Kontrole uruchomiono na każdej miesięcznej partycji danych dziennych dziewięciu "
+        "instrumentów badania, do czerwca 2026 włącznie; ich wynik podaje tabela poniżej.",
     )
     rows, total_parts, total_rows, total_defects = [], 0, 0, 0
     for symbol, stats in sorted(summary.items()):
-        defects = (stats.get("nieposortowane", 0) + stats.get("duplikaty", 0)
-                   + stats.get("luki", 0) + stats.get("naruszenia_ohlc", 0)
-                   + stats.get("nieczytelne", 0))
-        total_parts += stats.get("partycje", 0)
-        total_rows += stats.get("wiersze", 0)
+        defects = stats["unsorted"] + stats["duplicates"] + stats["gaps"] + stats["ohlc"]
+        total_parts += stats["partitions"]
+        total_rows += stats["rows"]
         total_defects += defects
         rows.append([
             symbol,
-            str(stats.get("partycje", 0)),
-            f"{stats.get('wiersze', 0):,}".replace(",", " "),
-            str(stats.get("nieposortowane", 0)),
-            str(stats.get("duplikaty", 0)),
-            str(stats.get("luki", 0)),
-            str(stats.get("naruszenia_ohlc", 0)),
+            str(stats["partitions"]),
+            f"{stats['rows']:,}".replace(",", " "),
+            str(stats["unsorted"]),
+            str(stats["duplicates"]),
+            str(stats["gaps"]),
+            str(stats["ohlc"]),
         ])
     add_table(
         doc,
         ["Symbol", "Partycji", "Wierszy", "Nieposort.", "Duplikaty", "Luki", "OHLC"],
         rows,
         [2.6, 2.0, 2.4, 2.4, 2.2, 1.8, 2.0],
-        font=8.5,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
         f"Wynik kontroli jakości na {total_parts} partycjach obejmujących "
         f"{total_rows:,} wierszy: {total_defects} defektów. ".replace(",", " ")
-        + "Zerowa liczba naruszeń nie jest zaskoczeniem - dane pochodzą z jednego, "
-        "automatycznie publikowanego źródła - lecz jej zmierzenie jest warunkiem, aby "
-        "późniejsze wyniki przypisywać modelowi, a nie uszkodzeniu wejścia.",
+        + "Dane pochodzą z jednego, automatycznie publikowanego źródła, a zmierzenie ich "
+        "jakości pozwala przypisywać późniejsze wyniki modelowi, a nie uszkodzeniu wejścia.",
     )
 
 def _chapter_3_equations(doc: Document) -> None:
@@ -3410,6 +5365,7 @@ def _chapter_3_equations(doc: Document) -> None:
         doc,
         "Poniżej zebrano definicje wielkości, do których odwołują się kolejne rozdziały. "
         "Notacja: r oznacza zwrot, p prognozowane prawdopodobieństwo, y realizację (0 lub 1), "
+        "z wektor logitów (rozdział 3.5), "
         "F rozpiętość horyzontu w świecach, N liczbę ocenianych wierszy.",
     )
     add_table(
@@ -3426,8 +5382,8 @@ def _chapter_3_equations(doc: Document) -> None:
              "ACC = (1/N) · Σ 1[ ŷ(k) = y(k) ]",
              "reguła niewłaściwa; podana dla interpretowalności"],
             ["Wynik Briera",
-             "BS = (1/N) · Σ ( p(k) − y(k) )²",
-             "reguła właściwa; kara kwadratowa"],
+             "BS = (1/N) · Σ_k Σ_c ( p_c(k) − y_c(k) )²",
+             "reguła właściwa; kara kwadratowa; c - obie klasy, więc BS = 2·(p − y)², od 0 do 2"],
             ["Strata logarytmiczna",
              "LL = −(1/N) · Σ [ y·ln p + (1−y)·ln(1−p) ]",
              "reguła właściwa; kara nieograniczona"],
@@ -3436,10 +5392,12 @@ def _chapter_3_equations(doc: Document) -> None:
              "b - kubełki pewności; mierzy kalibrację, nie rozróżnianie"],
             ["Skalowanie temperaturą",
              "p_T = softmax( z / T ), T > 0",
-             "jeden parametr; nie zmienia porządku klas"],
+             "softmax zamienia logity na prawdopodobieństwa sumujące się do 1; jeden parametr; "
+             "nie zmienia porządku klas"],
             ["Liczba obserwacji efektywnych",
-             "n_eff = N / F",
-             "etykiety nakładają się na F−1 świecach"],
+             "n_eff ≈ N / F",
+             "przybliżenie: etykiety odległe o F świec uznaje za niezależne, a pomija "
+             "zależność zwrotów w czasie i między instrumentami"],
             ["Liczba symboli efektywnych",
              "n_sym = n / ( 1 + (n−1)·ρ )",
              "ρ - średnia korelacja par; granica 1/ρ"],
@@ -3447,18 +5405,18 @@ def _chapter_3_equations(doc: Document) -> None:
              "W = F + max( MIN_WIERSZY, 3·F )",
              "podłoga wierszowa wiąże krótkie horyzonty, obserwacyjna długie"],
             ["Przewaga prognozy",
-             "edge = | p_wzrost − p_spadek |",
-             "z konstrukcji nie przekracza 0,5"],
+             "edge = p_wzrost − p_spadek",
+             "od -1 do 1: znak wskazuje kierunek, wartość bezwzględna jego siłę"],
             ["Percentyl przesunięć",
              "pct = ( #{ i : ROI_i < ROI } / M ) · 100",
              "M - liczba przesunięć cyklicznych; 50 oznacza przypadek"],
         ],
         [3.6, 6.0, 6.4],
-        font=8.5,
+        font=9,
     )
     add_caption(
         doc, "Tabela",
-        "Definicje formalne wielkości używanych w dokumencie. Wszystkie są zaimplementowane "
+        "Definicje formalne wielkości używanych w pracy. Wszystkie są zaimplementowane "
         "w jednym miejscu i pokryte testami, których wykaz zawiera załącznik A.",
     )
 
@@ -3484,14 +5442,19 @@ def _chapter_3_equations(doc: Document) -> None:
             "przekazywać informację krok po kroku. Temporal Fusion Transformer łączy go z "
             "kodowaniem rekurencyjnym oraz sieciami wyboru zmiennych, które uczą się, które "
             "cechy są istotne w danym kontekście. Jest to model o największej pojemności w "
-            "zestawieniu - i przy zmierzonej liczbie obserwacji niezależnych właśnie ta "
-            "pojemność jest jego największym ryzykiem, nie zaletą.",
+            "zestawieniu, a przy tak małej liczbie obserwacji niezależnych ta pojemność "
+            "zwiększa przede wszystkim ryzyko dopasowania do szumu.",
         ],
     )
 
 # ── screenshots supplied by hand ─────────────────────────────────────────────
 
 SCREENSHOT_DIR = "docs/zrzuty"
+# Full-window screenshots are this wide; see `_screenshot_width_cm`.
+SCREENSHOT_FULL_WIDTH_PX = 2000
+SCREENSHOT_WIDTH_CM = 15.5
+SCREENSHOT_MAX_ENLARGEMENT = 1.6
+SCREENSHOT_MAX_HEIGHT_CM = 17.0
 
 # Each entry: file name, heading, caption, and what the screenshot should show.
 # The file names are fixed so the document can find them without configuration;
@@ -3499,50 +5462,81 @@ SCREENSHOT_DIR = "docs/zrzuty"
 # gap nobody notices is how a half-finished document ships.
 SCREENSHOTS: list[tuple[str, str, str, str]] = [
     ("01-menedzer-danych.png", "Menedżer danych - inwentarz",
-     "Widok inwentarza jeziora danych: symbole, zakresy dat, liczba świec i rozmiar na "
-     "dysku. Stąd uruchamiane są pobieranie, agregacja i kontrola jakości.",
+     "Zakładka menedżera danych. Inwentarz jeziora danych podaje dla każdego symbolu zakres "
+     "dat, rozmiar na dysku, dostępne interwały i stan kontroli jakości; obok formularz "
+     "pobierania i kolejka zadań. Na dole terminal, w którym pojawiają się polecenia "
+     "wiersza poleceń, na które panel tłumaczy zadania, wraz z ich wyjściem.",
      "zakładka „Data Manager” z widoczną tabelą inwentarza i co najmniej trzema symbolami"),
     ("02-pobieranie.png", "Menedżer danych - pobieranie",
-     "Formularz pobierania danych z Binance Public Data. Zakres podawany jest miesiącami, "
-     "ponieważ taka jest jednostka publikacji po stronie źródła.",
+     "Formularz pobierania danych z Binance Public Data: para walutowa, zakres dat i "
+     "interwały, do których świece jednominutowe zostaną zagregowane po pobraniu.",
      "formularz pobierania z wypełnionym symbolem i zakresem dat"),
     ("03-agregacja.png", "Menedżer danych - agregacja i kontrola jakości",
-     "Panel agregacji świec jednominutowych do interwałów wyższych oraz uruchamiania "
-     "kontroli jakości opisanych w rozdziale 5.4.",
+     "Panel agregacji jednego symbolu, rozwinięty w tabeli inwentarza. Interwał, który już "
+     "istnieje, jest przekreślony i niedostępny; zadanie można dopisać do kolejki albo "
+     "uruchomić od razu. Przycisk „Verify Quality” uruchamia kontrole jakości opisane w "
+     "rozdziale 5.4.",
      "panel agregacji z wybranymi interwałami docelowymi"),
-    ("04-trening-formularz.png", "Modele — konfiguracja treningu",
-     "Formularz treningu. Wartości domyślne pobierane są z interfejsu HTTP, nie ze "
-     "znaczników strony - powód opisano w rozdziale 12.3.",
+    ("04-trening-formularz.png", "Modele - konfiguracja treningu",
+     "Formularz treningu: symbol, architektura, interwał, zakres dat i horyzonty. Wartości "
+     "domyślne pobierane są z interfejsu HTTP, nie ze znaczników strony - powód opisano w "
+     "rozdziale 12.3. Z prawej inwentarz zapisanych przebiegów.",
      "zakładka „AI Models” z widocznym wyborem modelu, zakresem dat i horyzontami"),
-    ("05-trening-pula.png", "Modele — pula symboli treningowych",
-     "Rozwinięta sekcja wyboru dodatkowych symboli do puli treningowej. Symbol prognozowany "
-     "jest z niej automatycznie wykluczany, a sekcja znika dla architektur, które nie "
-     "przyjmują puli.",
+    ("05-trening-pula.png", "Modele - pula symboli treningowych",
+     "Rozwinięta sekcja wyboru dodatkowych symboli do puli treningowej. Prognoza dotyczy "
+     "nadal symbolu wybranego wyżej, a symbol ten jest z puli wykluczony. Sekcja pojawia się "
+     "tylko dla architektur tablicowych, które przyjmują pulę.",
      "sekcja „Advanced: train on several symbols” rozwinięta, model xgboost, kilka symboli "
      "zaznaczonych"),
     ("06-kolejka.png", "Modele - kolejka zadań",
-     "Kolejka zadań utrzymywana po stronie serwera. Przeładowanie przeglądarki jej nie "
-     "gubi, ponieważ przeglądarka jedynie ją wyświetla, nie przechowuje.",
+     "Kolejka zadań utrzymywana po stronie serwera: jedno zadanie wykonywane, drugie "
+     "oczekujące, z przyciskami zmiany kolejności i usunięcia. Pasek u góry pokazuje postęp "
+     "bieżącego zadania. Przeładowanie przeglądarki kolejki nie gubi, ponieważ przeglądarka "
+     "jedynie ją wyświetla.",
      "kolejka z co najmniej jednym zadaniem oczekującym lub wykonywanym"),
     ("07-ocena-metryki.png", "Ocena - miary jakości",
-     "Tabela miar jakości wraz z przedziałami ufności i liczbą obserwacji niezależnych. "
-     "Werdykt „= chance” oznacza przedział obejmujący poziom losowy.",
+     "Zakładka oceny dla jednego przebiegu badania (GRU na BTCUSDT): ranking wszystkich "
+     "ocenionych przebiegów według wyniku złożonego, karty miar zbiorczych (wynik złożony, "
+     "trafność, Brier, ECE), rozkład pewności prognoz w przedziałach kalibracji i ostrość "
+     "prognozy na każdym horyzoncie. Przedziały ufności i liczbę obserwacji niezależnych "
+     "ocena zapisuje w artefaktach przebiegu i wypisuje w wierszu poleceń; te same wartości "
+     "podaje rozdział 10.",
      "zakładka „Evaluation” z tabelą metryk dla wybranego przebiegu"),
     ("08-ocena-stabilnosc.png", "Ocena - stabilność w czasie",
-     "Wykres jakości prognozy miesiąc po miesiącu, ten sam, który w formie zbiorczej "
-     "przedstawia rysunek stabilności w rozdziale 10.",
+     "Strata logarytmiczna przebiegu badania GRU na BTCUSDT (ziarno 42) miesiąc po "
+     "miesiącu, od stycznia 2021 do czerwca 2026, osobno dla czterech horyzontów. Linia "
+     "tygodniowa przez większość miesięcy leży przy wartości ln 2 = 0,693, czyli stracie "
+     "prognozy 50%, i tylko dwa razy przekracza 1,0. Linie dłuższych horyzontów odchodzą od "
+     "niej dalej - miesięczna do 1,6, roczna do 2,8, a kwartalna do 3,5, w 2024 roku przez "
+     "pięć miesięcy z rzędu powyżej 1,0 - a na dłuższym horyzoncie miesiąc mieści mniej "
+     "obserwacji niezależnych. Linie kwartalna i roczna kończą się wcześniej, ponieważ ich "
+     "etykiety sięgają dalej w przyszłość; miesiące o zbyt małej liczbie ocenionych świec są "
+     "oznaczone osobnym znacznikiem.",
      "wykres stabilności miesięcznej z widocznymi czterema horyzontami"),
     ("09-backtest-parametry.png", "Symulacja - założenia wykonawcze",
-     "Siedem założeń wykonawczych symulacji wystawionych jako parametry: prowizja, "
-     "poślizg, próg kosztowy, minimalna zmiana pozycji i polityka ekspozycji.",
+     "Założenia wykonawcze symulacji, tu dla przebiegu badania GRU na BTCUSDT, wystawione "
+     "jako parametry: prowizja, poślizg, próg "
+     "kosztowy, minimalna zmiana pozycji, długość okna reguły momentum oraz docelowa "
+     "ekspozycja dla każdej rekomendacji. Wartość „Hold” nie ma własnej ekspozycji, "
+     "ponieważ oznacza utrzymanie poprzedniej.",
      "zakładka „Backtest” z rozwiniętym formularzem parametrów"),
-    ("10-backtest-wynik.png", "Symulacja — wynik i hipotezy zerowe",
-     "Wynik symulacji podany zawsze łącznie z czterema punktami odniesienia, w tym "
-     "percentylem względem własnych przesunięć cyklicznych.",
+    ("10-backtest-wynik.png", "Symulacja - wynik i hipotezy zerowe",
+     "Wynik symulacji przebiegu badania GRU na BTCUSDT (ziarno 42, horyzont tygodniowy, "
+     "styczeń 2020 - czerwiec 2026), podany łącznie z czterema punktami odniesienia: kupnem "
+     "i trzymaniem, stałą ekspozycją o tym samym średnim udziale, percentylem względem "
+     "własnych przesunięć cyklicznych i regułą momentum bez modelu. Strategia zarabia 50,4%, "
+     "lecz przegrywa ze wszystkimi trzema regułami bez modelu - z kupnem i trzymaniem, ze "
+     "stałą ekspozycją i z regułą momentum - a wobec własnych przesunięć leży na 24. "
+     "percentylu, poniżej losowego 50.",
      "wynik backtestu z widoczną sekcją hipotez zerowych"),
-    ("11-analiza-wykres.png", "Analiza - prognoza na tle notowań",
-     "Wykres świecowy z naniesionymi prognozami i rekomendacjami dla wybranego przebiegu.",
-     "wykres analizy z widocznymi prognozami"),
+    ("11-analiza-wykres.png", "Analiza - kalendarz prognoz",
+     "Inspektor historyczny przebiegu: kalendarz jednego miesiąca, w którym każdy dzień "
+     "podaje prognozowane prawdopodobieństwo wzrostu (L) i spadku (S) na najkrótszym "
+     "horyzoncie. Zrzut pokazuje czerwiec 2026 roku w przebiegu badania GRU na BTCUSDT "
+     "(ziarno 42): temperatura dopasowana dla tego miesiąca to górny kraniec siatki, 1000, "
+     "więc każda prognoza tygodniowa wynosi 50% (rozdział 8.8). Każdy dzień pokazuje 50% "
+     "w 30 z 78 miesięcy tego przebiegu.",
+     "kalendarz prognoz wybranego przebiegu"),
 ]
 
 
@@ -3563,18 +5557,23 @@ def _screenshot_placeholder(doc: Document, expected: str) -> None:
     doc.add_paragraph()
 
 
+def _screenshot_width_cm(path: str) -> float:
+    """The width a screenshot is placed at.
+
+    A full-window screenshot fills the text width. A crop of one panel is
+    enlarged over that same scale only up to a limit, so its interface text does
+    not come out larger than in the rest, and no screenshot is so tall that its
+    heading and caption cannot share its page.
+    """
+    image = DocxImage.from_file(path)
+    natural = image.px_width / SCREENSHOT_FULL_WIDTH_PX * SCREENSHOT_WIDTH_CM
+    return min(SCREENSHOT_WIDTH_CM, natural * SCREENSHOT_MAX_ENLARGEMENT,
+               SCREENSHOT_MAX_HEIGHT_CM * image.px_width / image.px_height)
+
+
 def _chapter_12b_screenshots(doc: Document) -> None:
     add_heading(doc, "12.6. Panel przeglądarkowy - widoki", 2)
-    present = sum(
-        1 for name, *_ in SCREENSHOTS if os.path.exists(os.path.join(SCREENSHOT_DIR, name))
-    )
-    add_body(
-        doc,
-        f"Poniżej zebrano widoki panelu odpowiadające etapom potoku. Zrzuty wykonywane są "
-        f"ręcznie i umieszczane w katalogu {SCREENSHOT_DIR}/ pod ustalonymi nazwami; "
-        f"dokument osadza je automatycznie przy kolejnym wygenerowaniu. Obecnie dostępnych "
-        f"jest {present} z {len(SCREENSHOTS)}.",
-    )
+    add_body(doc, "Poniżej zebrano widoki panelu odpowiadające etapom potoku.")
     for name, heading, caption, expected in SCREENSHOTS:
         add_heading(doc, heading, 3)
         path = os.path.join(SCREENSHOT_DIR, name)
@@ -3582,12 +5581,13 @@ def _chapter_12b_screenshots(doc: Document) -> None:
             paragraph = doc.add_paragraph()
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             paragraph.paragraph_format.space_after = Pt(2)
+            paragraph.paragraph_format.keep_with_next = True
             try:
-                paragraph.add_run().add_picture(path, width=Cm(15.5))
+                paragraph.add_run().add_picture(path, width=Cm(_screenshot_width_cm(path)))
             except Exception:
                 _screenshot_placeholder(doc, f"plik {name} istnieje, ale nie daje się osadzić")
         else:
-            _screenshot_placeholder(doc, f"{name} — {expected}")
+            _screenshot_placeholder(doc, f"{name} - {expected}")
         add_caption(doc, "Rysunek", caption)
 
 
@@ -3599,76 +5599,54 @@ def _both_ends_sentence(positions: dict[str, list[int]], places: int) -> str:
     count = {1: "Jedna architektura zajmuje", 2: "Dwie architektury zajmują",
              3: "Trzy architektury zajmują"}.get(len(both), f"{len(both)} architektur zajmuje")
     return (f"{count} zarówno pierwsze, jak i ostatnie miejsce, zależnie od horyzontu "
-            f"({', '.join(both)}).")
+            f"({', '.join(MODEL_LABEL[m] for m in both)}).")
 
 
 def _results_rank_stability(doc: Document, runs: dict) -> None:
     """Does the ordering of architectures survive a change of horizon?
 
-    The thesis rests on this, so it is computed rather than asserted. The
-    baseline is excluded: it does not learn, it is consistently last, and
-    including it would inflate the apparent agreement between horizons.
+    The thesis rests on this, so it is computed rather than asserted.
     """
     learners = [m for m in MODELS if m != "baseline"]
-    means_by_horizon: dict[str, dict[str, float]] = {}
-    for horizon in HORIZON_NAMES:
-        per_model = {}
-        for model in learners:
-            values = []
-            for symbol in SYMBOLS:
-                values.extend(horizon_values(runs.get((symbol, model), []), horizon, "accuracy"))
-            if values:
-                per_model[model] = float(np.mean(values))
-        if len(per_model) == len(learners):
-            means_by_horizon[horizon] = per_model
-    if len(means_by_horizon) < 2:
+    order, average = rank_agreement(runs)
+    if len(order) < 2:
         return
 
-    order = {
-        horizon: sorted(per_model, key=lambda m: -per_model[m])
-        for horizon, per_model in means_by_horizon.items()
-    }
-
-    add_heading(doc, "10.2. Czy ranking architektur jest trwały?", 2)
-    beyond = learners_beyond_noise(architecture_spread(runs))
-    if len(beyond) <= 1:
-        where = (f" na wszystkich horyzontach poza „{beyond[0]}”, gdzie przekracza go niewiele"
-                 if beyond else " na każdym horyzoncie")
-        intro = (f"Rozstęp między architekturami uczącymi się mieści się w rozrzucie ziarna{where}. "
-                 "Jeżeli różnice są szumem, ich porządek powinien zmieniać się wraz z horyzontem. "
-                 "Sprawdzeniem jest kolejność miejsc.")
+    add_heading(doc, "10.2. Trwałość rankingu architektur", 2)
+    if not paired_facts(runs)["learner_significant"]:
+        intro = ("Test parami nie wykazał istotnej różnicy między architekturami uczącymi się. "
+                 "Jeżeli różnice ich średnich są szumem, ich porządek powinien zmieniać się wraz "
+                 "z horyzontem. Sprawdzeniem jest kolejność miejsc.")
     else:
-        intro = (f"Rozstęp między architekturami uczącymi się przekracza rozrzut ziarna na "
-                 f"{len(beyond)} horyzontach. Pozostaje pytanie, czy opisuje architekturę, czy parę "
-                 "architektura-horyzont. Odpowiedzią jest kolejność miejsc.")
+        intro = ("Test parami wykazał istotne różnice między niektórymi architekturami uczącymi "
+                 "się. Pozostaje pytanie, czy opisują architekturę, czy parę architektura-horyzont. "
+                 "Odpowiedzią jest kolejność miejsc.")
     add_body(doc, intro)
     add_table(
         doc,
         ["Horyzont", "1. miejsce", "2. miejsce", "3. miejsce", "4. miejsce"],
-        [[horizon, *order[horizon]] for horizon in order],
+        [[HORIZON_LABEL[horizon], *(MODEL_LABEL[m] for m in order[horizon])]
+         for horizon in order],
         [2.8, 3.2, 3.2, 3.2, 3.2],
-        font=9,
+        font=10,
+    )
+    add_caption(
+        doc, "Tabela",
+        "Kolejność architektur uczących się na każdym horyzoncie, od najwyższej średniej "
+        "trafności.",
     )
 
     ranks = {h: {m: i for i, m in enumerate(o)} for h, o in order.items()}
     horizons = list(order)
-    correlations = []
-    for index, first in enumerate(horizons):
-        for second in horizons[index + 1:]:
-            left = np.array([ranks[first][m] for m in learners], dtype=float)
-            right = np.array([ranks[second][m] for m in learners], dtype=float)
-            if left.std() and right.std():
-                correlations.append(float(np.corrcoef(left, right)[0, 1]))
-    average = float(np.mean(correlations)) if correlations else float("nan")
 
     positions = {m: [ranks[h][m] + 1 for h in horizons] for m in learners}
     add_table(
         doc,
         ["Architektura", "Zajmowane miejsca", "Najlepsze", "Najgorsze"],
-        [[m, ", ".join(str(p) for p in positions[m]), str(min(positions[m])),
+        [[MODEL_LABEL[m], ", ".join(str(p) for p in positions[m]), str(min(positions[m])),
           str(max(positions[m]))] for m in learners],
         [4.0, 5.0, 3.2, 3.2],
-        font=9,
+        font=10,
     )
     add_caption(
         doc, "Tabela",

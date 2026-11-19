@@ -42,7 +42,7 @@ def test_direction_is_the_sign_of_the_return() -> None:
 
 
 def test_an_exactly_zero_return_has_no_side() -> None:
-    """It must not be forced into a class — the row is excluded instead."""
+    """It must not be forced into a class - the row is excluded instead."""
     assert direction_from_return(0.0) is None
     assert direction_from_return(None) is None
 
@@ -110,7 +110,7 @@ def _lake(tmp_path, days: int = 200, rising: bool = True) -> Settings:
     for i in range(days):
         moment = start + timedelta(days=i)
         # Confidently long in January, confidently short afterwards. On a rising
-        # series that makes January excellent and the rest terrible — which is
+        # series that makes January excellent and the rest terrible - which is
         # exactly the shape a whole-run average hides.
         p_long = 0.95 if moment.month == 1 else 0.05
         rows.append(
@@ -231,7 +231,7 @@ def _hourly_lake(tmp_path, hours: int = 24 * 90) -> Settings:
     exactly 28 whole days, so `close[i + 672]` sits at the identical phase and
     the oscillation cancels out of every forward return. A 100-hour period
     leaves 0.72 of a cycle over the horizon, so the sign genuinely varies with
-    the bar — which is what makes a date-keyed lookup detectably wrong.
+    the bar - which is what makes a date-keyed lookup detectably wrong.
     """
     settings = Settings(data_root=tmp_path)
     start = datetime(2024, 1, 1, tzinfo=UTC)

@@ -1,0 +1,56 @@
+@startuml
+!include _styl.iuml
+
+start
+partition "Dane" {
+  :Pobranie miesięcznych archiwów świec 1m
+  <i>prosper backfill</i>;
+  note right
+    raw/ (ZIP) → processed/.../klines/1m/
+    symbol=<symbol>/year=<rok>/month=<miesiąc>
+  end note
+  :Agregacja do interwałów wyższych
+  <i>prosper aggregate</i>;
+  :Kontrola jakości
+  <i>prosper qa check</i>;
+  note right
+    ciągłość, duplikaty, kolejność,
+    niezmienniki świecy
+  end note
+}
+partition "Przygotowanie" {
+  :Cechy niezależne od poziomu ceny
+  <i>prosper features build</i>;
+  :Etykiety kierunku i głębokości
+  <i>prosper labels build</i>;
+}
+partition "Modele" {
+  :Trening kroczący i prognoza
+  <i>prosper predict <model></i>;
+  note right
+    nowy katalog przebiegu:
+    predictions/<symbol>/<model>_<interwał>_<znacznik>/
+  end note
+}
+partition "Weryfikacja i decyzje" {
+  fork
+    :Ocena regułami
+    oceny właściwej
+    <i>eval predictions</i>;
+    :Ranking przebiegów
+    <i>eval compare</i>;
+  fork again
+    :Stabilność
+    w czasie
+    <i>eval stability</i>;
+  fork again
+    :Symulacja
+    handlowa
+    <i>eval backtest</i>;
+  fork again
+    :Rekomendacje
+    <i>planner windows</i>;
+  end fork
+}
+stop
+@enduml

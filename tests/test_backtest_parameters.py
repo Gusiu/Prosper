@@ -7,7 +7,7 @@ should be an instrument.
 
 The risk in opening them is obvious: a knob-twiddling machine that produces a
 flattering number. What prevents it is that `nulls` travels with every result
-whatever the settings — measured on one run, an aggressive policy with zero fees
+whatever the settings - measured on one run, an aggressive policy with zero fees
 *lowered* ROI from 74.05% to 61.71% and moved the mistimed-replay percentile from
 45.5 to 40.0, because changing the size of the bets cannot create timing.
 """
@@ -50,7 +50,7 @@ def test_display_names_are_accepted_too() -> None:
 
 
 def test_hold_cannot_be_given_a_target() -> None:
-    """It means "leave the book alone" — the absence of a target, not zero. A
+    """It means "leave the book alone" - the absence of a target, not zero. A
     number here would turn a neutral forecast into a trade signal."""
     with pytest.raises(ValueError, match="Hold carries the previous exposure"):
         parse_exposure_policy("hold=0")
@@ -70,7 +70,7 @@ def test_hold_cannot_be_given_a_target() -> None:
 )
 def test_a_bad_policy_is_refused_rather_than_ignored(raw: str, message: str) -> None:
     """Silently dropping one would leave the caller believing an assumption was
-    applied — the failure that let the dashboard train 5 epochs while the CLI
+    applied - the failure that let the dashboard train 5 epochs while the CLI
     trained 20."""
     with pytest.raises(ValueError, match=message):
         parse_exposure_policy(raw)
@@ -182,3 +182,15 @@ def test_the_browser_only_sends_what_was_changed() -> None:
 
     assert "Math.abs(share - grade.default) > 1e-9" in js
     assert "if (value !== null && value !== \"\") params.set" in js
+
+
+def test_the_assumptions_panel_is_laid_out_and_sized_by_its_content() -> None:
+    """Its fields sit in `.evaluation-controls`, which needs a rule of its own -
+    without one every label takes the full width and the list runs past the card.
+    The panel also must not inherit the fixed module height of `.ops-card`: that
+    leaves an empty box when it is closed and clips the fields when it is open."""
+    import re
+
+    css = (FRONTEND / "style.css").read_text(encoding="utf-8")
+    assert re.search(r"\.evaluation-controls\s*\{[^}]*display:\s*flex", css)
+    assert re.search(r"#backtest-assumptions\s*\{[^}]*height:\s*auto", css)

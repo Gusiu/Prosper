@@ -3,7 +3,7 @@
 `map_to_recommendation` was called from three places. The quantile risk gates
 and the cost gate were added to `plan_windows` only, so the same bar could be
 `Accumulate` in the simulation, `Hold` in the recommendation report, and a third
-thing in the evaluation artifacts — three answers to one question, none of them
+thing in the evaluation artifacts - three answers to one question, none of them
 flagged. Each was found separately, hours apart, by tripping over a symptom.
 
 This file exists so a fourth path cannot appear quietly. The rule: production

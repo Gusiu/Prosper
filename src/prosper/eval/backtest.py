@@ -9,7 +9,7 @@ finished, which quietly inflates every result.
 The strategy is long-only by design, not by omission: the platform targets
 Binance **SPOT**, where a short position cannot be opened. A `short` forecast
 therefore means "hold no inventory", and the honest benchmark for that is buy
-and hold — reported alongside every run.
+and hold - reported alongside every run.
 
 Exposure is scaled by conviction rather than being all-or-nothing, and each
 rebalance pays fees and slippage on the traded notional only.
@@ -72,7 +72,7 @@ def parse_exposure_policy(raw: str | None) -> dict[str, float] | None:
     would make a neutral forecast a trade signal.
 
     An unknown key or an out-of-range share is an error. Silently ignoring one
-    would leave the caller believing an assumption was applied when it was not —
+    would leave the caller believing an assumption was applied when it was not -
     the same failure that let the dashboard train 5 epochs while reporting 20.
     """
     if raw is None or not raw.strip():
@@ -223,8 +223,8 @@ MOMENTUM_LOOKBACK_BARS = 7
 def _replay(prices: list[float], exposures: list[float], cost_rate: float) -> float:
     """ROI of holding `exposures[t]` into the return of bar t+1, as a fraction.
 
-    Deliberately simpler than the simulation above — no rebalance floor, no
-    open/close distinction — because it exists to compare an exposure path
+    Deliberately simpler than the simulation above - no rebalance floor, no
+    open/close distinction - because it exists to compare an exposure path
     against alternatives, and every arm goes through this same function. Its
     absolute value is not comparable to `roi_pct`.
     """
@@ -254,8 +254,8 @@ def _timing_test(prices: list[float], exposures: list[float], cost_rate: float) 
     11.06 pp while its cumulative monthly excess was negative in all 40 months,
     and it was flat during the largest months in *both* directions.
 
-    The null keeps the exposure sequence exactly as it is — same values, same
-    turnover, same average — and only changes when it applies, by circular
+    The null keeps the exposure sequence exactly as it is - same values, same
+    turnover, same average - and only changes when it applies, by circular
     shift. `percentile` is the share of misalignments the real path beat: ~50
     means the timing explained nothing.
 
@@ -277,7 +277,7 @@ def _timing_test(prices: list[float], exposures: list[float], cost_rate: float) 
         for k in range(1, len(exposures))
     ]
     # Mid-rank: ties count half. A constant exposure path is identical under
-    # every shift, so counting only strict wins reported it at percentile 0 —
+    # every shift, so counting only strict wins reported it at percentile 0 -
     # reading as "the worst possible timing" when the truth is that a path with
     # no variation carries no timing information at all. Mid-rank puts it at 50,
     # which is what "explains nothing" is supposed to look like here.
@@ -344,7 +344,7 @@ def run_backtest(
     simulation can be used as an instrument: what happens at a 0.05% fee, or if
     nothing below `Buy` is acted on, or if the trend benchmark looks back a
     month. None of them may be tuned into evidence, which is why `nulls` travels
-    with every result whatever they are set to — a configuration that lifts ROI
+    with every result whatever they are set to - a configuration that lifts ROI
     to +500% while the momentum row stays negative is telling you something about
     the market, not about the model.
     """

@@ -6,12 +6,13 @@ copy of the results. Charts are written as PNG into a working directory and
 embedded by `build_documentation.py`; nothing is committed, because the figures
 are outputs and this file is the source.
 
-Style is deliberately plain — grayscale-safe, no gridline clutter, no decoration
+Style is deliberately plain - grayscale-safe, no gridline clutter, no decoration
 that would survive printing as noise rather than information.
 """
 
 from __future__ import annotations
 
+import functools
 import glob
 import json
 import os
@@ -21,8 +22,15 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.ticker  # noqa: E402
 import numpy as np  # noqa: E402
-from documentation_sources import STUDY_MODELS, STUDY_SYMBOLS, is_study_run  # noqa: E402
+from documentation_sources import (  # noqa: E402
+    HORIZON_LABEL,
+    MODEL_LABEL,
+    STUDY_MODELS,
+    STUDY_SYMBOLS,
+    is_study_run,
+)
 
 from prosper.domain import HORIZON_NAMES  # noqa: E402
 
@@ -51,10 +59,27 @@ plt.rcParams.update({
 def _save(fig, name: str) -> str:
     os.makedirs(FIGURE_DIR, exist_ok=True)
     path = os.path.join(FIGURE_DIR, name)
-    fig.tight_layout()
+    # A figure laid out by its own engine (constrained) must not be re-laid out.
+    if fig.get_layout_engine() is None:
+        fig.tight_layout()
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
     return path
+
+
+def _study_paths(pattern: str) -> list[str]:
+    """Files under a run directory, sorted, kept only where the run belongs to the study.
+
+    The pattern's last two directories are the symbol and the run slug. A figure
+    drawn from one run per model would otherwise take whichever run sorts first,
+    study or not.
+    """
+    kept = []
+    for path in sorted(glob.glob(pattern)):
+        symbol, slug = path.replace("\\", "/").split("/")[-3:-1]
+        if is_study_run(symbol, slug):
+            kept.append(path)
+    return kept
 
 
 def _runs() -> dict[tuple[str, str], list[dict]]:
@@ -100,7 +125,7 @@ def architecture_comparison() -> str | None:
             arr = np.array(values)
             means.append(arr.mean())
             errors.append(arr.std(ddof=1) if len(arr) > 1 else 0.0)
-            labels.append(model)
+            labels.append(MODEL_LABEL[model])
         if not means:
             continue
         positions = np.arange(len(means))
@@ -110,7 +135,7 @@ def architecture_comparison() -> str | None:
         axis.axhline(0.5, color="#C0392B", linewidth=0.9, linestyle="--")
         axis.set_xticks(positions)
         axis.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
-        axis.set_title(horizon)
+        axis.set_title(HORIZON_LABEL[horizon])
         axis.set_ylim(0.35, 0.62)
     np.atleast_1d(axes)[0].set_ylabel("trafność")
     return _save(fig, "porownanie_architektur.png")
@@ -122,7 +147,7 @@ def stability_over_time() -> str | None:
     for path in sorted(glob.glob(f"{REPORT_ROOT}/eval/*/*/stability_summary.json")):
         parts = path.replace("\\", "/").split("/")
         symbol, model = parts[-3], parts[-2].split("_")[0]
-        if symbol != "BTCUSDT" or model in series:
+        if symbol != "BTCUSDT" or model in series or not is_study_run(symbol, parts[-2]):
             continue
         try:
             payload = json.load(open(path, encoding="utf-8"))
@@ -139,13 +164,16 @@ def stability_over_time() -> str | None:
         return None
 
     fig, axis = plt.subplots(figsize=(9.5, 3.0))
-    for model, points in sorted(series.items()):
-        values = [v for _, v in points]
-        axis.plot(range(len(values)), values, linewidth=1.0, label=model, alpha=0.85)
+    # In the study's model order and colours, so a model looks the same in every figure.
+    for index, model in enumerate(MODELS):
+        if model not in series:
+            continue
+        values = [v for _, v in series[model]]
+        axis.plot(range(len(values)), values, linewidth=1.0, color=f"C{index}",
+                  label=MODEL_LABEL[model], alpha=0.85)
     axis.axhline(0.5, color="#C0392B", linewidth=1.0, linestyle="--", label="poziom losowy")
     axis.set_xlabel("kolejny miesiąc okresu oceny")
     axis.set_ylabel("trafność w miesiącu")
-    axis.set_title("BTCUSDT, horyzont tygodniowy - jakość miesiąc po miesiącu")
     axis.legend(frameon=False, ncol=6, fontsize=7, loc="upper center",
                 bbox_to_anchor=(0.5, -0.22))
     return _save(fig, "stabilnosc.png")
@@ -176,9 +204,8 @@ def seed_spread() -> str | None:
                          edgecolor=ACCENT, facecolor="none", linewidth=0.9)
     axis.axhline(0.5, color="#C0392B", linewidth=1.0, linestyle="--")
     axis.set_xticks(range(len(MODELS)))
-    axis.set_xticklabels(MODELS)
+    axis.set_xticklabels([MODEL_LABEL[m] for m in MODELS])
     axis.set_ylabel("trafność, horyzont tygodniowy")
-    axis.set_title("Każdy przebieg osobno - rozrzut wewnątrz architektury wobec różnic między nimi")
     return _save(fig, "rozrzut_ziarna.png")
 
 
@@ -201,17 +228,17 @@ def calibration_by_horizon() -> str | None:
                 if by_horizon.get(horizon) and by_horizon[horizon].get("ece") is not None
             ]
             means.append(float(np.mean(values)) if values else np.nan)
-        axis.bar(positions + index * width - 2 * width, means, width * 0.9, label=model)
+        axis.bar(positions + index * width - 2 * width, means, width * 0.9, color=f"C{index}",
+                 label=MODEL_LABEL[model])
     axis.set_xticks(positions)
-    axis.set_xticklabels(HORIZON_NAMES)
+    axis.set_xticklabels([HORIZON_LABEL[h] for h in HORIZON_NAMES])
     axis.set_ylabel("ECE (mniej = lepiej)")
-    axis.set_title("Błąd kalibracji według horyzontu i architektury")
     axis.legend(frameon=False, ncol=5, fontsize=7)
     return _save(fig, "kalibracja.png")
 
 
 def backtest_percentiles() -> str | None:
-    """Percentile against a run's own circular shifts — the timing test."""
+    """Percentile against a run's own circular shifts - the timing test."""
     values: dict[str, list[float]] = defaultdict(list)
     for path in sorted(glob.glob(f"{REPORT_ROOT}/backtests/*/*/backtest.json")):
         parts = path.replace("\\", "/").split("/")
@@ -230,68 +257,110 @@ def backtest_percentiles() -> str | None:
 
     fig, axis = plt.subplots(figsize=(9.5, 2.8))
     labels = [m for m in MODELS if m in values]
-    axis.boxplot([values[m] for m in labels], tick_labels=labels, widths=0.5)
+    axis.boxplot([values[m] for m in labels],
+                 tick_labels=[MODEL_LABEL[m] for m in labels], widths=0.5)
     axis.axhline(50, color="#C0392B", linewidth=1.0, linestyle="--",
                  label="ułożenie przypadkowe")
     axis.axhline(95, color="#2E7D32", linewidth=1.0, linestyle=":", label="próg sygnału")
     axis.set_ylabel("percentyl wobec własnych przesunięć")
-    axis.set_title("Test wyczucia momentu - wartości poniżej 50 oznaczają gorzej niż przypadek")
     axis.legend(frameon=False, fontsize=7)
     return _save(fig, "backtest_percentyle.png")
 
 
-def reliability_diagram() -> str | None:
-    """Declared confidence against realised frequency.
+# The bins of the reliability curves. Equal widths up to the largest confidence
+# would merge the confident end, where the year horizon puts half its forecasts.
+RELIABILITY_EDGES = (0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 0.9, 1.0001)
+# A bin holding fewer forecasts than this is not drawn: its hit rate is noise, the
+# more so as neighbouring forecasts share most of their outcome.
+RELIABILITY_MIN_BIN = 200
 
-    The picture behind the ECE column: a perfectly calibrated forecast lies on
-    the diagonal. Deviation upward means the model is underconfident, downward
-    that it claims more than it delivers.
+
+@functools.cache
+def confidence_rows() -> dict[tuple[str, str], tuple[np.ndarray, np.ndarray]]:
+    """Per (horizon, model): the declared confidence and the hit (1 or 0) of every
+    scored forecast of the study, pooled over instruments and seeds.
+
+    Read once and shared by the reliability figure and the text of section 10.5.
     """
     import polars as pl
 
-    fig, axes = plt.subplots(1, len(HORIZON_NAMES), figsize=(9.5, 2.6), sharey=True)
+    pooled: dict[tuple[str, str], tuple[list, list]] = defaultdict(lambda: ([], []))
+    for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/predictions_quality.parquet")):
+        symbol, slug = path.replace("\\", "/").split("/")[-3:-1]
+        if not is_study_run(symbol, slug):
+            continue
+        try:
+            frame = pl.read_parquet(
+                path, columns=["horizon", "status", "pred_confidence", "correct"]
+            ).filter(pl.col("status") == "scored")
+        except Exception:
+            continue
+        model = slug.split("_")[0]
+        for horizon in HORIZON_NAMES:
+            sub = frame.filter(pl.col("horizon") == horizon)
+            if sub.is_empty():
+                continue
+            confidence, hits = pooled[(horizon, model)]
+            confidence.extend(sub["pred_confidence"].to_list())
+            hits.extend(float(bool(x)) for x in sub["correct"].to_list())
+    return {key: (np.array(c, dtype=float), np.array(h, dtype=float))
+            for key, (c, h) in pooled.items()}
+
+
+def calibration_summary() -> dict[tuple[str, str], dict[str, float]]:
+    """Per (horizon, model): how many forecasts, their mean declared confidence and
+    the share of them that came true."""
+    return {
+        key: {"forecasts": len(c), "confidence": float(c.mean()), "accuracy": float(h.mean())}
+        for key, (c, h) in confidence_rows().items() if len(c)
+    }
+
+
+def reliability_diagram() -> str | None:
+    """Declared confidence against realised frequency, one curve per architecture.
+
+    The picture behind the ECE figure: a calibrated forecast lies on the
+    diagonal, and a curve below it claims more than it delivers. Each
+    architecture gets its own curve, because pooled into one they would average
+    away errors of opposite sign.
+    """
+    rows = confidence_rows()
+    if not rows:
+        return None
+    fig, axes = plt.subplots(1, len(HORIZON_NAMES), figsize=(9.5, 2.9), sharey=True)
     drawn = False
     for axis, horizon in zip(np.atleast_1d(axes), HORIZON_NAMES, strict=False):
-        confidence, correct = [], []
-        for path in glob.glob(f"{REPORT_ROOT}/evaluations/*/*/predictions_quality.parquet"):
-            symbol, slug = path.replace("\\", "/").split("/")[-3:-1]
-            if not is_study_run(symbol, slug):
+        axis.plot([0.5, 1.0], [0.5, 1.0], color="#C0392B", linewidth=0.9, linestyle="--")
+        for index, model in enumerate(MODELS):
+            if (horizon, model) not in rows:
                 continue
-            try:
-                frame = pl.read_parquet(path).filter(
-                    (pl.col("horizon") == horizon) & (pl.col("status") == "scored")
-                )
-            except Exception:
+            confidence, hits = rows[(horizon, model)]
+            xs, ys = [], []
+            for low, high in zip(RELIABILITY_EDGES[:-1], RELIABILITY_EDGES[1:], strict=False):
+                mask = (confidence >= low) & (confidence < high)
+                if mask.sum() < RELIABILITY_MIN_BIN:
+                    continue
+                xs.append(confidence[mask].mean())
+                ys.append(hits[mask].mean())
+            if not xs:
                 continue
-            if frame.is_empty():
-                continue
-            confidence.extend(frame["pred_confidence"].to_list())
-            correct.extend(bool(x) for x in frame["correct"].to_list())
-        if len(confidence) < 100:
-            continue
-        conf = np.array(confidence, dtype=float)
-        hit = np.array(correct, dtype=float)
-        edges = np.linspace(0.5, min(1.0, conf.max()), 9)
-        xs, ys = [], []
-        for low, high in zip(edges[:-1], edges[1:], strict=False):
-            mask = (conf >= low) & (conf < high)
-            if mask.sum() < 30:
-                continue
-            xs.append(conf[mask].mean())
-            ys.append(hit[mask].mean())
-        if not xs:
-            continue
-        drawn = True
-        axis.plot([0.45, 0.75], [0.45, 0.75], color="#C0392B", linewidth=0.9, linestyle="--")
-        axis.plot(xs, ys, marker="o", markersize=3, linewidth=1.1, color=ACCENT)
-        axis.set_title(horizon)
+            drawn = True
+            # The colours of the ECE figure, so that a model looks the same in both.
+            axis.plot(xs, ys, marker="o", markersize=2.5, linewidth=1.0, color=f"C{index}",
+                      label=MODEL_LABEL[model])
+        axis.set_title(HORIZON_LABEL[horizon])
         axis.set_xlabel("deklarowana pewność")
-        axis.set_xlim(0.47, 0.72)
-        axis.set_ylim(0.30, 0.75)
+        axis.set_xlim(0.48, 1.0)
+        # From zero: the baseline's most confident forecasts come true in under 10%.
+        axis.set_ylim(0.0, 1.0)
     if not drawn:
         plt.close(fig)
         return None
-    np.atleast_1d(axes)[0].set_ylabel("zrealizowana częstość")
+    first = np.atleast_1d(axes)[0]
+    first.set_ylabel("częstość trafień")
+    handles, labels = first.get_legend_handles_labels()
+    fig.legend(handles, labels, frameon=False, ncol=len(labels), fontsize=7,
+               loc="upper center", bbox_to_anchor=(0.5, 0.0))
     return _save(fig, "niezawodnosc.png")
 
 
@@ -300,7 +369,7 @@ def equity_curves() -> str | None:
     fig, axis = plt.subplots(figsize=(9.5, 3.0))
     drawn = 0
     for model in MODELS:
-        matches = sorted(glob.glob(f"{REPORT_ROOT}/backtests/BTCUSDT/{model}_1d_*/backtest.json"))
+        matches = _study_paths(f"{REPORT_ROOT}/backtests/BTCUSDT/{model}_1d_*/backtest.json")
         if not matches:
             continue
         try:
@@ -311,7 +380,7 @@ def equity_curves() -> str | None:
         if len(points) < 100:
             continue
         values = [p.get("value") for p in points if p.get("value") is not None]
-        axis.plot(range(len(values)), values, linewidth=1.0, label=model, alpha=0.85)
+        axis.plot(range(len(values)), values, linewidth=1.0, label=MODEL_LABEL[model], alpha=0.85)
         drawn += 1
         if drawn == 1:
             prices = [p.get("price") for p in points if p.get("price") is not None]
@@ -325,7 +394,6 @@ def equity_curves() -> str | None:
     axis.set_yscale("log")
     axis.set_xlabel("kolejna świeca okresu symulacji")
     axis.set_ylabel("wartość portfela [USDT, skala log.]")
-    axis.set_title("BTCUSDT - przebieg kapitału wobec strategii kup i trzymaj")
     axis.legend(frameon=False, ncol=6, fontsize=7, loc="upper center",
                 bbox_to_anchor=(0.5, -0.22))
     return _save(fig, "krzywe_kapitalu.png")
@@ -333,8 +401,8 @@ def equity_curves() -> str | None:
 
 def feature_importance() -> str | None:
     """Which columns the gradient model leaned on."""
-    matches = sorted(glob.glob(
-        f"{REPORT_ROOT}/predictions/BTCUSDT/xgboost_1d_*/feature_importances.json"))
+    matches = _study_paths(
+        f"{REPORT_ROOT}/predictions/BTCUSDT/xgboost_1d_*/feature_importances.json")
     if not matches:
         return None
     try:
@@ -355,12 +423,11 @@ def feature_importance() -> str | None:
     axis.set_yticks(range(len(names)))
     axis.set_yticklabels(names, fontsize=7)
     axis.set_xlabel("względna ważność")
-    axis.set_title(f"XGBoost, BTCUSDT, horyzont „{horizon}” - 18 najważniejszych cech")
     return _save(fig, "waznosc_cech.png")
 
 
 def observation_power() -> str | None:
-    """Independent observations per horizon — the binding constraint, drawn."""
+    """Independent observations per horizon - the binding constraint, drawn."""
     counts: dict[str, list[float]] = defaultdict(list)
     for path in glob.glob(f"{REPORT_ROOT}/evaluations/*/*/metrics.json"):
         if not is_study_run(*path.replace("\\", "/").split("/")[-3:-1]):
@@ -386,11 +453,308 @@ def observation_power() -> str | None:
                  label="próg sensowności metryki (3 obserwacje)")
     axis.set_yscale("log")
     axis.set_xticks(range(len(labels)))
-    axis.set_xticklabels(labels)
+    axis.set_xticklabels([HORIZON_LABEL[h] for h in labels])
     axis.set_ylabel("obserwacje niezależne (skala log.)")
-    axis.set_title("Moc statystyczna według horyzontu - wiążące ograniczenie projektu")
     axis.legend(frameon=False, fontsize=7)
     return _save(fig, "moc_statystyczna.png")
+
+
+def accuracy_map() -> str | None:
+    """Mean accuracy of every instrument and architecture, one panel per horizon.
+
+    The detailed results as a picture: the colour says on which side of a coin
+    flip a cell lies, the number by how much, and a panel at a glance whether any
+    architecture or instrument stands apart from the rest.
+    """
+    from matplotlib.colors import TwoSlopeNorm
+
+    runs = _runs()
+    if not runs:
+        return None
+    norm = TwoSlopeNorm(vmin=0.35, vcenter=0.5, vmax=0.65)
+    fig, axes = plt.subplots(2, 2, figsize=(9.5, 7.6), layout="constrained")
+    image = None
+    for axis, horizon in zip(axes.flat, HORIZON_NAMES, strict=False):
+        grid = np.full((len(SYMBOLS), len(MODELS)), np.nan)
+        for i, symbol in enumerate(SYMBOLS):
+            for j, model in enumerate(MODELS):
+                values = [
+                    by_horizon[horizon]["accuracy"]
+                    for by_horizon in runs.get((symbol, model), [])
+                    if by_horizon.get(horizon) and by_horizon[horizon].get("accuracy") is not None
+                ]
+                if values:
+                    grid[i, j] = float(np.mean(values))
+        image = axis.imshow(grid, cmap="RdBu", norm=norm, aspect="auto")
+        for i in range(grid.shape[0]):
+            for j in range(grid.shape[1]):
+                if np.isnan(grid[i, j]):
+                    continue
+                dark = abs(grid[i, j] - 0.5) > 0.09
+                axis.text(j, i, f"{grid[i, j]:.3f}", ha="center", va="center", fontsize=7,
+                          color="white" if dark else "#26303C")
+        axis.set_xticks(range(len(MODELS)))
+        axis.set_xticklabels([MODEL_LABEL[m] for m in MODELS], fontsize=7.5)
+        axis.set_yticks(range(len(SYMBOLS)))
+        axis.set_yticklabels([s.replace("USDT", "") for s in SYMBOLS], fontsize=7.5)
+        axis.tick_params(length=0)
+        for spine in axis.spines.values():
+            spine.set_visible(False)
+        axis.set_title(HORIZON_LABEL[horizon]
+                       + (" (przedziały odmówione)" if horizon == "year" else ""))
+    if image is None:
+        plt.close(fig)
+        return None
+    fig.colorbar(image, ax=axes, shrink=0.55, label="trafność; 0,5 = rzut monetą")
+    return _save(fig, "mapa_trafnosci.png")
+
+
+def base_rate_rows() -> dict[tuple[str, str], list[tuple[float, float, float, float]]]:
+    """Per (horizon, model): accuracy, share of forecasts of a rise, share of rises,
+    and the frequency of the more common class - one tuple per run."""
+    import polars as pl
+
+    rows: dict[tuple[str, str], list[tuple[float, float, float, float]]] = defaultdict(list)
+    for path in sorted(glob.glob(f"{REPORT_ROOT}/evaluations/*/*/predictions_quality.parquet")):
+        parts = path.replace("\\", "/").split("/")
+        symbol, slug = parts[-3], parts[-2]
+        if not is_study_run(symbol, slug):
+            continue
+        try:
+            frame = pl.read_parquet(
+                path, columns=["horizon", "status", "pred_direction", "actual_direction", "correct"]
+            ).filter(pl.col("status") == "scored")
+        except Exception:
+            continue
+        for horizon in HORIZON_NAMES:
+            sub = frame.filter(pl.col("horizon") == horizon)
+            if sub.is_empty():
+                continue
+            predicted = np.array(sub["pred_direction"].to_list())
+            actual = np.array(sub["actual_direction"].to_list())
+            correct = np.array([bool(x) for x in sub["correct"].to_list()])
+            share_long = float((actual == "long").mean())
+            rows[(horizon, slug.split("_")[0])].append((
+                float(correct.mean()), float((predicted == "long").mean()),
+                share_long, max(share_long, 1 - share_long),
+            ))
+    return rows
+
+
+def base_rate() -> str | None:
+    """Accuracy against the more common class, and forecasts of a rise against rises."""
+    rows = base_rate_rows()
+    if not rows:
+        return None
+    fig, axes = plt.subplots(2, len(HORIZON_NAMES), figsize=(9.5, 4.8), sharey="row")
+    for column, horizon in enumerate(HORIZON_NAMES):
+        labels = [m for m in MODELS if rows.get((horizon, m))]
+        if not labels:
+            continue
+        means = np.array([np.mean(rows[(horizon, m)], axis=0) for m in labels])
+        x = np.arange(len(labels))
+        top, bottom = axes[0, column], axes[1, column]
+        top.bar(x, means[:, 3], width=0.62, color="#D5DCE5", label="częstość klasy liczniejszej")
+        top.scatter(x, means[:, 0], color=ACCENT, s=20, zorder=3, label="trafność")
+        top.axhline(0.5, color="#C0392B", linewidth=0.9, linestyle="--")
+        top.set_ylim(0.3, 0.8)
+        top.set_title(HORIZON_LABEL[horizon])
+        bottom.bar(x, means[:, 2], width=0.62, color="#D5DCE5", label="udział wzrostów na rynku")
+        bottom.scatter(x, means[:, 1], color=ACCENT, s=20, zorder=3,
+                       label="udział prognoz wzrostu")
+        bottom.set_ylim(0.0, 1.0)
+        for axis in (top, bottom):
+            axis.set_xticks(x)
+            axis.set_xticklabels([MODEL_LABEL[m] for m in labels], rotation=45, ha="right",
+                                 fontsize=7)
+    axes[0, 0].set_ylabel("trafność, częstość")
+    axes[1, 0].set_ylabel("udział wzrostów")
+    # One legend per row: the two rows draw different quantities with the same marks.
+    for row in (0, 1):
+        axes[row, 0].legend(frameon=False, fontsize=6.5, loc="upper left")
+    return _save(fig, "czestosc_bazowa.png")
+
+
+def month_shares() -> dict[tuple[str, str, str], tuple[int, int]]:
+    """Per (symbol, run, horizon): months with accuracy above 0.5, and months scored.
+
+    Only months with at least 20 scored bars count, and a run needs six of them,
+    so that a share is not read off a handful of bars.
+    """
+    shares: dict[tuple[str, str, str], tuple[int, int]] = {}
+    for path in sorted(glob.glob(f"{REPORT_ROOT}/eval/*/*/stability_summary.json")):
+        parts = path.replace("\\", "/").split("/")
+        symbol, slug = parts[-3], parts[-2]
+        if not is_study_run(symbol, slug):
+            continue
+        try:
+            payload = json.load(open(path, encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for horizon in HORIZON_NAMES:
+            values = [
+                cell["accuracy"]
+                for month in payload.get("months", [])
+                if (cell := (month.get("horizons") or {}).get(horizon))
+                and not cell.get("sparse")
+                and cell.get("accuracy") is not None
+                and (cell.get("samples") or 0) >= 20
+            ]
+            if len(values) >= 6:
+                shares[(symbol, slug, horizon)] = (int((np.array(values) > 0.5).sum()), len(values))
+    return shares
+
+
+def month_share() -> str | None:
+    """For every run, the share of months in which it beat a coin flip."""
+    shares = month_shares()
+    if not shares:
+        return None
+    fig, axes = plt.subplots(1, len(HORIZON_NAMES), figsize=(9.5, 2.9), sharey=True)
+    rng = np.random.default_rng(0)
+    for axis, horizon in zip(np.atleast_1d(axes), HORIZON_NAMES, strict=False):
+        labels, data = [], []
+        for model in MODELS:
+            values = [above / total for (_, slug, h), (above, total) in shares.items()
+                      if h == horizon and slug.split("_")[0] == model]
+            if values:
+                labels.append(MODEL_LABEL[model])
+                data.append(values)
+        if not data:
+            continue
+        axis.boxplot(data, widths=0.5, showfliers=False,
+                     medianprops={"color": ACCENT}, whiskerprops={"color": MUTED},
+                     capprops={"color": MUTED}, boxprops={"color": MUTED})
+        for index, values in enumerate(data, start=1):
+            jitter = rng.uniform(-0.14, 0.14, len(values))
+            axis.scatter(index + jitter, values, s=7, color=ACCENT, alpha=0.55, linewidths=0)
+        axis.axhline(0.5, color="#C0392B", linewidth=0.9, linestyle="--")
+        axis.set_xticks(range(1, len(labels) + 1))
+        axis.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+        axis.set_title(HORIZON_LABEL[horizon])
+        axis.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
+    np.atleast_1d(axes)[0].set_ylabel("miesiące z trafnością > 0,5")
+    return _save(fig, "udzial_miesiecy.png")
+
+
+def backtest_summary() -> dict[tuple[str, str], list[tuple]]:
+    """Per (symbol, model), one tuple per run: ROI, excess over holding, over a
+    constant exposure, percentile against its own shifts, excess over the
+    momentum rule, and the deepest drawdown - percentages throughout."""
+    found: dict[tuple[str, str], list[tuple]] = defaultdict(list)
+    for path in sorted(glob.glob(f"{REPORT_ROOT}/backtests/*/*/backtest.json")):
+        parts = path.replace("\\", "/").split("/")
+        symbol, slug = parts[-3], parts[-2]
+        if not is_study_run(symbol, slug):
+            continue
+        try:
+            payload = json.load(open(path, encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        nulls = payload.get("nulls") or {}
+        momentum = (nulls.get("naive_momentum") or {}).get("roi_pct") or 0
+        found[(symbol, slug.split("_")[0])].append((
+            payload.get("roi_pct"),
+            (payload.get("benchmark") or {}).get("excess_roi_pct"),
+            (nulls.get("constant_exposure") or {}).get("excess_roi_pct"),
+            (nulls.get("mistimed_replay") or {}).get("percentile"),
+            (payload.get("roi_pct") or 0) - momentum,
+            payload.get("max_drawdown_pct"),
+        ))
+    return found
+
+
+def simulation_excess() -> str | None:
+    """How far each instrument's strategy lands from three of its benchmarks."""
+    found = backtest_summary()
+    if not found:
+        return None
+    panels = [(1, "wobec kupna i trzymania"), (2, "wobec stałej ekspozycji"),
+              (4, "wobec reguły momentum")]
+    fig, axes = plt.subplots(1, len(panels), figsize=(9.5, 2.9))
+    rng = np.random.default_rng(0)
+    for axis, (field, title) in zip(axes, panels, strict=False):
+        labels, data = [], []
+        for model in MODELS:
+            values = []
+            for (symbol, name), rows in found.items():
+                if name != model:
+                    continue
+                column = [row[field] for row in rows if row[field] is not None]
+                if column:
+                    values.append(float(np.mean(column)))
+            if values:
+                labels.append(MODEL_LABEL[model])
+                data.append(values)
+        for index, values in enumerate(data):
+            jitter = rng.uniform(-0.12, 0.12, len(values))
+            axis.scatter(index + jitter, values, s=12, color=ACCENT, alpha=0.75, linewidths=0)
+            axis.hlines(np.median(values), index - 0.25, index + 0.25, color="#26303C",
+                        linewidth=1.2)
+        axis.axhline(0, color="#C0392B", linewidth=0.9, linestyle="--")
+        axis.set_xticks(range(len(labels)))
+        axis.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+        axis.set_title(title)
+    axes[0].set_ylabel("różnica stopy zwrotu [pp]")
+    return _save(fig, "symulacja_nadwyzki.png")
+
+
+def holdout_timeline() -> str:
+    """One forecast's training window on a time axis, at the quarter and the year.
+
+    Drawn from the protocol's own constants rather than from a run, so it shows
+    each part at its true length: what the model fits, the horizon purged before
+    the calibration slice, the slice, and the bars whose labels are not yet
+    known when the forecast is made. Below the bars, the span of four labels -
+    the newest fitted, the oldest and newest held out, and the forecast's own -
+    shows that no close is shared across a boundary, and at the year that the
+    slice is shorter than one label.
+    """
+    from prosper.predict.calibration import CALIBRATION_FRACTION
+    from prosper.predict.window import dynamic_window_steps
+
+    colours = {"fit": ACCENT, "purge": "#D5D8DD", "slice": "#D9822B", "unknown": "#F1F2F4"}
+    fig, axes = plt.subplots(2, 1, figsize=(9.5, 3.7))
+    for axis, (name, forward) in zip(axes, (("kwartał", 91), ("rok", 364)), strict=True):
+        window = dynamic_window_steps(forward)
+        held = int((window - forward) * CALIBRATION_FRACTION)
+        slice_start = -forward - held
+        fit_end = slice_start - forward
+        parts = [
+            (-window, fit_end + window, colours["fit"], "część ucząca"),
+            (fit_end, forward, colours["purge"], "przerwa jednego horyzontu"),
+            (slice_start, held, colours["slice"], "wycinek kalibracyjny"),
+            (-forward, forward, colours["unknown"], "etykiety jeszcze nieznane"),
+        ]
+        for start, length, colour, label in parts:
+            axis.broken_barh([(start, length)], (1.0, 0.6), facecolors=colour,
+                             edgecolor="#4A5563", linewidth=0.6, label=label)
+        spans = [
+            (fit_end - 1, colours["fit"], "etykieta najnowszej świecy uczącej"),
+            (slice_start, colours["slice"], "etykieta najstarszej świecy wycinka"),
+            (-forward - 1, colours["slice"], "etykieta najnowszej świecy wycinka"),
+            (0, "#C0392B", "etykieta prognozy"),
+        ]
+        for level, (bar, colour, label) in zip((0.75, 0.5, 0.25, 0.0), spans, strict=True):
+            axis.plot([bar, bar + forward], [level, level], color=colour, linewidth=1.6)
+            axis.plot([bar, bar], [level - 0.07, level + 0.07], color=colour, linewidth=1.2)
+            axis.plot([bar + forward] * 2, [level - 0.07, level + 0.07], color=colour,
+                      linewidth=1.2)
+            axis.text(bar + forward + window * 0.012, level, label, va="center", fontsize=6.5,
+                      color="#26303C")
+        axis.axvline(0, color="#C0392B", linewidth=0.8, linestyle="--")
+        axis.text(0, 1.75, "prognoza", ha="center", fontsize=7, color="#C0392B")
+        axis.set_xlim(-window * 1.02, forward + window * 0.32)
+        axis.set_ylim(-0.2, 1.95)
+        axis.set_yticks([])
+        axis.spines["left"].set_visible(False)
+        axis.set_title(f"{name}: okno {window} świec, horyzont {forward}, wycinek {held}",
+                       loc="left", fontsize=8)
+    axes[-1].set_xlabel("świece względem prognozowanej")
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles[:4], labels[:4], loc="lower center", ncol=4, frameon=False, fontsize=7,
+               bbox_to_anchor=(0.5, -0.04))
+    return _save(fig, "os_czasu.png")
 
 
 def build_all() -> dict[str, str]:
@@ -399,12 +763,17 @@ def build_all() -> dict[str, str]:
         "porownanie": architecture_comparison(),
         "rozrzut": seed_spread(),
         "moc": observation_power(),
+        "os_czasu": holdout_timeline(),
         "stabilnosc": stability_over_time(),
         "kalibracja": calibration_by_horizon(),
         "niezawodnosc": reliability_diagram(),
         "waznosc": feature_importance(),
         "backtest": backtest_percentiles(),
         "kapital": equity_curves(),
+        "mapa_trafnosci": accuracy_map(),
+        "czestosc_bazowa": base_rate(),
+        "udzial_miesiecy": month_share(),
+        "symulacja_nadwyzki": simulation_excess(),
     }
     return {name: path for name, path in figures.items() if path}
 

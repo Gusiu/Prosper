@@ -38,12 +38,21 @@ A label at bar `k` needs `close[k + forward_steps]`, so it is trainable at bar `
 goes through it. The trading simulation obeys the same rule from the other end: a signal formed on
 bar `t` executes at the **open of bar `t+1`**.
 
-Calibrators are fitted *inside* the training window. `calibration_split` carves its held-out slice
+Calibrators are fitted *inside* the training window. `purged_holdout` carves its held-out slice
 out of the region `training_bounds` already returned, never from later bars - otherwise the
-calibrator sees labels the forecast could not.
+calibrator sees labels the forecast could not - and ends the fitted rows one horizon before the
+slice. Without that gap the model's newest labels are computed from closes inside the slice, so the
+calibrator and the networks' stopping rule (2.10) would score the model on outcomes it was fitted
+on; at the yearly horizon the slice is shorter than the horizon, so every held-out label would be.
+Every model takes its split from `choose_holdout`, one policy: when the fitted rows or the slice hold a
+single class, the split moves to the nearest one where both hold two, or the window holds nothing out.
+Such a window takes the temperature last fitted at the same horizon of the run - chosen on a slice
+realised before it - or, before the first, the top of the grid: no confidence beyond chance
+(`TemperatureMemory`). The raw models are near-certain, so leaving it uncalibrated would make the
+windows with the least data the most confident of the run.
 
 *Guarded by* `tests/test_predict_leakage.py`, `tests/test_backtest_execution.py`,
-`tests/test_calibration.py`.
+`tests/test_calibration.py`, `tests/test_holdout_purge.py`.
 
 ### 2.2 Every horizon actually trains, or says it did not
 
@@ -151,8 +160,9 @@ exactly why this one is inverted.
 `predict/pool.py` is reached by `predict ml` and `predict xgboost` via `--symbols`. Row 400 of
 BTCUSDT is September 2018 and row 400 of SOLUSDT is September 2021, so an index-based pooled window
 trains a 2021 forecast on bars that had not happened yet - and the only symptom is better accuracy.
-The slice is sorted by instant as well, because `calibration_split` takes its newest rows and
-"newest" has to mean newest *overall*.
+The slice is sorted by instant as well, because `purged_holdout` takes its newest rows and
+"newest" has to mean newest *overall*. For the same reason its gap is a span of time, never a
+count of rows, and no instant is split between the fitted rows and the held-out ones.
 
 **Single-symbol runs of those two models take the pooled path too**, so each of them has one
 implementation of which rows it may see. The sequence models and the baseline slice one symbol by
@@ -199,9 +209,11 @@ measured loss is the one *after* temperature scaling (`calibrated_nll`), not raw
 Raw CE charges for confidence. The network sharpens long before it stops discriminating and the
 calibrator undoes that a step later, so stopping on the raw value returned a one-epoch model while
 accuracy was still rising. That holdout is the calibrator's slice as well; splitting it again would
-put both halves under the sample floor at the long horizon.
+put both halves under the sample floor at the long horizon. TFT's validation frame reaches back
+`seq_len` bars so the oldest held-out bar has a full encoder history, but only the slice's own bars
+are scored: the older ones are fitted or purged (2.1).
 
-*Guarded by* `tests/test_early_stopping.py`.
+*Guarded by* `tests/test_early_stopping.py`, `tests/test_holdout_purge.py`.
 
 ### 2.11 Direction has two classes; depth has one bin scheme
 
@@ -228,8 +240,9 @@ supposed to be trading. Three paths, found one at a time, hours apart.
 The grader is stateful; feed it in chronological order. Its **risk** gates are quantiles of the
 risk already seen, never including the bar being graded. Its **edge** thresholds are fixed on
 purpose: `edge` is a difference of two probabilities, so 0.3 means the same under any bin scheme,
-while `risk` is a product whose range moves whenever the bins or the calibrator do. Edge is bounded
-by 0.5 by construction, since `min(p_long, p_short) <= 0.5`.
+while `risk` is a product whose range moves whenever the bins or the calibrator do. Edge is
+`p_long - p_short`, from -1 to 1: its sign is the direction and its size the strength. The bound of
+0.5 belongs to risk, which counts the adverse side, whose probability is at most 0.5.
 
 Risk counts the **adverse side only** - large moves against the position the edge implies. Summing
 both sides made an expected rally a reason not to buy, and held 90% of medium and long bars.
@@ -289,12 +302,14 @@ fifteen configurations covering every model, pooled and single, 1d and 1w, fixed
 a horizon subset, seeded and deterministic modes, and a symbol whose history starts inside the range
 produce identical predictions before and after - except that one recovered TFT row.
 
-GRU and TFT still normalise missing features differently (GRU after scaling, TFT before). Every
-symbol's first 89 bars have missing features and early windows reach them, so aligning the two
-would change published numbers; it is recorded in `predict/sequence.py` rather than changed.
+GRU and TFT normalise through one function, `predict/sequence.py::robust_scale`: the median and
+interquartile range of the values present in the window, and a missing value at the median. Every
+symbol's first 89 bars have missing features and early windows reach them, so two rules would mean
+the two networks were trained on different inputs for the same bars.
 
 *Guarded by* `tests/test_walk_forward.py`, and the structural checks in `tests/test_train_window.py`,
-`tests/test_run_provenance.py` and `tests/test_window_seed.py` that every model goes through it.
+`tests/test_run_provenance.py` and `tests/test_window_seed.py` that every model goes through it;
+the shared normalisation by `tests/test_missing_features.py`.
 
 ---
 

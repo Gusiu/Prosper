@@ -1,7 +1,7 @@
 """The TFT output columns are named by the encoder, never by position.
 
 `NaNLabelEncoder` numbers its classes by sorting the labels, so it yields
-`{'nan': 0, 'long': 1, 'short': 2}` — alphabetical. `DIRECTION_CLASSES` is
+`{'nan': 0, 'long': 1, 'short': 2}` - alphabetical. `DIRECTION_CLASSES` is
 `['short', 'long']`, because the sign of the forward return defines it. Reading
 the model's output positionally after dropping the leading `nan` column
 therefore lined `short` up with the `long` logit: every TFT run written before
@@ -44,7 +44,7 @@ def test_an_encoder_without_a_nan_class_still_maps_correctly() -> None:
 
 
 def test_a_declaration_ordered_encoder_is_the_identity() -> None:
-    """Nothing here assumes the encoder disagrees — only that it is asked."""
+    """Nothing here assumes the encoder disagrees - only that it is asked."""
     assert _class_columns(_Dataset({"nan": 0, "short": 1, "long": 2})) == [1, 2]
 
 
@@ -94,7 +94,7 @@ def test_the_encoder_really_does_sort_its_classes() -> None:
     """Pins the upstream behaviour the fix exists for.
 
     If pytorch-forecasting ever stops sorting, this fails and the comment above
-    stops being true — which is worth knowing immediately.
+    stops being true - which is worth knowing immediately.
     """
     pytest.importorskip("pytorch_forecasting")
     from pytorch_forecasting.data.encoders import NaNLabelEncoder

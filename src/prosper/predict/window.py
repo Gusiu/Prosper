@@ -70,7 +70,7 @@ class TrainingWindows:
 
         A derived setting that is not written down is a setting nobody can check.
         The width now follows from the horizon and the history, so two runs on
-        different symbols legitimately differ — and without this, the only way to
+        different symbols legitimately differ - and without this, the only way to
         find out what a run actually trained on would be to re-derive it and hope
         the rule had not changed in between.
         """
@@ -152,8 +152,8 @@ def dynamic_window_steps(forward_steps: int, history_steps: int | None = None) -
     *history_steps* then applies the constraint the arithmetic above ignores:
     the history is finite, and every bar spent training is a bar that cannot be
     scored. When the ideal window would not leave enough scored bars, the window
-    falls back to half the history — the split that maximises whichever side is
-    weaker — and the caller is warned that neither side reaches the floor. That
+    falls back to half the history - the split that maximises whichever side is
+    weaker - and the caller is warned that neither side reaches the floor. That
     is not a fixable configuration; it is a horizon this much history cannot
     answer, which is a finding in itself.
     """
@@ -182,7 +182,7 @@ def resolve_train_windows(
 
     Each horizon is sized by :func:`dynamic_window_steps` unless *overrides*
     names it, or *train_window_days* fixes one width for every horizon. An
-    explicit setting always wins, including when it makes the window narrower —
+    explicit setting always wins, including when it makes the window narrower -
     a caller reproducing an older run must be able to ask for what that run used.
 
     Raises ``ValueError`` naming the horizons that cannot be trained and the
@@ -241,7 +241,7 @@ def training_window_power(
     """Independent observations each horizon has inside its training window.
 
     A window holds `window_steps` bars, of which the last `forward_steps` have
-    no realised label yet, so `window_steps - forward_steps` are labelled — and
+    no realised label yet, so `window_steps - forward_steps` are labelled - and
     those overlap, which is what `effective_samples` divides out.
 
     At 730 days this is 103 observations for a 7-day horizon, 25.1 for 28 days
@@ -249,7 +249,7 @@ def training_window_power(
     model, optimiser setting or epoch budget changes that: it is arithmetic about
     how much non-overlapping history a two-year window contains.
 
-    *effective_symbols* scales the count when several symbols are pooled — by
+    *effective_symbols* scales the count when several symbols are pooled - by
     `domain.effective_symbols`, not by the number of symbols. Three correlated
     crypto symbols multiply the annual count by 1.19, not by 3, and using the
     row count instead would report a horizon as measurable when it is not.
@@ -271,7 +271,7 @@ def count_scored_bars(
     """Bars each horizon will actually be scored on.
 
     A bar counts when it falls in the requested range *and* its label resolves
-    inside the data — the last `forward_steps` bars have no realised outcome, so
+    inside the data - the last `forward_steps` bars have no realised outcome, so
     they are predicted but never graded. `dates` must be sorted, as every
     predictor sorts it on load.
     """
@@ -288,7 +288,7 @@ def scored_power(windows: TrainingWindows, scored_bars: Mapping[str, int]) -> di
 
     The other half of the same fixed supply. Widening a window to buy training
     observations takes them from here, one for one, because the history does not
-    grow to meet the configuration — and nothing in a run reports that, which is
+    grow to meet the configuration - and nothing in a run reports that, which is
     exactly how a well-trained horizon ends up with an unmeasurable result.
     """
     return {

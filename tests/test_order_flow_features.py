@@ -69,7 +69,7 @@ def test_empty_input_keeps_the_minimal_schema() -> None:
 
 
 def test_aggregation_sums_the_order_flow_columns() -> None:
-    """The summing code existed but could never run — the columns never arrived."""
+    """The summing code existed but could never run - the columns never arrived."""
     start = datetime(2024, 1, 1, tzinfo=UTC)
     rows = [
         _candle(int((start + timedelta(minutes=i)).timestamp() * 1000), full=True)

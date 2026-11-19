@@ -9,21 +9,25 @@ downstream threshold meaningless: the planner's seven-point scale collapses to
 Calibration is fitted the same way everything else in this package is: on data
 that was already realised at the moment of the forecast. Splitting the
 *training* window rather than holding out later bars is what keeps invariant 6
-intact — the calibrator never sees a label whose forward close lies at or after
+intact - the calibrator never sees a label whose forward close lies at or after
 the bar being predicted.
 
-    |<------------- trainable region (training_bounds) ------------->|
-    |<------- fit the model ------->|<---- fit the calibrator ------>|
-    train_start                   split                        train_end   ... i
+    |<--------------- trainable region (training_bounds) --------------->|
+    |<----- fit the model ----->|<-- F -->|<---- fit the calibrator ---->|
+    train_start              fit_end   calibration_start            train_end   ... i
 
-Both halves end before ``train_end``, which `training_bounds` has already
-pulled back by ``forward_steps`` from the prediction bar.
+Both parts end before ``train_end``, which `training_bounds` has already
+pulled back by ``forward_steps`` from the prediction bar. The ``F`` bars
+between them, one horizon, belong to neither: a label at bar ``k`` is the
+return to ``close[k + F]``, so the model's newest labels would otherwise be
+computed from closes inside the slice that is meant to measure it. See
+`purged_holdout`.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 import numpy as np
@@ -42,9 +46,14 @@ CALIBRATION_FRACTION = 0.25
 
 # Temperatures searched when fitting. One grid, shared by the fit and by the
 # stopping criterion, so the two cannot disagree about what "calibrated" means.
+# It reaches far above 10 because the raw models are near-certain: a slice that
+# shows no skill asks for a temperature without bound, and one ending at 10
+# left a 0.99 forecast at 0.61. At 1000 the same forecast is 0.501, and the
+# direction - which a temperature never changes - is still defined.
 TEMPERATURE_GRID: tuple[float, ...] = (
     0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75,
     2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0,
+    15.0, 20.0, 30.0, 50.0, 70.0, 100.0, 150.0, 200.0, 300.0, 500.0, 1000.0,
 )
 
 
@@ -53,10 +62,13 @@ class SupportsPredictProba(Protocol):
 
 
 def calibration_split(train_start: int, train_end: int) -> tuple[int, int]:
-    """Split a trainable region into (model_end, calibration_start).
+    """Where the held-out slice of a trainable region begins, by position.
 
-    Returns ``(train_end, train_end)`` when the region is too small to give the
-    calibrator a usable slice, which the caller reads as "do not calibrate".
+    Returns ``(calibration_start, calibration_start)``, or ``(train_end,
+    train_end)`` when the region is too small to give the calibrator a usable
+    slice, which the caller reads as "do not calibrate". It knows nothing of
+    the horizon: `purged_holdout` builds on it and moves the end of the fitted
+    rows back by one.
     """
     span = train_end - train_start
     if span <= 0:
@@ -72,6 +84,76 @@ def calibration_split(train_start: int, train_end: int) -> tuple[int, int]:
     return split, split
 
 
+def purged_holdout(times: Sequence[Any] | np.ndarray, purge: Any) -> tuple[int, int]:
+    """Positions ``(fit_end, calibration_start)`` dividing rows ordered by *times*.
+
+    *times* is each row's place in time, ascending: a bar index for one series,
+    an ``open_time`` for a pool, where several rows share an instant. The newest
+    `CALIBRATION_FRACTION` of the rows is held out, from the first row of its
+    instant so that no instant lies on both sides. The model fits only the rows
+    more than *purge* - the horizon, in the units of *times* - older than the
+    first held-out one.
+
+    That gap is what makes the slice out of sample. A label at bar ``k`` is the
+    return to ``close[k + F]``, so without it the model's newest ``F`` labels are
+    computed from closes inside the slice, and the calibrator - and the stopping
+    rule of the GRU and TFT - scores the model on outcomes it was fitted on. It
+    then looks more skilful there than on any later bar and is calibrated, and
+    stopped, accordingly. At the yearly horizon the slice is shorter than the
+    horizon, so that was every held-out label. The gap is the separation
+    `training_bounds` keeps from the bar being predicted.
+
+    Returns ``(len(times), len(times))`` - fit everything, hold out nothing -
+    when the region is too small for a slice or the gap would leave nothing to fit.
+    """
+    total = len(times)
+    _, calibration_start = calibration_split(0, total)
+    if calibration_start >= total:
+        return total, total
+    order = np.asarray(times)
+    calibration_start = int(np.searchsorted(order, order[calibration_start], side="left"))
+    fit_end = purged_end(order, calibration_start, purge)
+    if fit_end <= 0:
+        return total, total
+    return fit_end, calibration_start
+
+
+def purged_end(times: Sequence[Any] | np.ndarray, calibration_start: int, purge: Any) -> int:
+    """Leading rows the model may fit when the held-out slice starts at *calibration_start*.
+
+    Those whose time lies more than *purge* before the slice's first row; see
+    `purged_holdout`.
+    """
+    order = np.asarray(times)
+    return int(np.searchsorted(order, order[calibration_start] - purge, side="left"))
+
+
+def choose_holdout(
+    times: Sequence[Any] | np.ndarray, labels: Sequence[int], purge: Any
+) -> tuple[int, int]:
+    """``(fit_end, calibration_start)`` for one window, the same policy for every model.
+
+    `purged_holdout` decides by time alone. When the rows it leaves to fit, or
+    the slice it holds out, carry a single class, the nearest split where both
+    carry two is taken instead (`usable_split`); when there is none, the window
+    fits every row and holds nothing out. Every model goes through here, so no
+    architecture keeps a calibrator that another loses on the same window: the
+    tree models used to train on everything and drop it where the networks
+    moved the split.
+    """
+    total = len(labels)
+    fit_end, calibration_start = purged_holdout(times, purge)
+    if calibration_start >= total:
+        return total, total
+    if len(set(labels[:fit_end])) > 1 and len(set(labels[calibration_start:])) > 1:
+        return fit_end, calibration_start
+    moved = usable_split(labels, calibration_start, MIN_CALIBRATION_SAMPLES, times=times,
+                         purge=purge)
+    if moved is None:
+        return total, total
+    return purged_end(times, moved, purge), moved
+
+
 class TemperatureCalibrator:
     """Single-parameter (temperature) scaling of a probability vector.
 
@@ -83,8 +165,16 @@ class TemperatureCalibrator:
     corrected.
     """
 
-    def __init__(self, temperature: float = 1.0) -> None:
+    def __init__(
+        self, temperature: float = 1.0, fitted_on: int = 0, source: str = "identity"
+    ) -> None:
         self.temperature = float(temperature)
+        # Held-out rows the temperature was chosen on; 0 when none was fitted
+        # here, which a fitted 1.0 must not be mistaken for.
+        self.fitted_on = int(fitted_on)
+        # "fitted" on this window's slice, "carried" from an earlier window
+        # of the horizon, "prior" before any was fitted - see TemperatureMemory.
+        self.source = source
 
     @property
     def is_identity(self) -> bool:
@@ -141,7 +231,7 @@ def fit_temperature(
     # confidence, and minimising NLL on it is actively harmful: the model is
     # "right" on every row, so the loss falls monotonically as the temperature
     # drops and the fit sharpens an already overconfident forecast to certainty.
-    # This is not hypothetical — on BTCUSDT the 365-day horizon has long
+    # This is not hypothetical - on BTCUSDT the 365-day horizon has long
     # stretches where every forward return shares a sign, and the first version
     # of this function left the long horizon at |edge| = 1.000 for every bar.
     if len(np.unique(np.asarray(y_true))) < 2:
@@ -153,15 +243,65 @@ def fit_temperature(
         loss = _nll(probs, y_true, t)
         if loss < best_loss:
             best_t, best_loss = t, loss
-    return TemperatureCalibrator(best_t)
+    return TemperatureCalibrator(best_t, fitted_on=len(y_true), source="fitted")
+
+
+class TemperatureMemory:
+    """The newest fitted temperature of each horizon, for a window that could not fit one.
+
+    A window holds nothing out when its slice would be too small or no split
+    leaves both parts two classes (`choose_holdout`). The raw output of these
+    models is near-certain, so such a window was the most confident of its run
+    for no better reason than missing data. The temperature last fitted at the
+    same horizon of the run, chosen on a slice realised before this window, is
+    the best measurement of the model's reliability there is; before the first
+    one a forecast is given no confidence beyond chance, the top of
+    `TEMPERATURE_GRID`. The direction is the model's either way.
+    """
+
+    def __init__(self) -> None:
+        self.latest: dict[str, float] = {}
+
+    def settle(self, horizon: str, calibrator: TemperatureCalibrator) -> TemperatureCalibrator:
+        """*calibrator* if it was fitted, remembered; otherwise what stands in for it."""
+        if calibrator.fitted_on:
+            self.latest[horizon] = calibrator.temperature
+            return calibrator
+        if horizon in self.latest:
+            return TemperatureCalibrator(self.latest[horizon], source="carried")
+        return TemperatureCalibrator(TEMPERATURE_GRID[-1], source="prior")
+
+
+def calibration_fields(
+    uncalibrated: Mapping[str, float], calibrator: TemperatureCalibrator
+) -> dict[str, Any]:
+    """What the calibrator did to one forecast, kept beside it in the payload.
+
+    The probabilities before it was applied, the temperature and how many
+    held-out rows chose it, so that how much calibration helps, and whether a
+    temperature ran into the end of `TEMPERATURE_GRID`, can be measured from a
+    run rather than argued. Nested and without the ``P_`` prefix, which
+    readers of a payload take to mean a direction class.
+    """
+    total = sum(max(0.0, float(uncalibrated.get(name, 0.0))) for name in DIRECTION_CLASSES)
+    return {
+        "temperature": calibrator.temperature,
+        "temperature_source": calibrator.source,
+        "calibrated_on": calibrator.fitted_on,
+        "uncalibrated": {
+            name: (max(0.0, float(uncalibrated.get(name, 0.0))) / total if total > 0 else
+                   1.0 / len(DIRECTION_CLASSES))
+            for name in DIRECTION_CLASSES
+        },
+    }
 
 
 def calibrated_nll(probs: np.ndarray, y_true: Sequence[int] | np.ndarray) -> float:
     """Held-out loss the forecast carries *once its temperature is fitted*.
 
     This is the quantity DL training stops on, and raw cross-entropy is the
-    wrong one. A proper score decomposes into a calibration term — how far the
-    stated confidence is from the observed frequency — and a refinement term,
+    wrong one. A proper score decomposes into a calibration term - how far the
+    stated confidence is from the observed frequency - and a refinement term,
     how well the forecast separates the classes at all. Training moves both:
     the network sharpens long before it stops learning to discriminate, so its
     raw NLL on the holdout climbs from the first epoch while accuracy is still
@@ -229,21 +369,26 @@ def usable_split(
     labels: Sequence[int],
     default_split: int,
     min_holdout: int = MIN_EARLY_STOPPING_SAMPLES,
+    *,
+    times: Sequence[Any] | np.ndarray | None = None,
+    purge: Any = 0,
 ) -> int | None:
-    """A split point where both halves carry more than one class.
+    """A held-out slice start where both the fitted rows and the slice carry more than one class.
 
-    `calibration_split` divides by position alone, which is right for the
-    look-ahead rule but blind to what the labels contain. When the older part
-    turns out to be single-class — common at the long horizon, where a whole
-    year of start dates can share one sign — the model cannot be fitted on it,
-    and the caller's only recourse was to train on everything and drop the
-    holdout, losing early stopping and calibration for that window.
+    `purged_holdout` divides by time alone, which is right for the look-ahead
+    rule but blind to what the labels contain. When the older part turns out
+    to be single-class - common at the long horizon, where a whole year of start
+    dates can share one sign - the model cannot be fitted on it, and the
+    caller's only recourse was to train on everything and drop the holdout,
+    losing early stopping and calibration for that window.
 
     Often a nearby split works: on BTCUSDT, 5 of the 13 affected windows have a
     valid one, some with more than fifty candidates. This returns the candidate
     closest to *default_split*, keeping the held-out fraction near what was
-    asked for, or ``None`` when no split satisfies both halves — in which case
-    dropping the holdout really is the only option.
+    asked for, or ``None`` when no split satisfies both parts - in which case
+    dropping the holdout really is the only option. Given *times* and *purge*,
+    a candidate is judged on the rows the model would actually fit, those
+    `purged_end` leaves before it; without them every row before it is fitted.
 
     A single-class *holdout* is deliberately rejected too. Cross-entropy over
     one class is minimised by predicting it with certainty, so stopping on it
@@ -252,11 +397,14 @@ def usable_split(
     total = len(labels)
     if total <= 0 or min_holdout <= 0:
         return None
+    order = np.arange(total) if times is None else np.asarray(times)
 
     candidates = [
         split
         for split in range(1, total - min_holdout + 1)
-        if len(set(labels[:split])) > 1 and len(set(labels[split:])) > 1
+        if order[split - 1] < order[split]  # a pooled instant stays on one side
+        and len(set(labels[: purged_end(order, split, purge)])) > 1
+        and len(set(labels[split:])) > 1
     ]
     if not candidates:
         return None

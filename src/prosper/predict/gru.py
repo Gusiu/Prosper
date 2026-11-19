@@ -16,9 +16,8 @@ from prosper.labels.forward import forward_labels
 from prosper.predict.calibration import (
     TemperatureCalibrator,
     calibrated_nll,
-    calibration_split,
+    choose_holdout,
     fit_temperature,
-    usable_split,
 )
 from prosper.predict.defaults import (
     DEFAULT_EPOCH_BUDGET,
@@ -45,8 +44,8 @@ class SequenceDataset(Dataset):
 
     def __init__(
         self,
-        X: np.ndarray,  # (T, F)  – feature matrix, already normalised
-        y_dir: np.ndarray,  # (T,)    – int labels 0/1/2
+        X: np.ndarray,  # (T, F)  - feature matrix, already normalised
+        y_dir: np.ndarray,  # (T,)    - int labels 0/1/2
         seq_len: int,
     ):
         self.X = torch.tensor(X, dtype=torch.float32)
@@ -88,7 +87,7 @@ class GRUClassifier(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out, _ = self.gru(x)  # (B, T, H)
-        last = out[:, -1, :]  # (B, H) – last timestep
+        last = out[:, -1, :]  # (B, H) - last timestep
         last = self.norm(last)
         return self.head(last)  # (B, C)
 
@@ -99,7 +98,7 @@ def _holdout_loss(
     indices: list[int],
     device: torch.device,
 ) -> float:
-    """Held-out loss after temperature scaling — see `calibrated_nll`.
+    """Held-out loss after temperature scaling - see `calibrated_nll`.
 
     Raw cross-entropy is not usable as a stopping signal here: it charges for
     overconfidence, the network becomes overconfident long before it stops
@@ -136,8 +135,8 @@ def _train_gru(
     about five.
 
     What is measured is the loss *after* temperature scaling. The raw
-    cross-entropy on this slice rises from the first epoch — the network
-    becomes overconfident faster than it stops discriminating — so stopping on
+    cross-entropy on this slice rises from the first epoch - the network
+    becomes overconfident faster than it stops discriminating - so stopping on
     it returned a one-epoch model while accuracy was still climbing.
     `_holdout_loss` therefore reports the calibrated value, which is also what
     the stored artifact will carry.
@@ -211,33 +210,6 @@ def _fit_gru_calibrator(
     return fit_temperature(probs, ys)
 
 
-# ── normalisation ─────────────────────────────────────────────────────────────
-def _robust_normalise(X_train: np.ndarray, X_all: np.ndarray):
-    """Median/IQR normalisation fitted on train, applied to all.
-
-    Returns ``None`` when there is nothing to fit on. That happens at the very
-    first bar of a symbol whose history begins inside the requested range — the
-    causal window reaches back from bar 0 and finds nothing - and
-    `np.percentile` would crash on it, since it indexes `arr[-1]`. A bar with no
-    history behind it has no training rows either, so
-    the honest outcome is an untrained bar (invariant 3), not an exception that
-    loses the whole run.
-    """
-    if X_train.size == 0 or X_train.shape[0] == 0:
-        return None
-    # Replace NaN before statistics so numpy doesn't warn on all-NaN columns
-    X_safe = np.where(np.isfinite(X_train), X_train, 0.0)
-    med = np.median(X_safe, axis=0)
-    q75 = np.percentile(X_safe, 75, axis=0)
-    q25 = np.percentile(X_safe, 25, axis=0)
-    iqr = q75 - q25
-    iqr[iqr == 0] = 1.0
-    X_norm = (X_all - med) / iqr
-    X_norm = np.nan_to_num(X_norm, nan=0.0, posinf=3.0, neginf=-3.0)
-    X_norm = np.clip(X_norm, -5.0, 5.0)
-    return X_norm
-
-
 # ── the model in the walk-forward loop ────────────────────────────────────────
 class GRUForecaster(SequenceForecaster):
     """A GRU classifier per horizon, scored bar by bar on the last *seq_len* bars."""
@@ -262,9 +234,6 @@ class GRUForecaster(SequenceForecaster):
         self.dropout = dropout
         self.batch_size = batch_size
         self.lr = lr
-
-    def normalise(self, window: np.ndarray) -> np.ndarray | None:
-        return _robust_normalise(window, self.features)
 
     def fit_horizon(self, plan: RunPlan, horizon: str, first: int, month: Month) -> Any:
         assert self.normalised is not None
@@ -294,22 +263,16 @@ class GRUForecaster(SequenceForecaster):
 
             # Hold out the newest sequences of the training region for the
             # calibrator and the stopping rule. They still end before `train_end`,
-            # so their labels are realised - invariant 6 is untouched.
-            split, _ = calibration_split(0, len(ds))
+            # so their labels are realised - invariant 6 is untouched - and the
+            # fitted ones end a horizon before them (`purged_holdout`). A
+            # sequence's index in `labelled` is its target bar less a constant.
+            seq_labels = [int(y_slice[k + self.seq_len]) for k in labelled]
+            fit_end, cal_start = choose_holdout(labelled, seq_labels, plan.steps[horizon])
             fit_ds: Any = ds
             cal_range: list[int] = []
-            if split < len(ds):
-                seq_labels = [int(ds[k][1]) for k in range(len(ds))]
-                if len(set(seq_labels[:split])) <= 1:
-                    # Nothing to learn from a single-class fit half. Look for a
-                    # nearby split that works before giving up: doing neither cost 5
-                    # of the 13 affected windows their holdout, and with it early
-                    # stopping and calibration.
-                    alternative = usable_split(seq_labels, split)
-                    split = len(ds) if alternative is None else alternative
-                if split < len(ds):
-                    fit_ds = Subset(ds, list(range(split)))
-                    cal_range = list(range(split, len(ds)))
+            if cal_start < len(ds):
+                fit_ds = Subset(ds, list(range(fit_end)))
+                cal_range = list(range(cal_start, len(ds)))
 
             self.reseed(horizon, month)
             loader = DataLoader(fit_ds, batch_size=self.batch_size, shuffle=True, drop_last=False)

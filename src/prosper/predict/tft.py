@@ -19,9 +19,8 @@ from prosper.labels.forward import forward_labels
 from prosper.predict.calibration import (
     TemperatureCalibrator,
     calibrated_nll,
-    calibration_split,
+    choose_holdout,
     fit_temperature,
-    usable_split,
 )
 from prosper.predict.defaults import (
     DEFAULT_EPOCH_BUDGET,
@@ -42,18 +41,12 @@ from prosper.predict.walk_forward import (
 )
 
 
-def _robust_normalize(X: np.ndarray, med: np.ndarray, iqr: np.ndarray) -> np.ndarray:
-    X_safe = np.where(np.isfinite(X), X, 0.0)
-    X_norm = (X_safe - med) / iqr
-    return np.clip(np.nan_to_num(X_norm, nan=0.0, posinf=3.0, neginf=-3.0), -5.0, 5.0)
-
-
 def _class_columns(dataset_ref: Any) -> list[int]:
     """Output-column index of each direction class, in `DIRECTION_CLASSES` order.
 
     This must be read from the encoder and never assumed. `NaNLabelEncoder`
     numbers its classes by sorting the labels, so with `add_nan=True` it yields
-    ``{'nan': 0, 'long': 1, 'short': 2}`` — alphabetical — while
+    ``{'nan': 0, 'long': 1, 'short': 2}`` - alphabetical - while
     `DIRECTION_CLASSES` is ordered ``['short', 'long']`` because the sign of the
     return defines it. Dropping the leading column and reading the rest
     positionally therefore lined `short` up with the model's `long` logit and
@@ -252,7 +245,7 @@ def _predict_month(
     )
     # pytorch-forecasting >=1.x returns a Prediction namedtuple
     # (output, x, index, decoder_lengths, y); older versions returned a plain
-    # (output, index) tuple — which cannot be unpacked into two names. Test for
+    # (output, index) tuple - which cannot be unpacked into two names. Test for
     # `output`, not `index`: every tuple has an `.index` *method*, so that check
     # is true for both shapes and would send the old one down the wrong branch.
     if hasattr(result, "output"):
@@ -291,7 +284,7 @@ def _fit_tft_calibrator(
     """Score the held-out trainable bars and fit a temperature on the result.
 
     The cutoff is the first held-out bar, so the encoder cannot read a label
-    from the very region being scored — the same masking rule inference uses.
+    from the very region being scored - the same masking rule inference uses.
     """
     if not bar_indices:
         return TemperatureCalibrator(1.0)
@@ -357,17 +350,6 @@ class TFTForecaster(SequenceForecaster):
         self.datasets, self.month_predictions = {}, {}
         super().fit_month(plan, month, bars)
 
-    def normalise(self, window: np.ndarray) -> np.ndarray | None:
-        # Missing values become a raw 0 *before* scaling here, unlike the GRU;
-        # see the module docstring of `prosper.predict.sequence`.
-        if window.shape[0] == 0:
-            return None
-        safe = np.where(np.isfinite(window), window, 0.0)
-        median = np.median(safe, axis=0)
-        iqr = np.percentile(safe, 75, axis=0) - np.percentile(safe, 25, axis=0)
-        iqr[iqr == 0] = 1.0
-        return _robust_normalize(self.features, median, iqr)
-
     def fit_horizon(self, plan: RunPlan, horizon: str, first: int, month: Month) -> Any:
         assert self.normalised is not None
         normalised = self.normalised
@@ -381,16 +363,12 @@ class TFTForecaster(SequenceForecaster):
 
         # Hold out the newest trainable bars to calibrate on. They sit inside
         # `training_bounds`, so their labels are realised and invariant 6 is
-        # untouched; the model simply never fits them.
-        split, _ = calibration_split(0, len(valid_idx))
+        # untouched; the bars fitted end a horizon before them
+        # (`purged_holdout`), so the model never sees their outcomes either.
         window_labels = [int(y_dir[k]) for k in valid_idx]
-        if len(set(window_labels[:split])) < 2:
-            # Same rescue as the GRU: a single-class fit half is unlearnable,
-            # but a nearby split usually is not.
-            alternative = usable_split(window_labels, split)
-            split = len(valid_idx) if alternative is None else alternative
-        fit_idx = valid_idx[:split]
-        cal_idx = valid_idx[split:]
+        fit_end, cal_start = choose_holdout(valid_idx, window_labels, forward_steps)
+        fit_idx = valid_idx[:fit_end]
+        cal_idx = valid_idx[cal_start:]
         if len(fit_idx) < self.seq_len + 10 or len(set(y_dir[fit_idx])) < 2:
             fit_idx, cal_idx = valid_idx, []
 
@@ -459,12 +437,13 @@ class TFTForecaster(SequenceForecaster):
                 val_bars = [k for k in range(lo, max(cal_idx) + 1) if y_dir[k] >= 0]
                 if len(val_bars) >= MIN_EARLY_STOPPING_SAMPLES + self.seq_len:
                     val_frame = frame(val_bars)
-                    val_ds = labelled_only(
-                        TimeSeriesDataSet.from_dataset(
-                            ds, val_frame, predict=False, stop_randomization=True
-                        ),
-                        val_frame,
-                    )
+                    # The bars before the slice are fitted or purged ones, there
+                    # only as encoder history: scored as targets too, they would
+                    # stop the model on outcomes it was fitted on. `cal_idx` holds
+                    # labelled bars only, so this also drops the unlabelled ones.
+                    val_ds = TimeSeriesDataSet.from_dataset(
+                        ds, val_frame, predict=False, stop_randomization=True
+                    ).filter(lambda index: index.time_idx_first_prediction.isin(cal_idx))
                     val_loader = val_ds.to_dataloader(train=False, batch_size=64, num_workers=0)
 
             self.reseed(horizon, month)

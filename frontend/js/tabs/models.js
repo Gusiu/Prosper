@@ -27,7 +27,7 @@ export function horizonNames() {
 let analysisDrawerContext = { symbol: null, model_type: null, timestamp: null };
 // The calendar shows one month, so it fetches one month. Loading the whole
 // run to page through it client-side pulled ~5 MB for a 1d run and 24x that
-// for 1h — the endpoint has always supported year/month narrowing.
+// for 1h - the endpoint has always supported year/month narrowing.
 const predictionCalendarState = {
   rowsByDate: new Map(),
   year: 0,
@@ -510,7 +510,8 @@ export function renderPredictionCalendar() {
   titleH.style.color = "var(--accent-glow)";
   titleH.style.marginLeft = "8px";
   const d = new Date(year, month, 1);
-  titleH.innerText = d.toLocaleString(undefined, {
+  // The interface language, not the viewer's: the weekday headers are English.
+  titleH.innerText = d.toLocaleString("en-US", {
     month: "long",
     year: "numeric",
   });
@@ -550,7 +551,7 @@ export function renderPredictionCalendar() {
     if (!isNaN(m) && !isNaN(y)) {
       predictionCalendarState.month = Math.max(0, Math.min(11, m));
       predictionCalendarState.year = y;
-      // Jumping to a month must fetch it — only the current month is in memory.
+      // Jumping to a month must fetch it - only the current month is in memory.
       loadPredictionMonth();
     }
   };
@@ -615,12 +616,11 @@ export function renderPredictionCalendar() {
 
         const rowData = rowsByDate.get(dateStr);
         if (rowData) {
-          // One horizon, not a maximum across three. Taking max(P_long) and
-          // max(P_short) separately pulled the two numbers from different
-          // horizons, so the pair never summed to 100 and a day could be
-          // coloured bullish while another horizon read 99% short. The cell is
-          // one day wide, so the shortest horizon is the one it can speak for;
-          // the popover still shows all three.
+          // One horizon, not a maximum across them: max(P_long) and
+          // max(P_short) taken separately would come from different horizons,
+          // never sum to 100, and could colour a day bullish while another
+          // horizon reads 99% short. The cell is one day wide, so the shortest
+          // horizon is the one it can speak for; the popover shows them all.
           // The first spec is the shortest horizon; taking it by name rather
           // than by literal keeps this working when the set changes.
           const shortest = horizonNames()[0];
@@ -641,7 +641,7 @@ export function renderPredictionCalendar() {
           const mini = document.createElement("div");
           mini.style.fontSize = "0.7rem";
           mini.style.color = "#94a3b8";
-          mini.innerText = `4w  L:${Math.round(pLong * 100)}% S:${Math.round(pShort * 100)}%`;
+          mini.innerText = `${shortest}  L:${Math.round(pLong * 100)}% S:${Math.round(pShort * 100)}%`;
           dayDiv.appendChild(mini);
 
           dayDiv.style.cursor = "pointer";

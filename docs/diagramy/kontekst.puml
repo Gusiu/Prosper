@@ -1,0 +1,28 @@
+@startuml
+!include _styl.iuml
+
+actor "Badacz" as badacz
+
+rectangle "Komputer badacza" {
+  component "Przeglądarka\n(panel Prosper)" as panel
+  rectangle "Prosper" {
+    component "Serwer HTTP\n(FastAPI)" as api
+    component "Wiersz poleceń\n(Typer)" as cli
+  }
+  database "Jezioro danych\n./data\n(parquet, JSON)" as jezioro
+}
+
+cloud "Binance" {
+  component "Binance Public Data\ndata.binance.vision" as bpd
+  component "Binance REST API\napi.binance.com" as rest
+}
+
+badacz --> panel : obsługuje
+badacz --> cli : uruchamia polecenia
+panel --> api : HTTP, localhost
+api --> cli : kolejka zadań\nuruchamia podprocesy
+api --> jezioro : odczyt; zapis stabilności,\nusuwanie przebiegów
+cli --> jezioro : odczyt i zapis
+cli --> bpd : miesięczne archiwa\nświec 1m (ZIP)
+cli --> rest : lista symboli\n(exchangeInfo)
+@enduml

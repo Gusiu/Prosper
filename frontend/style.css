@@ -217,6 +217,12 @@ body {
   border-radius: 16px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
 }
+/* A module whose collapsible section is open grows with it instead of letting
+   the extra rows spill past its border. */
+.ops-card:has(details[open]) {
+  height: auto;
+  min-height: 520px;
+}
 .ops-card h3 {
   font-size: 1.1rem;
   color: var(--text-main);
@@ -1203,6 +1209,23 @@ progress::-moz-progress-bar {
   align-items: end;
   gap: 14px;
   flex-wrap: wrap;
+}
+
+/* The execution assumptions: a row of narrow fields that wraps. The panel is
+   sized by its content, not by the fixed module height of .ops-card, which
+   would leave an empty box when it is closed and clip the fields when open. */
+#backtest-assumptions {
+  height: auto;
+}
+
+.evaluation-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.evaluation-controls .evaluation-label {
+  flex: 0 1 170px;
 }
 
 @media (max-width: 1100px) {

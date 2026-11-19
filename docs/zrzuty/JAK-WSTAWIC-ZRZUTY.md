@@ -1,6 +1,6 @@
-# Zrzuty ekranu do dokumentacji
+# Zrzuty ekranu do pracy
 
-Dokument techniczny ma w rozdziale 11.6 jedenaście gniazd na zrzuty panelu.
+Praca ma w podrozdziale 12.6 jedenaście gniazd na zrzuty panelu.
 Dopóki pliku nie ma, generator wstawia widoczną ramkę z opisem tego, co powinno
 się w niej znaleźć. Gdy plik się pojawi - osadza go automatycznie.
 
@@ -48,12 +48,12 @@ rozdziału aktualizuje się samo.
   mniejszej szerokości tekst na zrzucie będzie nieczytelny w druku.
 - **Okno przeglądarki 1600×1000** daje proporcje pasujące do szerokości strony.
 - **Wytnij tylko obszar treści**, bez paska adresu i zakładek przeglądarki -
-  dokument opisuje aplikację, nie przeglądarkę.
+  praca opisuje aplikację, nie przeglądarkę.
 - Jeśli któryś widok wymaga danych, których nie ma (np. pusta kolejka), zrób
   zrzut po uruchomieniu dowolnego zadania - pusty panel niczego nie ilustruje.
 
 ## Katalog jest ignorowany przez git
 
-Zrzuty to materiał do dokumentu, nie kod. Wraz z wygenerowanym `.docx` i
+Zrzuty to materiał do pracy, nie kod. Wraz z wygenerowanym `.docx` i
 wykresami z `data/_figures/` pozostają lokalnie; źródłem prawdy jest
 `scripts/build_documentation.py`.

@@ -1,7 +1,7 @@
 """Execution-model guarantees of the trading simulator.
 
 The previous version traded on the same bar's close, went all-in on any buy
-signal, ignored slippage and reported no benchmark — so a positive ROI said
+signal, ignored slippage and reported no benchmark - so a positive ROI said
 nothing about whether the strategy beat simply holding the asset.
 """
 
@@ -57,7 +57,7 @@ def _write_prices(settings: Settings, closes: list[float], opens: list[float]) -
 
 # Mass far enough up the scale that a modest edge still clears the round-trip
 # cost. With DEPTH above, the probability-weighted move at edge 0.10 is 0.31%
-# against a 0.4% hurdle, so the cost gate holds — correctly, and that is its own
+# against a 0.4% hurdle, so the cost gate holds - correctly, and that is its own
 # test below.
 DEPTH_WIDER = {"3-5": 0.4, "5-8": 0.4, "8-13": 0.2}
 
@@ -180,7 +180,7 @@ def test_a_signal_too_small_to_pay_its_costs_is_not_traded(tmp_path) -> None:
 
 def test_the_simulation_and_the_planner_agree_on_every_bar(tmp_path) -> None:
     """One grader, so the report and the simulation cannot describe different
-    trades — the defect that motivated `SequenceGrader`."""
+    trades - the defect that motivated `SequenceGrader`."""
     from prosper.planner.windows import plan_windows
 
     settings = Settings(data_root=tmp_path)

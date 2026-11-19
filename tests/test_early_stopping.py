@@ -3,7 +3,7 @@
 The epoch count was a fixed constant with nothing measuring whether it was
 right. Measured on BTCUSDT over 42 retrainings, GRU's short horizon still
 gained accuracy at 20 epochs while medium and long stopped gaining after ~5 and
-their NLL degraded monotonically past it — the same number cannot be right for
+their NLL degraded monotonically past it - the same number cannot be right for
 all three, and each horizon trains its own model anyway.
 """
 
@@ -124,7 +124,7 @@ def test_the_best_weights_are_restored_not_the_last() -> None:
 
     final = _holdout_loss(model, ds, holdout, torch.device("cpu"))
     # Training one more epoch from here must not beat the restored weights by
-    # much — the restored state is the best seen, not merely the last.
+    # much - the restored state is the best seen, not merely the last.
     assert np.isfinite(final)
 
 
@@ -140,7 +140,7 @@ def test_a_nearby_split_rescues_a_single_class_fit_half() -> None:
     """A single-class older half must not cost the window its holdout.
 
     `calibration_split` divides by position and is blind to labels, so at the
-    long horizon — where a year of start dates can share one sign — the older
+    long horizon - where a year of start dates can share one sign - the older
     part often carries one class. The model cannot be fitted on that, and the
     fallback (train on everything, drop the holdout) silently disables both
     early stopping and calibration for the window.
@@ -171,7 +171,7 @@ def test_the_rescue_stays_close_to_the_requested_fraction() -> None:
 
 
 def test_a_single_transition_cannot_be_rescued() -> None:
-    """With one flip, no split leaves both halves mixed — that is arithmetic."""
+    """With one flip, no split leaves both halves mixed - that is arithmetic."""
     from prosper.predict.calibration import usable_split
 
     assert usable_split([0] * 200 + [1] * 135, 252, min_holdout=20) is None

@@ -25,10 +25,23 @@ from prosper.api.validation import (
     is_valid_run_timestamp,
     is_valid_symbol,
 )
+from prosper.config import get_settings
 from prosper.predict.defaults import HORIZON_NAMES, POOLING_MODELS
 
 # Kept under its old name: `prosper.api.server` re-exports it.
 _is_valid_symbol = is_valid_symbol
+
+
+def _root() -> str:
+    """The data lake the server was configured with, as the CLI's `--root`.
+
+    The CLI takes its root from that flag alone, so this is the only way a
+    queued job learns which lake the endpoints are reading; a literal would send
+    it to `./data` whatever `PROSPER_DATA_ROOT` says. Read per request, as the
+    routes do. A relative root is passed as configured: the subprocess inherits
+    the server's working directory, so it names the same directory in both.
+    """
+    return str(get_settings().data_root)
 
 
 def _interval(value: str) -> str:
@@ -100,7 +113,7 @@ def build_pipeline_command(req: PipelineRequest) -> list[list[str]]:
         "--symbol", symbol,
         "--start", s_month,
         "--end", e_month,
-        "--root", "./data",
+        "--root", _root(),
         *r_flags,
     ]
     commands.append(backfill_cmd)
@@ -116,7 +129,7 @@ def build_pipeline_command(req: PipelineRequest) -> list[list[str]]:
                 "--start", s_month,
                 "--end", e_month,
                 "--to", ",".join(intervals),
-                "--root", "./data",
+                "--root", _root(),
                 *r_flags,
             ]
         )
@@ -146,7 +159,7 @@ def build_train_command(req: TrainRequest) -> list[list[str]]:
         "--start", req.start,
         "--end", req.end,
         "--interval", _interval(req.interval),
-        "--root", "./data",
+        "--root", _root(),
         *r_flags,
     ]
 
@@ -222,7 +235,7 @@ def build_eval_command(req: EvalRequest) -> list[list[str]]:
         "--model-type", _model_type(req.model_type),
         "--timestamp", _run_timestamp(req.timestamp),
         "--interval", _interval(req.interval),
-        "--root", "./data",
+        "--root", _root(),
         *r_flags,
     ]
     return [cmd]
@@ -236,7 +249,7 @@ def build_batch_eval_command(req: BatchEvalRequest) -> list[list[str]]:
 
     cmd = [
         "python", "-m", "prosper.cli", "eval", "batch",
-        "--root", "./data",
+        "--root", _root(),
         *r_flags,
     ]
     if req.symbol:
@@ -266,7 +279,7 @@ def _features_and_labels_commands(
                 "--base-interval", interval,
                 "--start", start,
                 "--end", end,
-                "--root", "./data",
+                "--root", _root(),
                 *r_flags,
             ]
         )
@@ -275,7 +288,7 @@ def _features_and_labels_commands(
                 "python", "-m", "prosper.cli", "labels", "build",
                 "--symbol", symbol,
                 "--base-interval", interval,
-                "--root", "./data",
+                "--root", _root(),
                 *r_flags,
             ]
         )
@@ -299,7 +312,7 @@ def build_aggregate_command(req: AggregateRequest) -> list[list[str]]:
             "--start", req.start[:7],
             "--end", req.end[:7],
             "--to", ",".join(_intervals(req.intervals)),
-            "--root", "./data",
+            "--root", _root(),
             *r_flags,
         ]
     ]
@@ -349,7 +362,7 @@ def build_repair_commands(
                 "--symbol", symbol,
                 "--start", start_date[:7],
                 "--end", end_date[:7],
-                "--root", "./data",
+                "--root", _root(),
                 *r_flags,
             ]
         )
@@ -373,7 +386,7 @@ def build_repair_commands(
                 "--start", start_date[:7],
                 "--end", end_date[:7],
                 "--to", ",".join(broken),
-                "--root", "./data",
+                "--root", _root(),
                 *r_flags,
             ]
         )

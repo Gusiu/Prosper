@@ -269,7 +269,7 @@ def build_features(
 
     # ── Scale-free counterparts ──────────────────────────────────────────────
     # Sixteen of the columns above are in price or volume units, so BTCUSDT's
-    # `ma_10` is ~47000 where SOLUSDT's is ~85 — a 553x gap, measured. A model
+    # `ma_10` is ~47000 where SOLUSDT's is ~85 - a 553x gap, measured. A model
     # pooling two symbols would learn the price level as a symbol identifier
     # rather than a pattern, and robust normalisation over a joint window turns
     # the feature bimodal instead of comparable.

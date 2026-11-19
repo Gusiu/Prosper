@@ -23,9 +23,15 @@ from prosper.domain import (
     DIRECTION_CLASSES,
     IDX_TO_DIR,
     effective_symbols,
+    interval_minutes,
     parse_depth_bins,
 )
-from prosper.predict.calibration import TemperatureCalibrator
+from prosper.predict.calibration import (
+    TemperatureCalibrator,
+    TemperatureMemory,
+    calibration_fields,
+    choose_holdout,
+)
 from prosper.predict.pool import (
     PooledSlice,
     TrainingPool,
@@ -50,12 +56,18 @@ class TabularForecaster:
         self.features = pool.frames[0].features
         self.fitted: dict[str, dict[str, Any] | None] = {}
         self.pool_contributions: dict[str, Any] = {}
+        # Each horizon's span as time, set per month: a pool holds several rows
+        # per instant, so the gap before the held-out slice is not a row count.
+        self.purge: dict[str, np.timedelta64] = {}
+        self.temperatures = TemperatureMemory()
 
     # ── the walk-forward hooks ──────────────────────────────────────────────
 
     def fit_month(self, plan: RunPlan, month: Month, bars: list[int]) -> None:
         first = bars[0]
         self.fitted = {}
+        bar = np.timedelta64(interval_minutes(plan.interval), "m")
+        self.purge = {name: steps * bar for name, steps in plan.steps.items()}
         slices: dict[str, PooledSlice] = {}
         for horizon in plan.horizons:
             if horizon.name not in plan.selected:
@@ -70,9 +82,12 @@ class TabularForecaster:
             if len(valid) < MIN_LABELLED_ROWS:
                 self.fitted[horizon.name] = None
                 continue
-            self.fitted[horizon.name] = self.fit_horizon(
-                horizon.name, str(plan.dates[first]), pooled, valid
-            )
+            fitted = self.fit_horizon(horizon.name, str(plan.dates[first]), pooled, valid)
+            if fitted and fitted.get("clf") is not None:
+                fitted["calibrator"] = self.temperatures.settle(
+                    horizon.name, fitted["calibrator"]
+                )
+            self.fitted[horizon.name] = fitted
         if slices:
             self.pool_contributions = describe_pool(slices, self.pool, plan.steps)
 
@@ -105,11 +120,21 @@ class TabularForecaster:
 
     # ── shared by both subclasses ───────────────────────────────────────────
 
+    def holdout(self, horizon: str, pooled: PooledSlice, valid: list[int]) -> tuple[int, int]:
+        """``(fit_end, calibration_start)`` among the labelled rows *valid* of *pooled*.
+
+        By instant, as the slice itself is (SPECIFICATION 2.8): the held-out
+        rows are the newest, and the fitted ones end a horizon before them -
+        `choose_holdout`, the policy every model follows.
+        """
+        labels = [int(pooled.direction[k]) for k in valid]
+        return choose_holdout(pooled.open_time[valid], labels, self.purge[horizon])
+
     @staticmethod
-    def direction_probabilities(
+    def direction_payload(
         clf: Any, classes: Any, calibrator: TemperatureCalibrator, row: np.ndarray
-    ) -> dict[str, float]:
-        """Classifier output mapped back to direction names, then calibrated.
+    ) -> dict[str, Any]:
+        """Classifier output mapped back to direction names, calibrated, with what calibration did.
 
         Column j of `predict_proba` belongs to ``classes[j]``, which is not
         always both directions: a window can lack one side entirely.
@@ -117,7 +142,11 @@ class TabularForecaster:
         probabilities = dict.fromkeys(DIRECTION_CLASSES, 0.0)
         for class_index, probability in zip(classes, clf.predict_proba(row)[0], strict=True):
             probabilities[IDX_TO_DIR[class_index]] = probability
-        return calibrator.apply_to_mapping(probabilities)
+        calibrated = calibrator.apply_to_mapping(probabilities)
+        return {
+            **{f"P_{d}": calibrated[d] for d in DIRECTION_CLASSES},
+            **calibration_fields(probabilities, calibrator),
+        }
 
 
 def load_tabular(

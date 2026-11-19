@@ -192,7 +192,7 @@ function bootstrap() {
 }
 
 // `<script type="module">` is deferred, so DOMContentLoaded has usually already
-// fired by the time this runs — listening for it alone would never boot the app.
+// fired by the time this runs - listening for it alone would never boot the app.
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", bootstrap);
 } else {

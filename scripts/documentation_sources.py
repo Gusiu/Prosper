@@ -1,7 +1,7 @@
 """Pull the reference chapters out of the code itself.
 
-Every catalogue in the documentation — features, CLI flags, HTTP routes,
-configuration fields, the test inventory — is read from the running system rather
+Every catalogue in the documentation - features, CLI flags, HTTP routes,
+configuration fields, the test inventory - is read from the running system rather
 than transcribed. A transcribed reference is wrong the first time someone adds a
 flag and nobody notices; a generated one cannot be.
 
@@ -17,7 +17,9 @@ import inspect
 import json
 import pathlib
 import re
+import subprocess
 from dataclasses import dataclass, field
+from datetime import date
 
 # ── which runs are the study ─────────────────────────────────────────────────
 
@@ -27,9 +29,34 @@ STUDY_SYMBOLS = (
     "LINKUSDT", "LTCUSDT",
 )
 STUDY_MODELS = ("baseline", "ml", "xgboost", "gru", "tft")
+# What the thesis calls the models and the horizons. The identifiers are the
+# software's; every table and figure of the thesis prints these names instead.
+MODEL_LABEL = {"baseline": "model odniesienia", "ml": "scikit-learn", "xgboost": "XGBoost",
+               "gru": "GRU", "tft": "TFT"}
+HORIZON_LABEL = {"week": "tydzień", "month": "miesiąc", "quarter": "kwartał", "year": "rok"}
 STUDY_SEEDS = (7, 42, 123)
 STUDY_PROTOCOL = {"interval": "1d", "start": "2020-01-01", "end": "2026-06-30",
                   "deterministic": True}
+# The commit the study ran on. A run belongs to it when the package it was
+# computed with is that commit's: same tree of src/prosper, nothing uncommitted.
+# The runs of October, on code that calibrated on rows overlapping the fitted
+# ones, share everything else with these and are told apart by this alone.
+STUDY_CODE = "ec966c1fb5e3302bcda5b495ee2992fd1e38f4de"
+REPOSITORY = pathlib.Path(__file__).resolve().parent.parent
+
+
+@functools.cache
+def _package_tree(commit: str | None) -> str | None:
+    """The tree of src/prosper at *commit*; two commits with one tree compute the same runs."""
+    if not commit:
+        return None
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", f"{commit}:src/prosper"], cwd=REPOSITORY, capture_output=True,
+            text=True, check=True, timeout=10,
+        ).stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 @functools.cache
@@ -37,9 +64,10 @@ def study_runs(report_root: str = "data/reports") -> frozenset[tuple[str, str]]:
     """(symbol, run slug) of every run that belongs to the study.
 
     Selected by what each run says about itself in run_summary.json - interval,
-    period, deterministic mode, seed - rather than by which folders exist. A run
-    trained from the dashboard while testing it, on another period or seed, is
-    then never counted, however long it stays in the lake.
+    period, deterministic mode, seed and the code it was computed with - rather
+    than by which folders exist. A run trained from the dashboard while testing
+    it, on another period, seed or version of the code, is then never counted,
+    however long it stays in the lake.
     """
     selected = set()
     for summary in pathlib.Path(report_root, "predictions").glob("*/*/run_summary.json"):
@@ -55,12 +83,49 @@ def study_runs(report_root: str = "data/reports") -> frozenset[tuple[str, str]]:
             continue
         if record.get("seed") not in STUDY_SEEDS:
             continue
+        environment = record.get("environment") or {}
+        if environment.get("git_dirty") is not False or (
+            _package_tree(environment.get("git_commit")) != _package_tree(STUDY_CODE)
+        ):
+            continue
         selected.add((symbol, slug))
     return frozenset(selected)
 
 
 def is_study_run(symbol: str, slug: str) -> bool:
     return (symbol, slug) in study_runs()
+
+
+@functools.cache
+def previous_study_runs(report_root: str = "data/reports") -> frozenset[tuple[str, str]]:
+    """The runs of the October study: the study's protocol, on code the study no longer runs.
+
+    Kept for one comparison only - what the fixes to the calibration slice
+    changed (chapter 11.8). They differ from the study's runs by their code
+    alone, so they are told apart by its tree.
+    """
+    selected = set()
+    for summary in pathlib.Path(report_root, "predictions").glob("*/*/run_summary.json"):
+        symbol, slug = summary.parent.parent.name, summary.parent.name
+        if symbol not in STUDY_SYMBOLS or slug.split("_")[0] not in STUDY_MODELS:
+            continue
+        try:
+            record = json.loads(summary.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if any(record.get(key) != value for key, value in STUDY_PROTOCOL.items()):
+            continue
+        if record.get("seed") not in STUDY_SEEDS:
+            continue
+        commit = (record.get("environment") or {}).get("git_commit")
+        if _package_tree(commit) == _package_tree(STUDY_CODE):
+            continue
+        selected.add((symbol, slug))
+    return frozenset(selected)
+
+
+def is_previous_study_run(symbol: str, slug: str) -> bool:
+    return (symbol, slug) in previous_study_runs()
 
 
 # ── features ─────────────────────────────────────────────────────────────────
@@ -72,49 +137,74 @@ class Feature:
     description: str
 
 
-# What each column means, keyed by the stem the builder uses. Written here rather
-# than parsed out of comments because a feature's *meaning* is domain knowledge,
-# not an implementation detail — but the list of names is still read from the
-# code, so a column that exists without an entry shows up as such.
+# What each training column means, keyed by its exact name and checked against
+# the formulas in `features/build.py`. Written here rather than parsed out of
+# comments because a feature's *meaning* is domain knowledge, not an
+# implementation detail - but the list of names is still read from the code, so
+# a column that exists without an entry shows up as such.
 FEATURE_NOTES: dict[str, tuple[str, str]] = {
-    "log_return": ("Zwroty", "Logarytmiczny zwrot z n świec wstecz. Addytywny w czasie i "
-                             "symetryczny względem wzrostów i spadków."),
-    "rsi": ("Oscylatory", "Relative Strength Index: stosunek średniego wzrostu do średniego "
-                          "spadku w oknie, przeskalowany do 0-100."),
-    "macd": ("Oscylatory", "Różnica dwóch wykładniczych średnich kroczących oraz jej odległość "
-                           "od własnej średniej sygnałowej."),
-    "stoch": ("Oscylatory", "Położenie zamknięcia względem zakresu maks.-min. w oknie."),
-    "williams": ("Oscylatory", "Odwrócony wskaźnik położenia zamknięcia w zakresie okna."),
-    "cci": ("Oscylatory", "Odchylenie ceny typowej od jej średniej, skalowane odchyleniem "
-                          "bezwzględnym."),
-    "roc": ("Momentum", "Tempo zmiany: procentowa zmiana ceny względem n świec wstecz."),
-    "momentum": ("Momentum", "Bezwzględna różnica ceny względem n świec wstecz, wyrażona "
-                             "względnie."),
-    "ma": ("Trend", "Odległość ceny od średniej kroczącej, wyrażona jako ułamek tej średniej - "
-                    "dzięki czemu wielkość nie zależy od poziomu ceny."),
-    "ema": ("Trend", "Jak wyżej, dla średniej wykładniczej."),
-    "bb": ("Zmienność", "Położenie ceny wewnątrz wstęgi Bollingera oraz szerokość wstęgi "
-                        "względem jej środka."),
-    "atr": ("Zmienność", "Średni rzeczywisty zakres, wyrażony jako ułamek ceny."),
-    "rolling_vol": ("Zmienność", "Odchylenie standardowe zwrotów logarytmicznych w oknie."),
-    "realized_vol": ("Zmienność", "Zmienność zrealizowana liczona z danych o wyższej "
-                                  "częstotliwości niż interwał modelu."),
-    "volume": ("Wolumen", "Wolumen odniesiony do własnej średniej kroczącej, co usuwa zależność "
-                          "od skali instrumentu."),
-    "obv": ("Wolumen", "On-Balance Volume: skumulowany wolumen ze znakiem zwrotu, raportowany "
-                       "jako zmiana względna."),
-    "taker_buy": ("Przepływ zleceń", "Udział wolumenu inicjowanego przez kupujących w wolumenie "
-                                     "całkowitym - dostępny tylko dla danych zawierających "
-                                     "kolumny przepływu."),
-    "trade": ("Przepływ zleceń", "Charakterystyki liczby i wielkości transakcji w świecy."),
-    "candle": ("Kształt świecy", "Proporcje korpusu i cieni względem pełnego zakresu świecy."),
-    "gap": ("Kształt świecy", "Odległość otwarcia od poprzedniego zamknięcia."),
-    "jump": ("Kształt świecy", "Liczba zwrotów przekraczających wielokrotność bieżącej "
-                               "zmienności - miara nieciągłości."),
-    "drawdown": ("Ryzyko", "Maksymalne obsunięcie wewnątrz okna."),
-    "intraday": ("Ryzyko", "Charakterystyki wyliczone z danych o wyższej częstotliwości."),
-    "day_of": ("Kalendarz", "Zmienne kalendarzowe kodujące porę tygodnia lub miesiąca."),
-    "hour": ("Kalendarz", "Pora doby, istotna wyłącznie dla interwałów krótszych niż dzień."),
+    "log_return_1b": ("Zwroty", "Logarytmiczny zwrot z ostatniej świecy. Zwroty logarytmiczne "
+                                "sumują się w czasie i są symetryczne względem wzrostów i "
+                                "spadków."),
+    "log_return_3b": ("Zwroty", "Logarytmiczny zwrot z trzech ostatnich świec."),
+    "log_return_7b": ("Zwroty", "Logarytmiczny zwrot z siedmiu ostatnich świec."),
+    "log_return_14b": ("Zwroty", "Logarytmiczny zwrot z czternastu ostatnich świec."),
+    "rolling_vol_7": ("Zmienność", "Odchylenie standardowe zwrotów logarytmicznych z 7 "
+                                   "ostatnich świec."),
+    "rolling_vol_14": ("Zmienność", "To samo z 14 ostatnich świec."),
+    "rolling_vol_30": ("Zmienność", "To samo z 30 ostatnich świec."),
+    "realized_vol_1d": ("Zmienność", "Suma kwadratów zwrotów jednominutowych w ciągu dnia - "
+                                     "zmienność zrealizowana. Liczona tylko dla interwału "
+                                     "dziennego i tylko gdy w jeziorze są dane jednominutowe."),
+    "atr_14_rel": ("Zmienność", "Średni rzeczywisty zakres (wykładnicza średnia z 14 świec) "
+                                "jako ułamek zamknięcia."),
+    "bb_mid_rel": ("Zmienność", "Odległość środka wstęgi Bollingera (średniej z 20 świec) od "
+                                "zamknięcia, jako ułamek ceny."),
+    "bb_upper_rel": ("Zmienność", "Odległość górnej wstęgi Bollingera (środek plus dwa "
+                                  "odchylenia standardowe) od zamknięcia, jako ułamek ceny."),
+    "bb_lower_rel": ("Zmienność", "Odległość dolnej wstęgi Bollingera (środek minus dwa "
+                                  "odchylenia standardowe) od zamknięcia, jako ułamek ceny."),
+    "rolling_drawdown_30": ("Ryzyko", "Spadek zamknięcia poniżej najwyższego zamknięcia z "
+                                      "30 ostatnich świec, jako ułamek tego maksimum."),
+    "rolling_drawdown_90": ("Ryzyko", "To samo dla 90 ostatnich świec."),
+    "max_intraday_drawdown": ("Ryzyko", "Największy spadek ceny poniżej dotychczasowego "
+                                        "maksimum dnia, liczony z danych jednominutowych."),
+    "jump_count": ("Ryzyko", "Liczba minut w ciągu dnia, w których cena zmieniła się o "
+                             "więcej niż 2% - miara nieciągłości."),
+    "candle_range": ("Kształt świecy", "Rozpiętość świecy (maksimum minus minimum) jako ułamek "
+                                       "zamknięcia."),
+    "open_rel": ("Kształt świecy", "Otwarcie świecy względem jej zamknięcia, jako ułamek ceny. "
+                                   "Ta i dwie następne cechy zachowują kierunek, który "
+                                   "rozpiętość świecy gubi."),
+    "high_rel": ("Kształt świecy", "Maksimum świecy względem jej zamknięcia, jako ułamek ceny."),
+    "low_rel": ("Kształt świecy", "Minimum świecy względem jej zamknięcia, jako ułamek ceny."),
+    "ma_10_rel": ("Trend", "Odległość średniej kroczącej z 10 świec od zamknięcia, jako ułamek "
+                           "ceny."),
+    "ma_30_rel": ("Trend", "To samo dla średniej z 30 świec."),
+    "ma_diff_rel": ("Trend", "Różnica średnich z 10 i 30 świec jako ułamek ceny - jej znak "
+                             "wskazuje kierunek trendu."),
+    "ma_slope_rel": ("Trend", "Zmiana średniej z 10 świec względem poprzedniej świecy, jako "
+                              "ułamek ceny - nachylenie trendu."),
+    "rsi_14": ("Oscylatory", "Relative Strength Index z 14 świec: stosunek średniego wzrostu do "
+                             "średniego spadku, przeskalowany do 0-100."),
+    "macd_hist_rel": ("Oscylatory", "Histogram MACD - różnica średnich wykładniczych z 12 i 26 "
+                                    "świec pomniejszona o jej 9-świecową średnią sygnałową - "
+                                    "jako ułamek ceny."),
+    "taker_buy_ratio": ("Przepływ zleceń", "Udział wolumenu inicjowanego przez kupujących w "
+                                           "wolumenie świecy; 0,5 oznacza równowagę."),
+    "taker_buy_ratio_14": ("Przepływ zleceń", "Średnia tego udziału z 14 świec."),
+    "flow_imbalance": ("Przepływ zleceń", "Udział kupujących pomniejszony o 0,5 - nierównowaga "
+                                          "przepływu ze znakiem."),
+    "trade_count_rel_30": ("Przepływ zleceń", "Liczba transakcji w świecy jako wielokrotność "
+                                              "jej średniej z 30 świec."),
+    "avg_trade_size_rel_30": ("Przepływ zleceń", "Średnia wielkość transakcji jako "
+                                                 "wielokrotność jej średniej z 30 świec: ten "
+                                                 "sam wolumen z kilku dużych transakcji niesie "
+                                                 "inną informację niż z wielu małych."),
+    "volume_rel_30": ("Wolumen", "Wolumen świecy jako wielokrotność jego średniej z 30 świec."),
+    "obv_change_rel": ("Wolumen", "Zmiana On-Balance Volume (wolumenu skumulowanego ze znakiem "
+                                  "zwrotu) odniesiona do średniego wolumenu z 30 świec. Sam "
+                                  "poziom OBV jest dowolną sumą bieżącą, jego zmiana nie."),
 }
 
 
@@ -122,21 +212,15 @@ def feature_catalogue() -> list[Feature]:
     """Every training feature, grouped and described.
 
     The names come from `domain.TRAINING_FEATURE_COLUMNS`, so the catalogue can
-    never drift from what the models actually read.
+    never drift from what the models actually read; a name without a note lands
+    in its own group with no description.
     """
     from prosper.domain import TRAINING_FEATURE_COLUMNS
 
-    out: list[Feature] = []
-    for name in TRAINING_FEATURE_COLUMNS:
-        group, description = "Pozostałe", "—"
-        for stem, (candidate_group, candidate_text) in FEATURE_NOTES.items():
-            if name.startswith(stem):
-                group, description = candidate_group, candidate_text
-                break
-        if name.endswith("_rel"):
-            description += " Wariant względny, niezależny od poziomu ceny."
-        out.append(Feature(name=name, group=group, description=description))
-    return out
+    return [
+        Feature(name, *FEATURE_NOTES.get(name, ("Bez opisu", "")))
+        for name in TRAINING_FEATURE_COLUMNS
+    ]
 
 
 # ── command line ─────────────────────────────────────────────────────────────
@@ -159,9 +243,11 @@ class Command:
 
 def _describe_default(value: object) -> str:
     if value is None or value is ...:
-        return "—"
+        return "-"
     if isinstance(value, bool):
         return "tak" if value else "nie"
+    if isinstance(value, list | tuple):
+        return ", ".join(str(item) for item in value)
     return str(value)
 
 
@@ -193,7 +279,7 @@ def _options_of(callback) -> list[Option]:
                 kind=kind,
                 required=bool(getattr(click_param, "required", False)),
                 default=_describe_default(default.default),
-                help=(default.help or "").strip() or "—",
+                help=(default.help or "").strip() or "-",
             )
         )
     return out
@@ -208,7 +294,7 @@ def cli_reference() -> list[Command]:
     def collect(typer_app, prefix: str) -> None:
         for registered in typer_app.registered_commands:
             name = registered.name or registered.callback.__name__.replace("_", "-")
-            summary = (inspect.getdoc(registered.callback) or "").strip().split("\n")[0] or "—"
+            summary = (inspect.getdoc(registered.callback) or "").strip().split("\n")[0] or "-"
             commands.append(
                 Command(
                     path=f"{prefix} {name}".strip(),
@@ -247,7 +333,7 @@ def api_reference() -> list[Route]:
             Route(
                 methods=", ".join(sorted(methods - {"HEAD", "OPTIONS"})),
                 path=path,
-                summary=summary or "—",
+                summary=summary or "-",
             )
         )
     return sorted(out, key=lambda r: r.path)
@@ -269,15 +355,15 @@ def settings_reference() -> list[SettingField]:
     out: list[SettingField] = []
     for name, info in Settings.model_fields.items():
         annotation = getattr(info.annotation, "__name__", str(info.annotation))
-        default = info.default
-        if default is None and info.default_factory is not None:
-            default = "(wyliczane)"
+        # A field with a default factory has no `default` of its own; the factory
+        # takes no arguments here, so calling it shows the value a user gets.
+        default = info.get_default(call_default_factory=True)
         out.append(
             SettingField(
                 name=name,
                 kind=str(annotation).replace("typing.", ""),
                 default=_describe_default(default),
-                description=(info.description or "—"),
+                description=(info.description or "-"),
             )
         )
     return sorted(out, key=lambda f: f.name)
@@ -288,6 +374,8 @@ def settings_reference() -> list[SettingField]:
 @dataclass
 class TestCase:
     name: str
+    # Empty when the test has no docstring: the suite names its tests as
+    # sentences, so the name alone then states the guarantee.
     intent: str
 
 
@@ -300,7 +388,7 @@ class TestModule:
 
 def _first_sentence(text: str | None, limit: int = 400) -> str:
     if not text:
-        return "—"
+        return "-"
     collapsed = re.sub(r"\s+", " ", text.strip())
     match = re.match(r"(.+?[.!?])(\s|$)", collapsed)
     sentence = match.group(1) if match else collapsed
@@ -310,16 +398,8 @@ def _first_sentence(text: str | None, limit: int = 400) -> str:
 def _collapse(text: str | None) -> str:
     """Whitespace-normalised docstring, kept whole."""
     if not text:
-        return "—"
+        return "-"
     return re.sub(r"\s+", " ", text.strip())
-
-def _humanise(name: str) -> str:
-    """`test_the_window_reports_power` -> `the window reports power`.
-
-    The suite names its tests as sentences, so the name alone states the
-    guarantee even where no docstring was written.
-    """
-    return name.removeprefix("test_").replace("_", " ")
 
 
 def test_inventory(root: str = "tests") -> list[TestModule]:
@@ -340,10 +420,9 @@ def test_inventory(root: str = "tests") -> list[TestModule]:
                 name=node.name,
                 # The whole rationale, not its opening line. A test docstring in
                 # this suite explains which defect the assertion prevents, and
-                # that explanation is the part worth documenting — the first
+                # that explanation is the part worth documenting - the first
                 # sentence usually only states what is asserted.
-                intent=_collapse(ast.get_docstring(node)) if ast.get_docstring(node)
-                else _humanise(node.name),
+                intent=_collapse(ast.get_docstring(node)) if ast.get_docstring(node) else "",
             )
             for node in ast.walk(tree)
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
@@ -372,8 +451,37 @@ class SymbolStats:
     years: float
 
 
+def qa_summary(interval: str = "1d") -> dict[str, dict[str, int]]:
+    """The platform's monthly QA reports of every study symbol, summed up to the study's end.
+
+    Read from what `prosper qa check` wrote, month by month, for exactly the
+    data the study used - not from a snapshot taken on some other day.
+    """
+    from prosper.config import get_settings
+
+    last = STUDY_PROTOCOL["end"][:7]
+    root = get_settings().reports_qa_dir
+    out: dict[str, dict[str, int]] = {}
+    for symbol in STUDY_SYMBOLS:
+        totals = dict.fromkeys(("partitions", "rows", "unsorted", "duplicates", "gaps", "ohlc"), 0)
+        for path in sorted((root / symbol / interval).glob("*.json")):
+            if path.stem > last:
+                continue
+            report = json.loads(path.read_text(encoding="utf-8"))
+            checks = report.get("checks", {})
+            totals["partitions"] += 1
+            totals["rows"] += int(report.get("row_count", 0))
+            totals["unsorted"] += 0 if checks.get("sorted", {}).get("passed", False) else 1
+            totals["duplicates"] += int(checks.get("duplicates", {}).get("count", 0))
+            totals["gaps"] += int(checks.get("gaps", {}).get("count", 0))
+            totals["ohlc"] += int(checks.get("ohlc_invariants", {}).get("violation_count", 0))
+        if totals["partitions"]:
+            out[symbol] = totals
+    return out
+
+
 def dataset_summary(interval: str = "1d") -> list[SymbolStats]:
-    """Extent of every symbol in the lake, measured rather than declared."""
+    """Extent of every symbol in the lake up to the study's end, measured rather than declared."""
     import polars as pl
 
     from prosper.config import get_settings
@@ -388,6 +496,9 @@ def dataset_summary(interval: str = "1d") -> list[SymbolStats]:
         if not files:
             continue
         frame = pl.concat([pl.scan_parquet(str(p)).select("open_time") for p in files]).collect()
+        if frame.is_empty():
+            continue
+        frame = frame.filter(pl.col("open_time").dt.date() <= date.fromisoformat(STUDY_PROTOCOL["end"]))
         if frame.is_empty():
             continue
         first, last = frame["open_time"].min(), frame["open_time"].max()

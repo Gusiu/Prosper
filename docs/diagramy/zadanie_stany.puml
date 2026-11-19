@@ -1,0 +1,28 @@
+@startuml
+!include _styl.iuml
+
+[*] --> Oczekujace : submit
+state "Oczekujące" as Oczekujace : w kolejce po stronie serwera
+Oczekujace --> Oczekujace : przesunięcie wyżej / niżej
+Oczekujace --> [*] : usunięcie z kolejki
+Oczekujace --> Wykonywane : wątek roboczy pobiera\npierwsze w kolejce
+
+state "Wykonywane" as Wykonywane {
+  [*] --> Polecenie
+  state "Polecenie i z n" as Polecenie : podproces CLI,\nwyjście do dziennika
+  Polecenie --> Polecenie : kod 0,\nkolejne polecenie
+}
+Wykonywane --> Ukonczone : wszystkie polecenia\nz kodem 0
+Wykonywane --> Nieudane : kod różny od zera\nlub wyjątek
+state "Ukończone" as Ukonczone : postęp 100%
+state "Nieudane" as Nieudane : kod wyjścia\nw dzienniku
+Ukonczone --> [*]
+Nieudane --> [*]
+
+note right of Wykonywane
+  Wykonywanego zadania nie można
+  usunąć; jeden wątek roboczy
+  wyklucza równoległe zapisy
+  do tego samego jeziora danych.
+end note
+@enduml

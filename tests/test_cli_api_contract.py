@@ -2,7 +2,7 @@
 
 The browser never runs Python; `api/commands.py` builds an argv list and the
 API spawns `python -m prosper.cli ...`. Nothing checked that the two agreed, so
-`predict baseline` could lose `--interval` while the API kept sending it —
+`predict baseline` could lose `--interval` while the API kept sending it -
 which it did. Training the baseline from the UI failed with "No such option:
 --interval" and the only symptom was a task that exited non-zero.
 """
@@ -91,7 +91,7 @@ def test_the_api_never_invents_a_model_type() -> None:
 
 def test_the_ui_offers_every_model_the_api_accepts() -> None:
     """The baseline was missing from the dropdown, so the benchmark model
-    could not be trained from the dashboard at all — even though the API
+    could not be trained from the dashboard at all - even though the API
     accepts it, the CLI implements it, and every comparison depends on it.
     """
     import re
@@ -270,3 +270,60 @@ def test_the_sharpness_bar_does_not_hardcode_three_classes() -> None:
     ).read_text(encoding="utf-8")
     assert "Math.log(3)" not in evaluation_js
     assert "n_classes" in evaluation_js
+
+
+def test_the_prediction_calendar_names_the_horizon_it_shows() -> None:
+    """A calendar cell shows the shortest horizon, so it carries that horizon's
+    name. A span typed into the template ("4w") stays behind when the horizon set
+    changes, and labels the week as four weeks."""
+    import re
+    from pathlib import Path
+
+    models_js = (
+        Path(__file__).resolve().parents[1] / "frontend" / "js" / "tabs" / "models.js"
+    ).read_text(encoding="utf-8")
+    cell = next(line for line in models_js.splitlines() if "mini.innerText" in line)
+    assert "${shortest}" in cell
+    assert not re.search(r"\b\d+[dwmy]\b", cell)
+
+
+def test_a_card_with_an_open_section_grows_with_it() -> None:
+    """`.ops-card` has a fixed height so a row of modules lines up. The training
+    form's collapsible sections add rows when opened, and at a fixed height they
+    spill past the card's border over whatever lies below."""
+    import re
+    from pathlib import Path
+
+    css = (Path(__file__).resolve().parents[1] / "frontend" / "style.css").read_text(
+        encoding="utf-8"
+    )
+    assert re.search(r"\.ops-card:has\(details\[open\]\)\s*\{[^}]*height:\s*auto", css)
+
+
+def test_the_calendar_title_is_in_the_interface_language() -> None:
+    """The interface is English; a month name formatted in the viewer's locale
+    puts "czerwiec 2026" above English weekday headers."""
+    from pathlib import Path
+
+    models_js = (
+        Path(__file__).resolve().parents[1] / "frontend" / "js" / "tabs" / "models.js"
+    ).read_text(encoding="utf-8")
+    assert "toLocaleString(undefined" not in models_js
+    assert 'toLocaleString("en-US"' in models_js
+
+
+def test_opening_a_runs_details_selects_that_run() -> None:
+    """The cards show the run opened from the ranking, while "Evaluate Run" and
+    the stability chart act on the run selector beside them - so a click on
+    "Details" has to move the selector to the run the cards will show."""
+    from pathlib import Path
+
+    evaluation_js = (
+        Path(__file__).resolve().parents[1] / "frontend" / "js" / "tabs" / "evaluation.js"
+    ).read_text(encoding="utf-8")
+    ranking = evaluation_js.split("function renderEvaluationRanking", 1)[1].split("\n}\n", 1)[0]
+    click = ranking.split('addEventListener("click"', 1)[1]
+    assert "selectEvaluationRun(item)" in click.split("openEvaluationDetails(item)", 1)[0]
+    helper = evaluation_js.split("function selectEvaluationRun", 1)[1].split("\n}\n", 1)[0]
+    assert '"prediction-eval-run"' in helper
+    assert "select.value = " in helper

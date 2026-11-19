@@ -1,0 +1,35 @@
+@startuml
+!include _styl.iuml
+
+start
+:Wczytanie świec, cech i etykiet symbolu;
+:<b>plan_run</b>: szerokość okna każdego horyzontu
+z długości historii, podział zakresu na miesiące;
+note right
+  ostrzeżenie, gdy po stronie treningu
+  lub oceny brakuje obserwacji niezależnych
+end note
+while (Kolejny miesiąc zakresu?) is (tak)
+  :<b>fit_month</b>: dopasowanie każdego wybranego
+  horyzontu na danych sprzed pierwszej świecy miesiąca;
+  note right
+    okno treningowe [t - W, t - F):
+    ostatnia użyta etykieta jest znana
+    w chwili t, pierwszej świecy miesiąca
+  end note
+  while (Kolejna świeca miesiąca?) is (tak)
+    while (Kolejny horyzont?) is (tak)
+      if (Horyzont wytrenowany?) then (tak)
+        :<b>predict</b>: rozkład kierunku
+        i głębokości ruchu;
+      else (nie)
+        :jawny wpis „untrained”;
+      endif
+    endwhile (nie)
+    :wiersz prognozy świecy;
+  endwhile (nie)
+endwhile (nie)
+:<b>finish_run</b>: nowy katalog przebiegu,
+predictions.jsonl i run_summary.json;
+stop
+@enduml

@@ -150,7 +150,7 @@ def write_run_summary(
     says a run should name its own configuration.
 
     The **seed and the deterministic flag are stamped here**, not by the callers,
-    because a run that cannot say what produced it cannot be reproduced — and the
+    because a run that cannot say what produced it cannot be reproduced - and the
     project's entire reproducibility claim rests on being able to re-run one.
     Stamping it in one place means no predictor can forget it; without it, two
     seeds of the same configuration would leave indistinguishable artifacts.

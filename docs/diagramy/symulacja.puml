@@ -1,0 +1,45 @@
+@startuml
+!include _styl.iuml
+
+start
+:Prognozy przebiegu w zakresie dat,
+ceny dzienne symbolu;
+repeat
+  if (Horyzont wytrenowany?) then (tak)
+    :Werdykt świecy (SequenceGrader):
+    Strong Buy ... Strong Sell;
+    :Docelowy udział kapitału
+    z polityki ekspozycji;
+    note right
+      Hold nie ma własnego celu:
+      zostaje dotychczasowa ekspozycja
+    end note
+    if (Zmiana pozycji >= minimalny
+    próg przebudowy?) then (tak)
+      :Transakcja po cenie otwarcia
+      następnego dnia; prowizja i poślizg;
+    else (nie)
+    endif
+    :Wycena portfela po cenie zamknięcia;
+  else (nie)
+    :świeca pominięta;
+  endif
+repeat while (Kolejna świeca?) is (tak) not (nie)
+:Wynik: stopa zwrotu, obsunięcie,
+wskaźnik Sharpe'a, liczba transakcji;
+fork
+  :Kup i trzymaj;
+fork again
+  :Stała ekspozycja
+  równa średniej;
+fork again
+  :Ta sama ścieżka ekspozycji
+  przesunięta cyklicznie;
+fork again
+  :Reguła momentum
+  bez modelu;
+end fork
+:Wynik zawsze raportowany
+z czterema punktami odniesienia;
+stop
+@enduml

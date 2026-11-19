@@ -3,7 +3,7 @@
 The project's binding constraint is not model capacity, it is independent
 observations: a 364-day horizon inside nine years of one symbol is worth about
 three of them, and no window, optimiser or epoch budget changes that. Every
-other lever trades one side of the problem for the other — widening the training
+other lever trades one side of the problem for the other - widening the training
 window takes bars away from the evaluation, narrowing it takes them away from the
 fit. Pooling symbols is the only lever that adds observations without spending
 any, because a second symbol brings its own history rather than borrowing from
@@ -16,8 +16,8 @@ slices its training set with `training_bounds`, which is arithmetic on positions
 in one sorted frame. That is exact for one symbol and meaningless across
 several: row 400 of BTCUSDT is September 2018 and row 400 of SOLUSDT is
 September 2021, so an index-based window would train a 2021 forecast on rows
-that had not happened yet. The bounds here are instants — everything from
-``cutoff - window`` up to ``cutoff - horizon`` — and each symbol contributes
+that had not happened yet. The bounds here are instants - everything from
+``cutoff - window`` up to ``cutoff - horizon`` - and each symbol contributes
 whatever it happens to have in that span, which is nothing at all for a symbol
 that had not launched yet.
 
@@ -168,7 +168,7 @@ class TrainingPool:
 
         stacked_times = np.concatenate(times)
         # Chronological, and stable so a tie between symbols always resolves the
-        # same way — otherwise two runs of the same configuration could order the
+        # same way - otherwise two runs of the same configuration could order the
         # calibration split differently and stop disagreeing only by luck.
         order = np.argsort(stacked_times, kind="stable")
 
@@ -185,7 +185,7 @@ class TrainingPool:
 
         This is what decides whether pooling bought anything. `effective_symbols`
         turns it into a count, and the count is nothing like the number of
-        symbols: at 0.76 — the measured figure for annual returns here — three
+        symbols: at 0.76 - the measured figure for annual returns here - three
         symbols are worth 1.19, and no number of them exceeds 1.3.
 
         Returns 0.0 for a pool of one, where there is nothing to correlate and
@@ -230,8 +230,8 @@ def build_frame(
 ) -> SymbolFrame:
     """Turn one symbol's feature frame into labelled arrays.
 
-    Labels are computed inside the symbol — the close *k* bars ahead of a BTCUSDT
-    bar is a BTCUSDT close — so pooling never mixes one symbol's price path into
+    Labels are computed inside the symbol - the close *k* bars ahead of a BTCUSDT
+    bar is a BTCUSDT close - so pooling never mixes one symbol's price path into
     another's outcome.
     """
     close = df["close"].to_numpy().astype(float)
@@ -264,7 +264,7 @@ def _as_utc_naive(value: datetime) -> datetime:
     """A tz-aware instant as naive UTC; a naive one is assumed to be UTC already.
 
     Binance publishes in UTC and the lake stores what it publishes, so the
-    assumption holds — but it is written down here rather than left implicit in
+    assumption holds - but it is written down here rather than left implicit in
     a `datetime64` cast that silently discards whatever zone it was given.
     """
     if value.tzinfo is None:
@@ -347,7 +347,7 @@ def describe_pool(
     command line describes.
 
     With *pool* and *forward_steps* it also records what the pool was *worth*.
-    Row counts flatter pooling badly — three symbols triple the rows while
+    Row counts flatter pooling badly - three symbols triple the rows while
     carrying 1.2 to 1.35 symbols' worth of independent information, because
     crypto returns share one dominant factor. A summary reporting only the rows
     would support a claim the data does not.
