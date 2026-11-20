@@ -29,7 +29,7 @@ def run(cmd: list[str]) -> None:
 def smoke_check_parquet(path: Path, n: int = 5) -> None:
     if not path.exists():
         raise SystemExit(f"Missing Parquet: {path}")
-    # Inline smoke check (avoid relying on scripts/smoke_check.py which prints large payloads)
+    # Print the shape and the time range rather than rows, so the smoke log stays short.
     df = pl.read_parquet(path, hive_partitioning=False)
     cols = list(df.columns)
     print(f"Parquet ok: {path}")
