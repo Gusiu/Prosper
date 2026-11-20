@@ -57,20 +57,3 @@ lightning_logs/
 
 # Generated JSON artifacts live under data/ (ignored above). Keep any new
 # JSON rule scoped to a path, so configuration files stay visible to git.
-
-# The thesis is generated from the project's own artifacts by
-# `scripts/build_documentation.py`, which is the tracked source of truth. The
-# document itself is an output: the previous tracked copy drifted until it
-# described horizons, a feature set and findings that three later fixes
-# overturned, and anyone reading the repository took it for the current design.
-docs/*.pdf
-docs/*.docx
-
-# Figures rendered by scripts/documentation_figures.py at build time. The
-# script is the source; the PNGs are outputs, like the document itself.
-data/_figures/
-
-# Screenshots supplied by hand for section 12.6. Material for the document, not
-# code; the slots in scripts/build_documentation.py are the tracked part.
-docs/zrzuty/*.png
-docs/zrzuty/*.jpg
