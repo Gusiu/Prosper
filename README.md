@@ -57,15 +57,16 @@ B) Python venv + pip
    ```powershell
    pip install -r requirements.txt
    ```
-3. (Optional) Install package in editable mode to get the `prosper` console command:
+3. Install the package itself in editable mode. It provides the `prosper` command and makes the
+   `src/` package importable for the tests and scripts; `--no-deps` keeps pip from re-resolving
+   the versions pinned in step 2:
    ```powershell
-   pip install -e .
+   pip install -e . --no-deps
    ```
 
 Notes:
 
 - If you use the Poetry route the `prosper` console script is available as `poetry run prosper`.
-- Editable install (`pip install -e .`) makes `prosper` available in the active venv.
 
 ---
 
@@ -103,14 +104,36 @@ included, is served from `frontend/vendor`, so it works offline.
 
 Once dependencies are installed and the package is available (`poetry run` or editable `pip install -e .`), the `prosper` console entrypoint can be used to run headless pipelines.
 
-### Quick smoke pipeline (example)
+### Smoke pipeline
+
+Runs every stage once for `BTCUSDT` in a separate data root, `data_smoke`, so `./data` is left
+alone. Two months are downloaded: the first is history, the second is predicted.
 
 ```powershell
-# run with poetry
-poetry run prosper backfill --symbol BTCUSDT --start 2020-01 --end 2020-01 --workers 2
+poetry run prosper backfill --symbol BTCUSDT --start 2019-12 --end 2020-01 --workers 2 --root data_smoke
+poetry run prosper qa check --symbol BTCUSDT --interval 1m --year 2020 --month 01 --root data_smoke
+poetry run prosper aggregate --symbol BTCUSDT --from 1m --to 1h,1d,1w --start 2019-12 --end 2020-01 --root data_smoke
+poetry run prosper features build --symbol BTCUSDT --base-interval 1d --start 2019-12-01 --end 2020-01-31 --root data_smoke
+poetry run prosper labels build --symbol BTCUSDT --base-interval 1d --root data_smoke
+poetry run prosper predict baseline --symbol BTCUSDT --start 2020-01-01 --end 2020-01-31 --root data_smoke
+poetry run prosper planner windows --symbol BTCUSDT --start 2020-01-01 --end 2020-01-31 --root data_smoke
+```
 
-# or in a venv with editable install
-prosper backfill --symbol BTCUSDT --start 2020-01 --end 2020-01 --workers 2
+In a venv with the editable install, drop `poetry run`. The same steps, with a check after
+each, are scripted: `poetry run python scripts/smoke_all.py --root data_smoke`.
+
+This checks the plumbing, not the models. A model only learns from outcomes that had already
+happened, so with a month of history the week horizon trains for most of January, the month
+horizon for its last few days, and the quarter and year not at all - those rows are written
+with `trained: false` and every later stage skips them, which is the intended behaviour. For
+real results backfill several years.
+
+Without internet access, generate synthetic 1m Parquet for both months first, then run the
+commands above as written: `backfill` finds the Parquet already there and downloads nothing.
+
+```powershell
+poetry run python scripts/offline_smoke_fixture.py --root data_smoke --symbol BTCUSDT --year 2019 --month 12
+poetry run python scripts/offline_smoke_fixture.py --root data_smoke --symbol BTCUSDT --year 2020 --month 1
 ```
 
 ### Predict, evaluate, compare
@@ -200,6 +223,12 @@ Run unit tests and integration checks with:
 
 ```powershell
 pytest -q
+```
+
+`-m "not slow"` skips the few tests that train a real model for tens of seconds:
+
+```powershell
+pytest -q -m "not slow"
 ```
 
 ## 📜 License

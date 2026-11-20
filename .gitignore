@@ -46,7 +46,7 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# Data root used by the smoke scripts and docs/windows-quickstart.md.
+# Data root of the smoke pipeline in README.md and scripts/smoke_all.py.
 data_smoke/
 
 # Lightning artifacts. predict/tft.py disables the logger and checkpointing so
