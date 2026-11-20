@@ -1,10 +1,10 @@
 @echo off
 cd /d "%~dp0"
 title Prosper AI Dashboard
-echo Uruchamianie silnika sztucznej inteligencji Prosper...
+echo Starting the Prosper dashboard server...
 echo.
-echo Za chwile otworzy sie strona w przegladarce. Nie zamykaj tego okna!
-echo (Aby wylaczyc serwer, wcisnij CTRL+C)
+echo When it is up, open http://127.0.0.1:8000 in your browser. Do not close this window!
+echo (Press CTRL+C to stop the server)
 echo.
 
 rem Prefer the in-project virtualenv; fall back to Poetry, then to PATH.
