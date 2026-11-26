@@ -1,4 +1,4 @@
-"""A bar without a label still belongs to the series (SPECIFICATION 2.2).
+"""A bar without a label still belongs to the series.
 
 A forward return of exactly zero has no side, so its bar has no label. The
 sequence models keep such a bar as input and leave it out only as a target:

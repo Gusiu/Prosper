@@ -123,9 +123,10 @@ class TabularForecaster:
     def holdout(self, horizon: str, pooled: PooledSlice, valid: list[int]) -> tuple[int, int]:
         """``(fit_end, calibration_start)`` among the labelled rows *valid* of *pooled*.
 
-        By instant, as the slice itself is (SPECIFICATION 2.8): the held-out
-        rows are the newest, and the fitted ones end a horizon before them -
-        `choose_holdout`, the policy every model follows.
+        By instant, as the slice itself is, because a row index means a
+        different date in each symbol: the held-out rows are the newest overall,
+        and the fitted ones end a horizon before them - `choose_holdout`, the
+        policy every model follows.
         """
         labels = [int(pooled.direction[k]) for k in valid]
         return choose_holdout(pooled.open_time[valid], labels, self.purge[horizon])
