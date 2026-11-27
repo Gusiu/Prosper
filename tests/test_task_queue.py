@@ -58,7 +58,7 @@ def _await_current(runner: TaskRunner, name: str, timeout: float = 10.0) -> None
         if current and current["name"] == name:
             return
         time.sleep(0.01)
-    raise AssertionError(f"{name} nie ruszylo w ciagu {timeout}s")
+    raise AssertionError(f"{name} did not start within {timeout}s")
 
 def _drain(runner: TaskRunner, timeout: float = 20.0) -> None:
     deadline = time.time() + timeout

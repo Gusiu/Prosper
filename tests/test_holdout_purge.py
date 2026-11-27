@@ -279,10 +279,10 @@ def test_tft_stops_and_calibrates_on_labels_it_was_not_fitted_on(lake, monkeypat
 
 @pytest.mark.slow
 def test_tft_stops_on_the_calibration_slice_alone(lake, monkeypatch) -> None:
-    """The stopping rule scores the slice the calibrator is fitted on
-    (SPECIFICATION 2.10). Its frame reaches back `seq_len` bars so that the
-    oldest held-out bar has a full encoder history; those older bars are fitted
-    or purged ones, so they may be inputs but never targets."""
+    """The stopping rule scores the slice the calibrator is fitted on. Its frame
+    reaches back `seq_len` bars so that the oldest held-out bar has a full
+    encoder history; those older bars are fitted or purged ones, so they may be
+    inputs but never targets."""
     from prosper.predict import tft
 
     windows: list[dict[str, set[int]]] = []
